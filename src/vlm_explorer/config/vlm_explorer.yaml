@@ -1,0 +1,72 @@
+/**:
+  ros__parameters:
+    # ── Robot namespaces ──
+    robot_namespaces: ["robot_a", "robot_b"]
+
+    # ── Skeleton extractor ──
+    skeleton_extractor:
+      map_topic: /world/map
+      skeleton_marker_topic: /vlm/skeleton_markers
+      skeleton_image_topic: /vlm/skeleton_image
+      frame_id: world
+      rate: 1.0
+      free_threshold: 50
+      downsample: 2
+
+    # ── Map renderer ──
+    map_renderer:
+      map_topic: /world/map
+      skeleton_image_topic: /vlm/skeleton_image
+      artifact_detections_topic: /vlm/artifact_detections
+      rendered_map_topic: /vlm/rendered_map
+      scene_json_topic: /vlm/scene_json
+      frame_id: world
+      rate: 1.0
+
+    # ── Artifact detector ──
+    artifact_detector:
+      detections_topic: /vlm/artifact_detections
+      rate: 1.0
+      mode: placeholder
+      placeholder_detections_json: "[]"
+
+    # ── VLM coordinator ──
+    vlm_coordinator:
+      rendered_map_topic: /vlm/rendered_map
+      scene_json_topic: /vlm/scene_json
+      artifact_detections_topic: /vlm/artifact_detections
+      tool_requests_topic: /vlm/tool_requests
+      tool_status_topic: /vlm/tool_status
+      goal_topic_suffix: /vlm_way_point
+      frame_id: world
+      replan_period_sec: 15.0
+      vlm_enabled: true
+      vlm_provider: auto
+      vlm_model: ""
+      vlm_temperature: 0.1
+      vlm_max_tokens: 768
+      vlm_timeout_sec: 15.0
+      artifact_reach_radius_m: 1.0
+
+    # ── Florence-2 detector ──
+    florence2_detector:
+      detections_topic: /vlm/artifact_detections
+      descriptions_topic: /vlm/scene_descriptions
+      goal_prompt: ""
+      model_id: microsoft/Florence-2-large
+      device: cuda
+      detection_rate: 2.0
+      grounding_rate: 1.0
+      description_cooldown_sec: 10.0
+      grounding_confidence_threshold: 0.3
+      assumed_depth_m: 2.0
+      camera_hfov_rad: 2.0944
+      dedup_radius_m: 0.8
+      min_bbox_area_frac: 0.002
+
+    # ── Placeholder interaction tool ──
+    interaction_tool:
+      requests_topic: /vlm/tool_requests
+      status_topic: /vlm/tool_status
+      mode: placeholder
+      response_delay_sec: 0.0

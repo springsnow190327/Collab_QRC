@@ -1,0 +1,6 @@
+/**:
+  ros__parameters:
+    safety_dist: 0.2
+    check_angle_deg: 20.0
+    min_valid_range: 0.12
+    min_close_points: 5

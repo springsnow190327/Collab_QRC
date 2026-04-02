@@ -1,0 +1,103 @@
+<?xml version="1.0"?>
+<!-- 
+  Velodyne VLP-16 3D Lidar for Go2 Robot
+  Publishes sensor_msgs/PointCloud2 on /velodyne_points
+  For use with CMU autonomy stack (terrain_analysis + local_planner)
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+    <xacro:macro name="velodyne_lidar" params="parent_link:=base_link">
+        
+        <!-- Velodyne mounting joint -->
+        <joint name="velodyne_mount_joint" type="fixed">
+            <origin xyz="0.0 0.0 0.35" rpy="0 0 0"/>  <!-- Mounted on top of robot -->
+            <parent link="${parent_link}"/>
+            <child link="velodyne_base_link"/>
+        </joint>
+        
+        <!-- Velodyne base link -->
+        <link name="velodyne_base_link">
+            <inertial>
+                <mass value="0.83"/>  <!-- VLP-16 weight -->
+                <origin xyz="0 0 0.03585"/>
+                <inertia ixx="0.000908" ixy="0" ixz="0" iyy="0.000908" iyz="0" izz="0.0011"/>
+            </inertial>
+            <visual>
+                <origin xyz="0 0 0"/>
+                <geometry>
+                    <cylinder radius="0.0516" length="0.0717"/>
+                </geometry>
+                <material name="velodyne_grey">
+                    <color rgba="0.5 0.5 0.5 1"/>
+                </material>
+            </visual>
+            <collision>
+                <origin xyz="0 0 0"/>
+                <geometry>
+                    <cylinder radius="0.0516" length="0.0717"/>
+                </geometry>
+            </collision>
+        </link>
+        
+        <!-- Velodyne sensor frame (spinning part) -->
+        <joint name="velodyne_sensor_joint" type="fixed">
+            <origin xyz="0 0 0.03585" rpy="0 0 0"/>
+            <parent link="velodyne_base_link"/>
+            <child link="velodyne"/>
+        </joint>
+        
+        <link name="velodyne">
+            <inertial>
+                <mass value="0.01"/>
+                <origin xyz="0 0 0"/>
+                <inertia ixx="1e-7" ixy="0" ixz="0" iyy="1e-7" iyz="0" izz="1e-7"/>
+            </inertial>
+        </link>
+        
+        <!-- Gazebo Velodyne plugin (VLP-16 configuration) -->
+        <gazebo reference="velodyne">
+            <sensor type="ray" name="velodyne_sensor">
+                <pose>0 0 0 0 0 0</pose>
+                <visualize>false</visualize>
+                <update_rate>10</update_rate>  <!-- 10 Hz scan rate -->
+                <ray>
+                    <scan>
+                        <horizontal>
+                            <samples>360</samples>  <!-- Angular resolution: 1 degree -->
+                            <resolution>1</resolution>
+                            <min_angle>-3.14159</min_angle>  <!-- -180 degrees -->
+                            <max_angle>3.14159</max_angle>   <!-- +180 degrees -->
+                        </horizontal>
+                        <vertical>
+                            <samples>16</samples>  <!-- VLP-16 has 16 channels -->
+                            <resolution>1</resolution>
+                            <min_angle>-0.2618</min_angle>  <!-- -15 degrees -->
+                            <max_angle>0.2618</max_angle>   <!-- +15 degrees -->
+                        </vertical>
+                    </scan>
+                    <range>
+                        <min>0.3</min>    <!-- 0.3m minimum range -->
+                        <max>100.0</max>  <!-- 100m maximum range -->
+                        <resolution>0.01</resolution>
+                    </range>
+                    <noise>
+                        <type>gaussian</type>
+                        <mean>0.0</mean>
+                        <stddev>0.02</stddev>  <!-- 2cm noise -->
+                    </noise>
+                </ray>
+                
+                <!-- Gazebo ROS plugin for PointCloud2 output -->
+                <plugin name="gazebo_ros_velodyne" filename="libgazebo_ros_ray_sensor.so">
+                    <ros>
+                        <namespace>/</namespace>
+                        <remapping>~/out:=velodyne_points</remapping>
+                    </ros>
+                    <output_type>sensor_msgs/PointCloud2</output_type>
+                    <frame_name>velodyne</frame_name>
+                    <min_intensity>0</min_intensity>
+                </plugin>
+            </sensor>
+        </gazebo>
+        
+    </xacro:macro>
+</robot>

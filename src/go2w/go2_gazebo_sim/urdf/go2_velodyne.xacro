@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<!--
+  Go2 Robot with Velodyne VLP-16 3D Lidar
+  This variant is for use with the CMU autonomy stack which requires 3D point clouds.
+-->
+<robot name="go2_3d" xmlns:xacro="http://www.ros.org/wiki/xacro">
+    <xacro:arg name="DEBUG" default="false"/>
+    
+    <!-- Include the base Go2 robot -->
+    <xacro:include filename="$(find go2_description)/xacro/robot.xacro"/>
+    
+    <!-- Include Velodyne 3D lidar -->
+    <xacro:include filename="$(find go2_gazebo_sim)/urdf/velodyne_lidar.xacro"/>
+    
+    <!-- Add the Velodyne sensor to the robot -->
+    <xacro:velodyne_lidar parent_link="base_link"/>
+    
+</robot>

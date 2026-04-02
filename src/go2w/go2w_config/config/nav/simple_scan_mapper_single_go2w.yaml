@@ -1,0 +1,30 @@
+/**:
+  ros__parameters:
+    # === Occupancy grid with log-odds evidence model ===
+    #
+    # Log-odds probability model:
+    #   P(occupied|hit)  ≈ 0.7  →  log-odds = +3
+    #   P(occupied|miss) ≈ 0.4  →  log-odds = -1
+    #
+    # Asymmetric ratio 3:1 means walls form in ~3 hits (score=9)
+    # but require ~9 consecutive miss observations to erase.
+    # Combined with stop-at-occupied raytrace, walls are very stable.
+    #
+    # Score range [-10, 20] with clamping prevents runaway accumulation.
+    # Thresholds: occupied at 6 (2 hits), free at -3 (3 misses).
+
+    max_range: 8.0
+    max_clear_distance: 3.5        # keep short to prevent ray leakage through sparse lidar gaps
+    clear_on_nohit: false          # don't clear on no-hit rays — causes massive leakage circle
+    update_rate: 4.0               # was 2.0 — process more scans per second
+    max_scan_odom_dt: 0.25         # was 0.10 — real robot latency is 50-70ms typical, spikes higher
+    max_angular_velocity: 2.0      # was 0.40 — Go2W routinely turns at 1-3 rad/s
+
+    # Log-odds scoring (asymmetric: hits 3x stronger than misses)
+    hit_increment: 3
+    miss_decrement: 2
+    occupied_score_threshold: 6    # 2 hits to confirm wall
+    free_score_threshold: -3       # 3 misses to confirm free
+    score_min: -10                 # clamp floor (prevents deep free)
+    score_max: 20                  # clamp ceiling (prevents sticky walls)
+

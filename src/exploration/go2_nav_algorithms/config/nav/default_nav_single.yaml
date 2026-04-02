@@ -1,0 +1,25 @@
+/**:
+  ros__parameters:
+    max_linear_speed: 0.35
+    max_angular_speed: 0.8
+    goal_tolerance: 0.1
+    obstacle_slow_dist: 0.6
+    obstacle_stop_dist: 0.3
+    front_half_angle_deg: 35.0
+    side_check_angle_deg: 50.0
+    avoidance_gain: 0.9
+    control_rate: 15.0
+    startup_delay: 12.0
+    require_settle_before_motion: true
+    settle_speed_threshold: 0.12
+    settle_hold_sec: 1.5
+    avoidance_deadband: 0.08
+    avoidance_max_ratio: 0.45
+    avoidance_conflict_scale: 0.30
+    turn_in_place_on_block: true
+    wall_scan_enabled: true
+    wall_scan_trigger_dist: 0.34
+    wall_scan_turn_speed: 0.7
+    wall_scan_total_angle_deg: 360.0
+    wall_scan_rearm_dist: 0.6
+    wall_scan_pause_after_sec: 1.0

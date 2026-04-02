@@ -1,0 +1,57 @@
+/**:
+    ros__parameters:
+        feature_extract_enable: false
+        point_filter_num: 1
+        max_iteration: 3
+        filter_size_surf: 0.5
+        filter_size_map: 0.5
+        cube_side_length: 1000.0
+        runtime_pos_log_enable: false
+        map_file_path: "./test.pcd"
+
+        common:
+            # Use transform_everything's pre-processed topics.
+            # The raw UTLidar IMU has non-standard axis conventions that
+            # Fast-LIO's gravity init cannot handle. transform_everything
+            # applies: (1) Y,Z axis flip, (2) 15.1° pitch rotation,
+            # (3) bias subtraction, producing standard-convention IMU data.
+            lid_topic:  "/utlidar/transformed_cloud"
+            imu_topic:  "/utlidar/transformed_raw_imu"
+            time_sync_en: false
+            time_offset_lidar_to_imu: 0.0
+
+        preprocess:
+            lidar_type: 2                # 2 = Velodyne-compatible (ring + time fields)
+            scan_line: 16                # UTLidar ~16 scan lines
+            scan_rate: 15                # Measured at ~15 Hz over ethernet
+            timestamp_unit: 0            # 0 = seconds (float32 time field)
+            blind: 0.2                   # Min range filter (metres)
+
+        mapping:
+            acc_cov: 0.1                 # Tighter than default 3.0 — UTLidar IMU is decent
+            gyr_cov: 0.1                 # Tighter than default 3.0
+            b_acc_cov: 0.001             # Bias random walk — matched to Point-LIO local config
+            b_gyr_cov: 0.001
+            fov_degree:    360.0
+            det_range:     30.0          # UTLidar effective range
+            # With transform_everything preprocessing, IMU data is already
+            # rotated into the body frame. LiDAR and IMU are co-located
+            # after the transform, so identity + small offset suffices.
+            # extrinsic_est_en MUST be false to prevent double-rotation.
+            extrinsic_est_en:  false
+            extrinsic_T: [ 0.0, 0.0, 0.0]
+            extrinsic_R: [ 1., 0., 0.,
+                           0., 1., 0.,
+                           0., 0., 1.]
+
+        publish:
+            path_en: true
+            effect_map_en: false
+            map_en: true
+            scan_publish_en:  true
+            dense_publish_en: false
+            scan_bodyframe_pub_en: true
+
+        pcd_save:
+            pcd_save_en: false
+            interval: -1

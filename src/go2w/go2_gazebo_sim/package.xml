@@ -1,0 +1,52 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>go2_gazebo_sim</name>
+  <version>0.1.0</version>
+  <description>Gazebo simulation for Unitree Go2 with CMU autonomy stack</description>
+  <maintainer email="user@example.com">User</maintainer>
+  <license>MIT</license>
+  
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  
+  <depend>rclcpp</depend>
+  <depend>gazebo_ros</depend>
+  <depend>gazebo_ros_pkgs</depend>
+  <depend>gazebo_msgs</depend>
+  <depend>robot_state_publisher</depend>
+  <depend>xacro</depend>
+  <depend>nav_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>tf2_ros</depend>
+  <depend>std_msgs</depend>
+  <depend>visibility_graph_msg</depend>
+  <depend>go2w_description</depend>
+  
+  <exec_depend>ros2launch</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+  <exec_depend>joy</exec_depend>
+  <exec_depend>teleop_twist_joy</exec_depend>
+  <exec_depend>controller_manager</exec_depend>
+  <exec_depend>forward_command_controller</exec_depend>
+  <exec_depend>pointcloud_to_laserscan</exec_depend>
+  <exec_depend>go2_nav_algorithms</exec_depend>
+  <exec_depend>local_planner</exec_depend>
+  <exec_depend>terrain_analysis</exec_depend>
+  <exec_depend>terrain_analysis_ext</exec_depend>
+  <exec_depend>point_lio_unilidar</exec_depend>
+  <exec_depend>go2w_bringup</exec_depend>
+  <exec_depend>go2_interfaces</exec_depend>
+  <exec_depend>go2w_control</exec_depend>
+  <exec_depend>go2w_nav</exec_depend>
+  <exec_depend>go2w_safety</exec_depend>
+  <exec_depend>go2w_config</exec_depend>
+  <exec_depend>go2w_perception</exec_depend>
+  <exec_depend>go2w_spawn</exec_depend>
+  <exec_depend>go2w_observability</exec_depend>
+  
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

@@ -1,0 +1,58 @@
+# FAST-LIO2 configuration for Gazebo simulation (Go2W with 3D LiDAR)
+# Sensor: go2w_description_3d_lidar.xacro gpu_ray (1024x16, 10Hz)
+# IMU:    gazebo imu_sensor (200Hz, on imu frame, BMI088-class noise)
+# LiDAR mount: imu → livox_mid360 at T=[0.187, 0, 0.0803] Ry(13°)
+#
+# NOTE: Must use the /**:/ros__parameters: wrapper for ROS 2 param loading.
+
+/**:
+    ros__parameters:
+        feature_extract_enable: false
+        point_filter_num: 1                   # keep ALL points — indoor needs density
+        max_iteration: 4                      # more iterations for stable convergence
+        filter_size_surf: 0.15                # ~15cm voxel — fine enough for indoor walls
+        filter_size_map: 0.15                 # match surf filter for consistent resolution
+        cube_side_length: 1000.0
+        runtime_pos_log_enable: false
+        map_file_path: ""
+
+        common:
+            lid_topic: "/velodyne_points"
+            imu_topic: "/imu/data"
+            time_sync_en: false
+            time_offset_lidar_to_imu: 0.0
+
+        preprocess:
+            lidar_type: 2                     # 2 = Velodyne-style (unorganised PointCloud2)
+            scan_line: 16                     # URDF: 16 vertical samples
+            scan_rate: 10                     # URDF: update_rate 10 Hz
+            timestamp_unit: 2                 # 0=sec 1=ms 2=us 3=ns
+            blind: 0.4                        # reject self-observation of robot body
+
+        mapping:
+            acc_cov: 0.1                      # tuned for BMI088-class Gazebo IMU noise
+            gyr_cov: 0.1                      # tuned for BMI088-class Gazebo IMU noise
+            b_acc_cov: 0.0001                 # tighter bias drift — sim IMU has low bias
+            b_gyr_cov: 0.0001                 # tighter bias drift — sim IMU has low bias
+            fov_degree: 360.0                 # full 360 horizontal scan
+            det_range: 20.0                   # match URDF max range
+            extrinsic_est_en: false           # fixed extrinsics (known from URDF)
+            # Extrinsic: LiDAR frame → IMU frame (from Go2W URDF)
+            # imu_joint:  base → imu at xyz=(-0.02557, 0, 0.04232)
+            # livox_joint: imu → livox_mid360 at xyz=(0.187, 0, 0.0803) rpy=(0, 0.2269, 0)
+            # R = Ry(0.2269): cos=0.9744, sin=0.2249
+            extrinsic_T: [0.187, 0.0, 0.0803]
+            extrinsic_R: [0.9744,  0.0, 0.2249,
+                          0.0,     1.0, 0.0,
+                         -0.2249,  0.0, 0.9744]
+
+        publish:
+            path_en: true
+            scan_publish_en: true
+            dense_publish_en: true
+            scan_bodyframe_pub_en: true
+
+        pcd_save:
+            pcd_save_en: false
+            interval: -1
+

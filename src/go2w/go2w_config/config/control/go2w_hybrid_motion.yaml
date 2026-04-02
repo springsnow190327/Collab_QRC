@@ -1,0 +1,21 @@
+/**:
+  ros__parameters:
+    publish_rate: 20.0
+    cmd_timeout_sec: 0.50
+
+    idle_linear_threshold: 0.02
+    idle_lateral_threshold: 0.02
+    idle_angular_threshold: 0.05
+
+    wheel_linear_threshold: 0.18
+    wheel_lateral_threshold: 0.05
+    wheel_angular_threshold: 0.30
+    wheel_curvature_threshold: 0.45
+
+    wheel_mode_hold_sec: 1.2
+    legged_mode_hold_sec: 0.8
+
+    wheel_radius_m: 0.09
+    wheel_track_m: 0.40
+    wheel_max_angular_speed: 8.5
+    wheel_joint_signs: [1.0, 1.0, 1.0, 1.0]

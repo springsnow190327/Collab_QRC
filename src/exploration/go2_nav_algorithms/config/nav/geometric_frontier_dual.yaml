@@ -1,0 +1,26 @@
+/**:
+  ros__parameters:
+    map_frame: world
+    resolution: 0.1
+    width: 400
+    height: 400
+    origin_x: -20.0
+    origin_y: -20.0
+    max_range: 6.0
+    max_clear_distance: 2.0
+    update_rate: 2.0
+    startup_delay: 24.0
+
+    # Edge-only frontier behavior
+    frontier_min_size: 6
+    goal_min_separation: 1.0
+    goal_reselect_distance: 0.9
+    min_goal_distance: 0.8
+    max_goal_distance: 0.0
+    goal_selection_mode: nearest
+    frontier_extraction_mode: wfd
+    require_path_feasibility: true
+    max_path_stretch: 2.5
+    traversability_inflation_cells: 1
+    denoise_isolated_obstacles: true
+    denoise_occ_min_neighbors: 2

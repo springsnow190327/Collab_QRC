@@ -1,0 +1,30 @@
+/**:
+  ros__parameters:
+    scan_topic: /scan
+    odom_topic: /odom/ground_truth
+    map_frame: odom
+    map_topic: /map
+    resolution: 0.1
+    width: 400
+    height: 400
+    origin_x: -20.0
+    origin_y: -20.0
+    max_range: 6.0
+    update_rate: 0.5
+    frontier_min_size: 10
+    selection_mode: score
+    goal_hysteresis_distance: 0.35
+    goal_hold_sec: 3.0
+    goal_reselect_distance: 0.7
+    max_goal_distance: 4.0
+    min_goal_distance: 0.6
+    min_forward_cos: -0.35
+    forward_score_gain: 0.8
+    backward_penalty: 0.35
+    obstacle_clearance_cells: 2
+    startup_delay: 12.0
+    frontier_goal_topic: /way_point
+    frontier_marker_topic: /frontier_goal_marker
+    frontier_regions_topic: /frontier_markers
+    frontier_replan_topic: /frontier_replan
+    force_replan_min_score_gain: 0.03

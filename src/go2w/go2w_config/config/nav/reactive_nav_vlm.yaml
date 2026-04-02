@@ -1,0 +1,38 @@
+/**:
+  ros__parameters:
+    # RRT*-based reactive navigation for VLM exploration.
+    # Fast replanning, no recovery stack -- relies on RRT* to find paths.
+
+    max_linear_speed: 0.70
+    max_angular_speed: 0.85
+    control_rate: 12.0
+    startup_delay: 0.0
+    goal_tolerance: 0.20
+    goal_reached_replan_cooldown_sec: 1.0
+
+    obstacle_slow_dist: 0.75
+    obstacle_stop_dist: 0.35
+    front_half_angle_deg: 35.0
+    side_check_angle_deg: 60.0
+    avoidance_gain: 1.0
+    turn_in_place_on_block: true
+
+    rrt_sample_count: 500
+    rrt_step_size: 0.30
+    rrt_goal_bias: 0.15
+    rrt_rewire_radius: 0.60
+    rrt_grid_radius: 4.0
+    rrt_grid_resolution: 0.10
+    rrt_inflation_radius: 0.22
+    rrt_replan_sec: 0.5
+    rrt_informed_enabled: true
+    rrt_goal_clip_distance: 3.5
+    rrt_waypoint_lookahead: 0.50
+    rrt_goal_search_radius: 1.5
+    rrt_start_clearance_radius: 0.12
+    rrt_unknown_is_obstacle: true
+
+    global_downsample: 3
+    global_inflation_m: 0.15
+    global_replan_sec: 3.0
+    global_waypoint_spacing_m: 1.5

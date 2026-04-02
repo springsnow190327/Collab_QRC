@@ -1,0 +1,60 @@
+# The robot do something according to the mode
+# The robot can:
+# - Damp
+# - BalanceStand
+# - StopMove
+# - StandUp
+# - StandDown
+# - RecoveryStand
+# - Euler
+# - Move
+# - Sit
+# - RiseSit
+# - SwitchGait
+# - Trigger
+# - BodyHeight
+# - FootRaiseHeight
+# - SpeedLevel
+# - Hello
+# - Stretch
+# - TrajectoryFollow
+# - ContinuousGait
+# - Content
+# - Wallow
+# - Dance1
+# - Dance2
+# - GetBodyHeight
+# - GetFootRaiseHeight
+# - GetSpeedLevel
+# - SwitchJoystick
+# - Pose
+# - Scrape
+# - FrontFlip
+# - FrontJump
+# - FrontPounce
+# - WiggleHips
+# - GetState
+# - EconomicGait
+# - FingerHeart
+# - Stairs (Go2W terrain gait, requires balance_stand)
+# - Terrain (alias for Stairs)
+# - Climb (Go2W climb gait, requires balance_stand)
+# - Dance3
+# - Dance4
+# - HopSpinLeft
+# - HopSpinRight
+# - LeftFlip
+# - BackFlip
+# - FreeWalk
+# - FreeBound
+# - FreeJump
+# - FreeAvoid
+# - WalkStair
+# - WalkUpRight
+# - CrossStep
+
+string mode
+
+---
+bool success
+string message

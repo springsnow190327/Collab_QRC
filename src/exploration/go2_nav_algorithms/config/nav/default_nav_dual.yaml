@@ -1,0 +1,53 @@
+/**:
+  ros__parameters:
+    max_linear_speed: 0.35
+    max_angular_speed: 0.8
+    control_rate: 15.0
+    startup_delay: 24.0
+    goal_tolerance: 0.20
+    goal_reached_replan_cooldown_sec: 1.0
+
+    # Keep startup calm
+    require_settle_before_motion: true
+    settle_speed_threshold: 0.06
+    settle_hold_sec: 3.0
+
+    # Simple obstacle avoidance
+    obstacle_slow_dist: 0.55
+    obstacle_stop_dist: 0.24
+    front_half_angle_deg: 35.0
+    side_check_angle_deg: 50.0
+    avoidance_gain: 0.6
+    turn_in_place_on_block: true
+
+    # Disable scan-spin state machine, use planner escape + replan instead
+    wall_scan_enabled: false
+
+    planner_enabled: true
+    planner_replan_sec: 0.45
+    planner_grid_radius: 6.0
+    planner_resolution: 0.08
+    planner_inflation_radius: 0.22
+    planner_goal_clip_distance: 4.0
+    planner_waypoint_spacing: 0.35
+    planner_waypoint_lookahead: 0.55
+    planner_unknown_is_obstacle: false
+
+    # Retreat to safe free space when blocked
+    planner_escape_enabled: true
+    planner_escape_min_range: 0.70
+    planner_escape_min_step: 0.45
+    planner_escape_max_step: 2.0
+    escape_waypoint_hold_sec: 3.0
+    escape_waypoint_reach_tol: 0.35
+
+    # While retreating/blocked, request new frontier quickly
+    blocked_replan_sec: 0.8
+    blocked_replan_cooldown_sec: 1.8
+    blocked_progress_epsilon: 0.10
+
+    unstick_reverse_enabled: true
+    unstick_reverse_speed: 0.12
+    unstick_reverse_sec: 1.0
+    unstick_turn_speed: 0.55
+    unstick_min_rear_clearance: 0.45
