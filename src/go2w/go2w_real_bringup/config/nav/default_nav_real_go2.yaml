@@ -1,0 +1,93 @@
+# default_nav tuning for real Unitree Go2 (no-wheel, spherical feet).
+#
+# Starts from default_nav_single_go2w.yaml with these deltas:
+#   max_linear_speed          0.50 → 0.60  (walking gait can sustain this on flat indoor;
+#                                           Unitree's onboard controller clamps further)
+#   max_angular_speed         0.90 → 1.00  (in-place yaw is fine at walk pace)
+#   planner_inflation_radius  0.50 → 0.40  (Go2 is narrower — 0.32 m body width — so 0.4 m inflate
+#                                           keeps ≥0.24 m wall clearance, matches Go2W margin)
+#   planner_safety_clearance  0.55 → 0.45
+#   obstacle_slow_dist        0.90 → 0.75  (walking gait decels slower than wheels, but Go2 is
+#                                           lighter and needs less room — empirically tune)
+#   obstacle_stop_dist        0.40 → 0.35
+#   avoidance_max_ratio       0.25 → 0.20  (walking lateral compliance is less than rolling)
+#
+# Tune on robot first. The footprint values embedded here assume a stock Go2
+# (length 0.70 m, width 0.32 m) — update if your unit has mods.
+/**:
+  ros__parameters:
+    max_linear_speed: 0.60
+    max_angular_speed: 1.00
+    control_rate: 12.0
+    startup_delay: 0.0
+    goal_tolerance: 0.18
+    goal_reached_replan_cooldown_sec: 1.0
+
+    require_settle_before_motion: true
+    settle_speed_threshold: 0.08
+    settle_hold_sec: 1.5
+
+    obstacle_slow_dist: 0.75
+    obstacle_stop_dist: 0.35
+    front_half_angle_deg: 35.0
+    side_check_angle_deg: 60.0
+    avoidance_gain: 1.1
+    avoidance_deadband: 0.08
+    avoidance_max_ratio: 0.20
+    avoidance_conflict_scale: 0.10
+    turn_in_place_on_block: true
+
+    teammate_avoid_enabled: false
+
+    wall_scan_enabled: false
+
+    planner_enabled: true
+    planner_replan_sec: 1.5
+    planner_invalid_replan_count: 3
+    planner_grid_radius: 6.0          # was 4.5 — CFPA2 goals on real robot sit 5-8 m out; 4.5 m grid clipped most of them and A* couldn't route through truncated unknowns. 6.0 m covers the typical reach of Mid-360's useful range + frontier picks.
+    planner_resolution: 0.10
+    planner_inflation_radius: 0.40
+    planner_goal_clip_distance: 6.0   # was 4.0 — matches new grid radius. Prevents A* from getting a clipped goal at the grid edge (which it cannot route to when the boundary runs through unknown/inflated cells).
+    planner_goal_search_radius: 1.6
+    planner_start_clearance_radius: 0.12
+    planner_waypoint_spacing: 0.30
+    planner_waypoint_lookahead: 0.85
+    planner_safety_clearance: 0.45
+    planner_unknown_is_obstacle: false
+
+    # Go2 pivots in place too — straight segments stay optimal.
+    path_smoothing_passes: 0
+    min_speed_ratio: 0.30
+
+    planner_escape_enabled: true
+    planner_escape_min_range: 1.00
+    planner_escape_min_step: 0.35
+    planner_escape_max_step: 1.20
+    planner_escape_goal_align_gain: 0.75
+    planner_escape_turn_penalty_gain: 0.35
+    planner_escape_clearance_gain: 1.10
+    planner_escape_blocked_front_penalty: 2.00
+    escape_waypoint_hold_sec: 4.0
+    escape_waypoint_reach_tol: 0.30
+
+    blocked_replan_sec: 0.4
+    blocked_replan_cooldown_sec: 1.0
+    blocked_progress_epsilon: 0.06
+
+    stall_recovery_enabled: true
+    stall_cmd_min_linear: 0.06
+    stall_speed_epsilon: 0.03
+    stall_heading_threshold_deg: 35.0
+    stall_progress_min_delta_m: 0.06
+    stall_trigger_sec: 1.5
+    stall_recovery_cooldown_sec: 3.0
+
+    unstick_reverse_enabled: true
+    unstick_reverse_speed: 0.10
+    unstick_reverse_sec: 0.8
+    unstick_turn_speed: 0.55
+    unstick_min_rear_clearance: 0.45
+
+    tight_turn_preempt_enabled: true
+    tight_turn_angle_threshold_deg: 70.0
+    tight_turn_min_front_clearance: 0.55

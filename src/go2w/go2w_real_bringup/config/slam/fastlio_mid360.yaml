@@ -1,0 +1,60 @@
+# Fast-LIO2 config for real Go2W + Livox Mid-360.
+# Starts from the Mid-360 vendor template with real-robot tuning:
+#   - pcd save off (wears SD card during long runs)
+#   - dense publish on (nav stack consumes this directly via pointcloud_to_laserscan)
+#   - scan_bodyframe off (we want world-frame cloud on /cloud_registered)
+#
+# Topics are remapped at launch time — see slam.launch.py.
+/**:
+    ros__parameters:
+        feature_extract_enable: false
+        point_filter_num: 3
+        max_iteration: 3
+        filter_size_surf: 0.5
+        filter_size_map: 0.5
+        cube_side_length: 1000.0
+        runtime_pos_log_enable: false
+        map_file_path: ""
+
+        common:
+            lid_topic: "/livox/lidar"
+            imu_topic: "/livox/imu"
+            time_sync_en: false
+            time_offset_lidar_to_imu: 0.0
+
+        preprocess:
+            lidar_type: 1           # Livox series
+            scan_line: 4
+            blind: 0.5
+            timestamp_unit: 3
+            scan_rate: 10
+
+        mapping:
+            acc_cov: 0.1
+            gyr_cov: 0.1
+            b_acc_cov: 0.0001
+            b_gyr_cov: 0.0001
+            fov_degree: 360.0
+            det_range: 100.0
+            extrinsic_est_en: true
+            extrinsic_T: [ -0.011, -0.02329, 0.04412 ]
+            extrinsic_R: [ 1.0, 0.0, 0.0,
+                           0.0, 1.0, 0.0,
+                           0.0, 0.0, 1.0 ]
+
+        publish:
+            path_en: true
+            effect_map_en: false
+            map_en: true
+            scan_publish_en: true
+            dense_publish_en: true
+            # scan_bodyframe_pub_en: true enables /cloud_registered_body
+            # (current sweep in body frame). pointcloud_to_laserscan reads
+            # this to produce /robot/scan_3d — without it, reactive_nav gets
+            # no scan in Fast-LIO mode, has_scan stays false, and
+            # tick() early-returns a zero cmd_vel → robot never moves.
+            scan_bodyframe_pub_en: true
+
+        pcd_save:
+            pcd_save_en: false
+            interval: -1

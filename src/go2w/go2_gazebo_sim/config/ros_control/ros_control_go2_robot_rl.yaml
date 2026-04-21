@@ -1,0 +1,57 @@
+# ros2_control config for Go2 (non-W) + RL policy.
+#
+# PD gains match Isaac-Lab training defaults used by eppl-erau-db/go2_rl_ws's
+# flat_policy checkpoints: kp=20, kd=0.5. The policy's action magnitudes and
+# correction bandwidth were shaped under these specific gains — running the
+# policy under CHAMP's kp=100/kd=1.0 (5× stiffer) makes commanded-vs-actual
+# joint error drive 5× the torque, which produces oscillation and gait
+# collapse. This YAML is swapped in when rl_policy:=true is passed to
+# single_go2w_mujoco_cfpa2.launch.py; otherwise ros_control_go2_robot.yaml
+# (CHAMP gains) is used.
+#
+# i_clamp kept small since the policy is closed-loop on position error — we
+# don't want an I-term to accumulate across footsteps and fight the policy.
+
+/robot/controller_manager:
+  ros__parameters:
+    use_sim_time: True
+    update_rate: 100
+    robot_joint_states_controller:
+      type: joint_state_broadcaster/JointStateBroadcaster
+    robot_joint_group_effort_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+/robot/robot_joint_group_effort_controller:
+  ros__parameters:
+    use_sim_time: True
+    joints:
+      - FL_hip_joint
+      - FL_thigh_joint
+      - FL_calf_joint
+      - FR_hip_joint
+      - FR_thigh_joint
+      - FR_calf_joint
+      - RL_hip_joint
+      - RL_thigh_joint
+      - RL_calf_joint
+      - RR_hip_joint
+      - RR_thigh_joint
+      - RR_calf_joint
+    command_interfaces:
+      - effort
+    state_interfaces:
+      - position
+      - velocity
+    gains:
+      FL_hip_joint:   {p: 20.0, i: 0.0, d: 0.5, i_clamp: 0.5, ff_velocity_scale: 1.0}
+      FL_thigh_joint: {p: 20.0, i: 0.0, d: 0.5, i_clamp: 0.5, ff_velocity_scale: 1.0}
+      FL_calf_joint:  {p: 20.0, i: 0.0, d: 0.5, i_clamp: 0.5, ff_velocity_scale: 1.0}
+      FR_hip_joint:   {p: 20.0, i: 0.0, d: 0.5, i_clamp: 0.5, ff_velocity_scale: 1.0}
+      FR_thigh_joint: {p: 20.0, i: 0.0, d: 0.5, i_clamp: 0.5, ff_velocity_scale: 1.0}
+      FR_calf_joint:  {p: 20.0, i: 0.0, d: 0.5, i_clamp: 0.5, ff_velocity_scale: 1.0}
+      RL_hip_joint:   {p: 20.0, i: 0.0, d: 0.5, i_clamp: 0.5, ff_velocity_scale: 1.0}
+      RL_thigh_joint: {p: 20.0, i: 0.0, d: 0.5, i_clamp: 0.5, ff_velocity_scale: 1.0}
+      RL_calf_joint:  {p: 20.0, i: 0.0, d: 0.5, i_clamp: 0.5, ff_velocity_scale: 1.0}
+      RR_hip_joint:   {p: 20.0, i: 0.0, d: 0.5, i_clamp: 0.5, ff_velocity_scale: 1.0}
+      RR_thigh_joint: {p: 20.0, i: 0.0, d: 0.5, i_clamp: 0.5, ff_velocity_scale: 1.0}
+      RR_calf_joint:  {p: 20.0, i: 0.0, d: 0.5, i_clamp: 0.5, ff_velocity_scale: 1.0}

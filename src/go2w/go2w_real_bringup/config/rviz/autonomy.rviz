@@ -1,0 +1,313 @@
+Panels:
+  - Class: rviz_common/Displays
+    Help Height: 78
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /Global Options1
+        - /Map1
+        - /LaserScan1
+      Splitter Ratio: 0.5
+    Tree Height: 640
+  - Class: rviz_common/Selection
+    Name: Selection
+  - Class: rviz_common/Tool Properties
+    Expanded:
+      - /2D Goal Pose1
+      - /Publish Point1
+    Name: Tool Properties
+    Splitter Ratio: 0.5886790156364441
+  - Class: rviz_common/Views
+    Expanded:
+      - /Current View1
+    Name: Views
+    Splitter Ratio: 0.5
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Alpha: 0.35
+      Cell Size: 1
+      Class: rviz_default_plugins/Grid
+      Color: 55; 89; 122
+      Enabled: true
+      Line Style:
+        Line Width: 0.03
+        Value: Lines
+      Name: Grid
+      Normal Cell Count: 0
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Plane: XY
+      Plane Cell Count: 200
+      Reference Frame: <Fixed Frame>
+      Value: true
+    - Class: rviz_default_plugins/TF
+      Enabled: true
+      Frame Timeout: 15
+      Frames:
+        All Enabled: true
+      Marker Scale: 0.5
+      Name: TF
+      Show Arrows: true
+      Show Axes: true
+      Show Names: false
+      Update Interval: 0
+      Value: true
+    # ── Nav-grade binary occupancy grid (what planners consume) ──
+    # Source: probability_grid_binarizer.py thresholding /robot/map_prob into
+    # {free|occupied|unknown}. With mapper=carto_2d this is the primary map.
+    # With mapper=scan it's populated by simple_scan_mapper_cpp instead.
+    - Alpha: 0.70
+      Class: rviz_default_plugins/Map
+      Color Scheme: map
+      Draw Behind: true
+      Enabled: true
+      Name: BinaryMap
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /robot/map
+      Update Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /robot/map_updates
+      Use Timestamp: false
+      Value: true
+    # ── Cartographer's native probability grid (pre-binarization) ──
+    # Source: cartographer_occupancy_grid_node → /robot/map_prob. Useful for
+    # debugging binarizer thresholds (free_threshold=25, occupied_threshold=65).
+    # Dim costmap colour so it doesn't dominate the BinaryMap overlay.
+    - Alpha: 0.35
+      Class: rviz_default_plugins/Map
+      Color Scheme: costmap
+      Draw Behind: true
+      Enabled: true
+      Name: CartoProbabilityGrid
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /robot/map_prob
+      Update Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /robot/map_prob_updates
+      Use Timestamp: false
+      Value: true
+    # ── LaserScan (from pointcloud_to_laserscan) ──
+    - Alpha: 1
+      Autocompute Intensity Bounds: true
+      Class: rviz_default_plugins/LaserScan
+      Color: 0; 255; 255
+      Color Transformer: FlatColor
+      Decay Time: 0.5
+      Enabled: true
+      Max Color: 255; 255; 255
+      Min Color: 0; 0; 0
+      Name: LaserScan
+      Position Transformer: XYZ
+      Selectable: true
+      Size (Pixels): 4
+      Size (m): 0.05
+      Style: Points
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /robot/scan_3d
+      Use Fixed Frame: true
+      Value: true
+    # ── Planned path (A* from default_nav) ──
+    - Alpha: 1
+      Buffer Length: 1
+      Class: rviz_default_plugins/Path
+      Color: 255; 50; 50
+      Enabled: true
+      Head Diameter: 0.2
+      Head Length: 0.2
+      Length: 0.3
+      Line Style: Billboards
+      Line Width: 0.05
+      Name: PlannedPath
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Pose Color: 255; 85; 255
+      Pose Style: None
+      Radius: 0.03
+      Shaft Diameter: 0.1
+      Shaft Length: 0.1
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /robot/planned_path
+      Value: true
+    # ── Robot trajectory (breadcrumbs) ──
+    - Alpha: 1
+      Buffer Length: 1
+      Class: rviz_default_plugins/Path
+      Color: 30; 220; 50
+      Enabled: true
+      Head Diameter: 0.0
+      Head Length: 0.0
+      Length: 0.3
+      Line Style: Billboards
+      Line Width: 0.03
+      Name: RobotTrajectory
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Pose Color: 30; 220; 50
+      Pose Style: None
+      Radius: 0.03
+      Shaft Diameter: 0.0
+      Shaft Length: 0.0
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /robot/robot_trajectory
+      Value: true
+    # ── Robot pose triangle marker ──
+    - Class: rviz_default_plugins/Marker
+      Enabled: true
+      Name: RobotPoseTriangle
+      Namespaces:
+        robot_pose: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /robot/robot_pose_marker
+      Value: true
+    # ── Final goal marker (star from CFPA2) ──
+    - Class: rviz_default_plugins/Marker
+      Enabled: true
+      Name: FinalGoalMarker
+      Namespaces:
+        "": true
+        final_goal: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /robot/final_goal_marker
+      Value: true
+    # ── Frontier cylinders (go2w_perception/frontier_3d_markers.py) ──
+    # QRC single-robot CFPA2 does NOT publish MarkerArray itself — we render
+    # frontiers via the separate go2w_perception node on /robot/frontier_cylinders.
+    # LRC dual-robot CFPA2 used /cfpa2/frontier_markers; not applicable here.
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: FrontierCylinders
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /robot/frontier_cylinders
+      Value: true
+    # ── Nav status text ──
+    - Class: rviz_default_plugins/Marker
+      Enabled: true
+      Name: NavStatus
+      Namespaces:
+        "": true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /robot/nav_status
+      Value: true
+  Enabled: true
+  Global Options:
+    Background Color: 235; 237; 240
+    Fixed Frame: map
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/Interact
+      Hide Inactive Objects: true
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/FocusCamera
+    - Class: rviz_default_plugins/Measure
+      Line color: 128; 128; 0
+    - Class: rviz_default_plugins/SetInitialPose
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /initialpose
+    - Class: rviz_default_plugins/SetGoal
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /goal_pose
+    - Class: rviz_default_plugins/PublishPoint
+      Single click: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /clicked_point
+  Transformation:
+    Current:
+      Class: rviz_default_plugins/TF
+  Value: true
+  Views:
+    Current:
+      Angle: 0
+      Class: rviz_default_plugins/TopDownOrtho
+      Enable Stereo Rendering:
+        Stereo Eye Separation: 0.06
+        Stereo Focal Distance: 1
+        Swap Stereo Eyes: false
+        Value: false
+      Invert Z Axis: false
+      Name: Current View
+      Near Clip Distance: 0.01
+      Scale: 25
+      Target Frame: base_link
+      Value: TopDownOrtho (rviz_default_plugins)
+      X: 1.0
+      Y: 0.0
+    Saved: ~
+Window Geometry:
+  Displays:
+    collapsed: false
+  Height: 900
+  Hide Left Dock: false
+  Hide Right Dock: true
+  QMainWindow State: 000000ff00000000fd0000000400000000000001560000032efc0200000008fb0000001200530065006c0065006300740069006f006e00000001e10000009b0000005c00fffffffb0000001e0054006f006f006c002000500072006f007000650072007400690065007302000001ed000001df00000185000000a3fb000000120056006900650077007300200054006f006f02000001df000002110000018500000122fb000000100044006900730070006c006100790073010000003d0000032e000000c900ffffff000000010000010f0000032efc0200000003fb0000001e0054006f006f006c002000500072006f00700065007200740069006500730100000041000000780000000000000000fb0000000a00560069006500770073000000003d0000032e000000a400fffffffb0000001200530065006c0065006300740069006f006e0100000371000000b20000000000000000000000020000049a000000a9fc0100000001fb0000000a00560069006500770073030000004e00000080000002e10000019700000003000005330000003efc0100000002fb0000000800540069006d00650100000000000005330000000000000000fb0000000800540069006d00650100000000000004500000000000000000000004ed0000032e00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  Selection:
+    collapsed: false
+  Tool Properties:
+    collapsed: false
+  Views:
+    collapsed: false
+  Width: 1450
+  X: 180
+  Y: 120

@@ -18,6 +18,9 @@ install(PROGRAMS
   scripts/frontier_3d_markers.py
   scripts/probability_grid_binarizer.py
   scripts/pointcloud_frame_bridge.py
+  scripts/map_merger.py
+  scripts/elevation_to_occupancy.py
+  scripts/transform_everything.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

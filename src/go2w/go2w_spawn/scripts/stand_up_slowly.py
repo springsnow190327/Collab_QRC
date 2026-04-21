@@ -6,11 +6,15 @@ from builtin_interfaces.msg import Duration
 
 
 JOINT_PRESETS = {
+    # Unitree naming — used by both Go2 (LRC URDF, Menagerie MJCF) and Go2W.
+    # The legacy lowercase CHAMP naming (lf_hip_joint ...) is no longer
+    # carried by any URDF in the stack, so both presets point at the same
+    # 12 joints. Kept as two keys for backwards compatibility with callers.
     'go2': [
-        'lf_hip_joint', 'lf_upper_leg_joint', 'lf_lower_leg_joint',
-        'rf_hip_joint', 'rf_upper_leg_joint', 'rf_lower_leg_joint',
-        'lh_hip_joint', 'lh_upper_leg_joint', 'lh_lower_leg_joint',
-        'rh_hip_joint', 'rh_upper_leg_joint', 'rh_lower_leg_joint',
+        'FL_hip_joint', 'FL_thigh_joint', 'FL_calf_joint',
+        'FR_hip_joint', 'FR_thigh_joint', 'FR_calf_joint',
+        'RL_hip_joint', 'RL_thigh_joint', 'RL_calf_joint',
+        'RR_hip_joint', 'RR_thigh_joint', 'RR_calf_joint',
     ],
     'go2w': [
         'FL_hip_joint', 'FL_thigh_joint', 'FL_calf_joint',

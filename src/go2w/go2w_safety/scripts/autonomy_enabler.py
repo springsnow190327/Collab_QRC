@@ -14,6 +14,7 @@ import rclpy                          # ROS 2 Python client library
 from rclpy.node import Node           # base Node class
 from sensor_msgs.msg import Joy       # joystick message type
 from geometry_msgs.msg import PointStamped  # waypoint message type
+from std_msgs.msg import String       # supervisor_state (nominal | panic)
 
 
 class AutonomyEnabler(Node):
@@ -24,19 +25,23 @@ class AutonomyEnabler(Node):
         self.declare_parameter("startup_delay", 10.0)   # seconds before first publish
         self.declare_parameter("rate", 10.0)             # Hz for /joy publishing
         self.declare_parameter("wait_for_waypoint", True)
+        self.declare_parameter("supervisor_state_topic", "/robot/supervisor_state")
         self.startup_delay = float(self.get_parameter("startup_delay").value)
         self.rate = float(self.get_parameter("rate").value)
         self.wait_for_waypoint = bool(self.get_parameter("wait_for_waypoint").value)
+        supervisor_state_topic = str(self.get_parameter("supervisor_state_topic").value)
 
         # --- state ------------------------------------------------------
         self.start_time = None                           # set on first timer callback
         self.enabled = False                             # set True after both conditions met
         self.goal_received = False                       # set True on first /way_point
+        self.panic_active = False                        # True while supervisor_state == "panic"
 
         # --- subscriber (wait for frontier goal) -------------------------
         self.create_subscription(
             PointStamped, "/way_point", self.waypoint_cb, 10
         )
+        self.create_subscription(String, supervisor_state_topic, self._state_cb, 10)
 
         # --- publisher --------------------------------------------------
         self.joy_pub = self.create_publisher(Joy, "/joy", 10)
@@ -57,6 +62,10 @@ class AutonomyEnabler(Node):
             self.get_logger().info(
                 f"First /way_point received: ({msg.point.x:.2f}, {msg.point.y:.2f})"
             )
+
+    def _state_cb(self, msg):
+        """Supervisor panic latch — when active, disarm FAR via axes[2]=0.0."""
+        self.panic_active = (str(msg.data).strip().lower() == "panic")
 
     # ------------------------------------------------------------------
     def publish_joy(self):
@@ -90,17 +99,23 @@ class AutonomyEnabler(Node):
         #   [5] right-trigger  ** <= -0.1 → manual ON — keep >-0.1 **
         #   [6] dpad-X
         #   [7] dpad-Y
+        # During panic: zero the autonomy-enable axis so FAR / localPlanner
+        # drop autonomyMode and stop commanding. joySpeed is also zeroed so
+        # any residual path-follower output is scaled to zero.
+        autonomy_axis = 0.0 if self.panic_active else -1.0
+        forward_axis = 0.0 if self.panic_active else 1.0
+
         msg.axes = [
-            0.0,   # 0  left-stick X
-            0.0,   # 1  left-stick Y
-           -1.0,   # 2  left trigger  → enables autonomy
-            0.0,   # 3  right-stick X
-            1.0,   # 4  right-stick Y → full forward (sets joySpeed=1.0 in localPlanner/pathFollower)
-            0.0,   # 5  right trigger → NOT manual mode
-            0.0,   # 6  dpad X
-            0.0,   # 7  dpad Y
+            0.0,              # 0  left-stick X
+            0.0,              # 1  left-stick Y
+            autonomy_axis,    # 2  left trigger → <= -0.1 enables autonomy; 0 disarms
+            0.0,              # 3  right-stick X
+            forward_axis,     # 4  right-stick Y → joySpeed
+            0.0,              # 5  right trigger → NOT manual mode
+            0.0,              # 6  dpad X
+            0.0,              # 7  dpad Y
         ]
-        msg.buttons = [0] * 11        # no buttons pressed
+        msg.buttons = [0] * 11        # all-zero → panic node ignores this frame
 
         self.joy_pub.publish(msg)
 

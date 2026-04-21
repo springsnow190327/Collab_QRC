@@ -1,0 +1,36 @@
+# MuJoCo sensor bridge parameters
+mujoco_lidar_node:
+  ros__parameters:
+    mjcf_path: ''  # Empty = auto-detect from go2_gazebo_sim package
+    lidar_body: 'base_link'
+    lidar_offset_x: 0.16143
+    lidar_offset_y: 0.0
+    lidar_offset_z: 0.12262
+    hz_samples: 720
+    vt_samples: 16
+    h_fov_deg: 360.0
+    v_min_deg: -7.0
+    v_max_deg: 52.0
+    range_min: 0.05
+    range_max: 20.0
+    publish_rate: 10.0
+    frame_id: 'lidar_link'
+
+mujoco_contact_node:
+  ros__parameters:
+    mjcf_path: ''
+    publish_rate: 50.0
+    contact_threshold: 0.01
+    touch_sensor_names:
+      - 'FL_foot_contact'
+      - 'FR_foot_contact'
+      - 'RL_foot_contact'
+      - 'RR_foot_contact'
+
+mujoco_odom_bridge:
+  ros__parameters:
+    publish_rate: 50.0
+    odom_frame: 'odom'
+    base_frame: 'base_link'
+    pose_topic: 'base_link_site_pose_sensor/pose'
+    imu_topic: 'base_link_imu_sensor/imu'

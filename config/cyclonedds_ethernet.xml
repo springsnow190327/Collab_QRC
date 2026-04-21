@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  CycloneDDS config for real Go2W over USB-C Ethernet dongle.
+
+  This file documents the DDS setup used by scripts/real/connect_ethernet.sh
+  (which emits an equivalent inline XML as the CYCLONEDDS_URI env var).
+
+  Substitute the interface name / robot IP before use, or set:
+    GO2W_ETH_IFACE=<iface>  GO2W_ETH_IP=<robot_ip>
+  and use connect_ethernet.sh (it reads those env vars).
+-->
+<CycloneDDS>
+  <Domain>
+    <General>
+      <Interfaces>
+        <NetworkInterface name="enxc8a36240a4c7" priority="default" multicast="true"/>
+      </Interfaces>
+    </General>
+    <Discovery>
+      <Peers>
+        <Peer address="192.168.123.161"/>
+      </Peers>
+      <ParticipantIndex>auto</ParticipantIndex>
+      <MaxAutoParticipantIndex>200</MaxAutoParticipantIndex>
+    </Discovery>
+  </Domain>
+</CycloneDDS>

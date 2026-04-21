@@ -1,0 +1,33 @@
+<launch>
+    <arg name="scenario" default="indoor"/>
+    <arg name="robot_num" default="2"/>
+    <arg name="rviz" default="false"/>
+
+    <group ns="wheeled0" if="$(eval int(arg('robot_num')) >= 1)">
+        <remap from="/state_estimation_at_scan" to="/wheeled0/state_estimation_at_scan"/>
+        <remap from="/registered_scan" to="/wheeled0/registered_scan"/>
+        <remap from="/terrain_map" to="/wheeled0/terrain_map"/>
+        <remap from="/terrain_map_ext" to="/wheeled0/terrain_map_ext"/>
+        <remap from="/key_pose_to_map" to="/wheeled0/key_pose_to_map"/>
+        <remap from="/way_point" to="/wheeled0/way_point"/>
+        <include file="$(find tare_planner)/launch/explore.launch">
+            <arg name="scenario" value="$(arg scenario)"/>
+            <arg name="rviz" value="$(arg rviz)"/>
+            <arg name="rosbag_record" value="false"/>
+        </include>
+    </group>
+
+    <group ns="wheeled1" if="$(eval int(arg('robot_num')) >= 2)">
+        <remap from="/state_estimation_at_scan" to="/wheeled1/state_estimation_at_scan"/>
+        <remap from="/registered_scan" to="/wheeled1/registered_scan"/>
+        <remap from="/terrain_map" to="/wheeled1/terrain_map"/>
+        <remap from="/terrain_map_ext" to="/wheeled1/terrain_map_ext"/>
+        <remap from="/key_pose_to_map" to="/wheeled1/key_pose_to_map"/>
+        <remap from="/way_point" to="/wheeled1/way_point"/>
+        <include file="$(find tare_planner)/launch/explore.launch">
+            <arg name="scenario" value="$(arg scenario)"/>
+            <arg name="rviz" value="$(arg rviz)"/>
+            <arg name="rosbag_record" value="false"/>
+        </include>
+    </group>
+</launch>

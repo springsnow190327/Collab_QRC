@@ -1,0 +1,695 @@
+<?xml version='1.0' encoding='utf-8'?>
+<robot name="go2_description" xmlns:xacro="http://ros.org/wiki/xacro">
+  <!-- Pure Go2 (non-W) xacro wrapper.
+       Differs from go2w_description_3d_lidar.xacro:
+         - FL/FR/RL/RR_foot_joint are FIXED (not continuous) — no wheel actuation.
+         - Foot link visual = foot.dae (not left/right_wheel.dae).
+         - Foot collision = sphere(0.022) at (-0.002, 0, 0) in calf frame — matches
+           Menagerie class="foot" geom and real Unitree Go2 foot geometry.
+         - ros2_control block contains 12 joints only (no FL/FR/RL/RR_foot_joint).
+         - gazebo_ros2_control loads ros_control_go2_robot_a.yaml (12-joint controllers).
+       The <gazebo> plugin name ``gazebo_ros2_control/GazeboSystem`` is string-replaced
+       to ``mujoco_ros2_control/MujocoSystem`` by single_go2w_mujoco_cfpa2.launch.py
+       at spawn time. -->
+
+  <xacro:arg name="pointcloud_noise_enabled" default="false"/>
+  <xacro:arg name="pointcloud_noise_mean" default="0.0"/>
+  <xacro:arg name="pointcloud_noise_stddev" default="0.015"/>
+
+  <xacro:include filename="$(find go2_gazebo_sim)/urdf/go2w/livox_mid360.xacro"/>
+  <xacro:property name="go2_mesh_root" value="file://$(find go2_description)/dae"/>
+
+  <xacro:livox_mid360 parent="imu" name="livox_mid360"/>
+
+  <link name="base">
+    <inertial>
+      <origin xyz="0.021112 0 -0.005366" rpy="0 0 0"/>
+      <mass value="6.921"/>
+      <inertia ixx="0.02448" ixy="0.00012166" ixz="0.0014849"
+               iyy="0.098077" iyz="-3.12E-05" izz="0.107"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="${go2_mesh_root}/base.dae"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <box size="0.3762 0.0935 0.114"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <link name="base_link">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.001"/>
+      <inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/>
+    </inertial>
+  </link>
+  <joint name="base_link_to_base" type="fixed">
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <parent link="base_link"/>
+    <child link="base"/>
+  </joint>
+
+  <link name="Head_upper">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.001"/>
+      <inertia ixx="9.6e-06" ixy="0" ixz="0" iyy="9.6e-06" iyz="0" izz="9.6e-06"/>
+    </inertial>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.05" length="0.09"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="Head_upper_joint" type="fixed" dont_collapse="true">
+    <origin xyz="0.285 0 0.01" rpy="0 0 0"/>
+    <parent link="base"/>
+    <child link="Head_upper"/>
+  </joint>
+  <link name="Head_lower">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.001"/>
+      <inertia ixx="9.6e-06" ixy="0" ixz="0" iyy="9.6e-06" iyz="0" izz="9.6e-06"/>
+    </inertial>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <sphere radius="0.047"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="Head_lower_joint" type="fixed" dont_collapse="true">
+    <origin xyz="0.008 0 -0.07" rpy="0 0 0"/>
+    <parent link="Head_upper"/>
+    <child link="Head_lower"/>
+  </joint>
+
+  <!-- ===== Front-Left leg ===== -->
+  <link name="FL_hip">
+    <inertial>
+      <origin xyz="-0.0054 0.00194 -0.000105" rpy="0 0 0"/>
+      <mass value="0.678"/>
+      <inertia ixx="0.00048" ixy="-3.01E-06" ixz="1.11E-06"
+               iyy="0.000884" iyz="-1.42E-06" izz="0.000596"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="${go2_mesh_root}/hip.dae"/></geometry>
+    </visual>
+    <collision>
+      <origin rpy="1.5707963267948966 0 0" xyz="0 0.08 0"/>
+      <geometry><cylinder length="0.04" radius="0.046"/></geometry>
+    </collision>
+  </link>
+  <joint name="FL_hip_joint" type="revolute">
+    <origin xyz="0.1934 0.0465 0" rpy="0 0 0"/>
+    <parent link="base"/>
+    <child link="FL_hip"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-1.0472" upper="1.0472" effort="23.7" velocity="30.1"/>
+  </joint>
+  <link name="FL_thigh">
+    <inertial>
+      <origin xyz="-0.00374 -0.0223 -0.0327" rpy="0 0 0"/>
+      <mass value="1.152"/>
+      <inertia ixx="0.00584" ixy="8.72E-05" ixz="-0.000289"
+               iyy="0.0058" iyz="0.000808" izz="0.00103"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="${go2_mesh_root}/thigh.dae"/></geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 1.5707963267948966 0" xyz="0 0 -0.1065"/>
+      <geometry><box size="0.213 0.0245 0.034"/></geometry>
+    </collision>
+  </link>
+  <joint name="FL_thigh_joint" type="revolute">
+    <origin xyz="0 0.0955 0" rpy="0 0 0"/>
+    <parent link="FL_hip"/>
+    <child link="FL_thigh"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-1.5707963267948966" upper="3.4907" effort="23.7" velocity="30.1"/>
+  </joint>
+  <link name="FL_calf">
+    <inertial>
+      <origin xyz="0.00548 -0.000975 -0.115" rpy="0 0 0"/>
+      <mass value="0.154"/>
+      <inertia ixx="0.00108" ixy="3.4E-07" ixz="1.72E-05"
+               iyy="0.0011" iyz="8.28E-06" izz="3.29E-05"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="${go2_mesh_root}/calf.dae"/></geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 -0.21 0" xyz="0.008 0 -0.06"/>
+      <geometry><cylinder length="0.12" radius="0.012"/></geometry>
+    </collision>
+  </link>
+  <joint name="FL_calf_joint" type="revolute">
+    <origin xyz="0 0 -0.213" rpy="0 0 0"/>
+    <parent link="FL_thigh"/>
+    <child link="FL_calf"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.7227" upper="-0.83776" effort="45.43" velocity="15.70"/>
+  </joint>
+  <link name="FL_foot">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.04"/>
+      <inertia ixx="9.6e-06" ixy="0" ixz="0" iyy="9.6e-06" iyz="0" izz="9.6e-06"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="${go2_mesh_root}/foot.dae"/></geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="-0.002 0 0"/>
+      <geometry><sphere radius="0.022"/></geometry>
+    </collision>
+  </link>
+  <joint name="FL_foot_joint" type="fixed" dont_collapse="true">
+    <origin xyz="0 0 -0.213" rpy="0 0 0"/>
+    <parent link="FL_calf"/>
+    <child link="FL_foot"/>
+  </joint>
+
+  <!-- ===== Front-Right leg ===== -->
+  <link name="FR_hip">
+    <inertial>
+      <origin xyz="-0.0054 -0.00194 -0.000105" rpy="0 0 0"/>
+      <mass value="0.678"/>
+      <inertia ixx="0.00048" ixy="3.01E-06" ixz="1.11E-06"
+               iyy="0.000884" iyz="1.42E-06" izz="0.000596"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="3.1415 0 0"/>
+      <geometry><mesh filename="${go2_mesh_root}/hip.dae"/></geometry>
+    </visual>
+    <collision>
+      <origin rpy="1.5707963267948966 0 0" xyz="0 -0.08 0"/>
+      <geometry><cylinder length="0.04" radius="0.046"/></geometry>
+    </collision>
+  </link>
+  <joint name="FR_hip_joint" type="revolute">
+    <origin xyz="0.1934 -0.0465 0" rpy="0 0 0"/>
+    <parent link="base"/>
+    <child link="FR_hip"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-1.0472" upper="1.0472" effort="23.7" velocity="30.1"/>
+  </joint>
+  <link name="FR_thigh">
+    <inertial>
+      <origin xyz="-0.00374 0.0223 -0.0327" rpy="0 0 0"/>
+      <mass value="1.152"/>
+      <inertia ixx="0.00584" ixy="-8.72E-05" ixz="-0.000289"
+               iyy="0.0058" iyz="-0.000808" izz="0.00103"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="${go2_mesh_root}/thigh_mirror.dae"/></geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 1.5707963267948966 0" xyz="0 0 -0.1065"/>
+      <geometry><box size="0.213 0.0245 0.034"/></geometry>
+    </collision>
+  </link>
+  <joint name="FR_thigh_joint" type="revolute">
+    <origin xyz="0 -0.0955 0" rpy="0 0 0"/>
+    <parent link="FR_hip"/>
+    <child link="FR_thigh"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-1.5707963267948966" upper="3.4907" effort="23.7" velocity="30.1"/>
+  </joint>
+  <link name="FR_calf">
+    <inertial>
+      <origin xyz="0.00548 0.000975 -0.115" rpy="0 0 0"/>
+      <mass value="0.154"/>
+      <inertia ixx="0.00108" ixy="-3.4E-07" ixz="1.72E-05"
+               iyy="0.0011" iyz="-8.28E-06" izz="3.29E-05"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="${go2_mesh_root}/calf_mirror.dae"/></geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 -0.2 0" xyz="0.01 0 -0.06"/>
+      <geometry><cylinder length="0.12" radius="0.013"/></geometry>
+    </collision>
+  </link>
+  <joint name="FR_calf_joint" type="revolute">
+    <origin xyz="0 0 -0.213" rpy="0 0 0"/>
+    <parent link="FR_thigh"/>
+    <child link="FR_calf"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.7227" upper="-0.83776" effort="45.43" velocity="15.70"/>
+  </joint>
+  <link name="FR_foot">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.04"/>
+      <inertia ixx="9.6e-06" ixy="0" ixz="0" iyy="9.6e-06" iyz="0" izz="9.6e-06"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="${go2_mesh_root}/foot.dae"/></geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="-0.002 0 0"/>
+      <geometry><sphere radius="0.022"/></geometry>
+    </collision>
+  </link>
+  <joint name="FR_foot_joint" type="fixed" dont_collapse="true">
+    <origin xyz="0 0 -0.213" rpy="0 0 0"/>
+    <parent link="FR_calf"/>
+    <child link="FR_foot"/>
+  </joint>
+
+  <!-- ===== Rear-Left leg ===== -->
+  <link name="RL_hip">
+    <inertial>
+      <origin xyz="0.0054 0.00194 -0.000105" rpy="0 0 0"/>
+      <mass value="0.678"/>
+      <inertia ixx="0.00048" ixy="3.01E-06" ixz="-1.11E-06"
+               iyy="0.000884" iyz="-1.42E-06" izz="0.000596"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 3.1415 0"/>
+      <geometry><mesh filename="${go2_mesh_root}/hip.dae"/></geometry>
+    </visual>
+    <collision>
+      <origin rpy="1.5707963267948966 0 0" xyz="0 0.08 0"/>
+      <geometry><cylinder length="0.04" radius="0.046"/></geometry>
+    </collision>
+  </link>
+  <joint name="RL_hip_joint" type="revolute">
+    <origin xyz="-0.1934 0.0465 0" rpy="0 0 0"/>
+    <parent link="base"/>
+    <child link="RL_hip"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-1.0472" upper="1.0472" effort="23.7" velocity="30.1"/>
+  </joint>
+  <link name="RL_thigh">
+    <inertial>
+      <origin xyz="-0.00374 -0.0223 -0.0327" rpy="0 0 0"/>
+      <mass value="1.152"/>
+      <inertia ixx="0.00584" ixy="8.72E-05" ixz="-0.000289"
+               iyy="0.0058" iyz="0.000808" izz="0.00103"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="${go2_mesh_root}/thigh.dae"/></geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 1.5707963267948966 0" xyz="0 0 -0.1065"/>
+      <geometry><box size="0.213 0.0245 0.034"/></geometry>
+    </collision>
+  </link>
+  <joint name="RL_thigh_joint" type="revolute">
+    <origin xyz="0 0.0955 0" rpy="0 0 0"/>
+    <parent link="RL_hip"/>
+    <child link="RL_thigh"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-0.5236" upper="4.5379" effort="23.7" velocity="30.1"/>
+  </joint>
+  <link name="RL_calf">
+    <inertial>
+      <origin xyz="0.00548 -0.000975 -0.115" rpy="0 0 0"/>
+      <mass value="0.154"/>
+      <inertia ixx="0.00108" ixy="3.4E-07" ixz="1.72E-05"
+               iyy="0.0011" iyz="8.28E-06" izz="3.29E-05"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="${go2_mesh_root}/calf.dae"/></geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 -0.2 0" xyz="0.01 0 -0.06"/>
+      <geometry><cylinder length="0.12" radius="0.013"/></geometry>
+    </collision>
+  </link>
+  <joint name="RL_calf_joint" type="revolute">
+    <origin xyz="0 0 -0.213" rpy="0 0 0"/>
+    <parent link="RL_thigh"/>
+    <child link="RL_calf"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.7227" upper="-0.83776" effort="45.43" velocity="15.70"/>
+  </joint>
+  <link name="RL_foot">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.04"/>
+      <inertia ixx="9.6e-06" ixy="0" ixz="0" iyy="9.6e-06" iyz="0" izz="9.6e-06"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="${go2_mesh_root}/foot.dae"/></geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="-0.002 0 0"/>
+      <geometry><sphere radius="0.022"/></geometry>
+    </collision>
+  </link>
+  <joint name="RL_foot_joint" type="fixed" dont_collapse="true">
+    <origin xyz="0 0 -0.213" rpy="0 0 0"/>
+    <parent link="RL_calf"/>
+    <child link="RL_foot"/>
+  </joint>
+
+  <!-- ===== Rear-Right leg ===== -->
+  <link name="RR_hip">
+    <inertial>
+      <origin xyz="0.0054 -0.00194 -0.000105" rpy="0 0 0"/>
+      <mass value="0.678"/>
+      <inertia ixx="0.00048" ixy="-3.01E-06" ixz="-1.11E-06"
+               iyy="0.000884" iyz="1.42E-06" izz="0.000596"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="3.1415 3.1415 0"/>
+      <geometry><mesh filename="${go2_mesh_root}/hip.dae"/></geometry>
+    </visual>
+    <collision>
+      <origin rpy="1.5707963267948966 0 0" xyz="0 -0.08 0"/>
+      <geometry><cylinder length="0.04" radius="0.046"/></geometry>
+    </collision>
+  </link>
+  <joint name="RR_hip_joint" type="revolute">
+    <origin xyz="-0.1934 -0.0465 0" rpy="0 0 0"/>
+    <parent link="base"/>
+    <child link="RR_hip"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-1.0472" upper="1.0472" effort="23.7" velocity="30.1"/>
+  </joint>
+  <link name="RR_thigh">
+    <inertial>
+      <origin xyz="-0.00374 0.0223 -0.0327" rpy="0 0 0"/>
+      <mass value="1.152"/>
+      <inertia ixx="0.00584" ixy="-8.72E-05" ixz="-0.000289"
+               iyy="0.0058" iyz="-0.000808" izz="0.00103"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="${go2_mesh_root}/thigh_mirror.dae"/></geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 1.5707963267948966 0" xyz="0 0 -0.1065"/>
+      <geometry><box size="0.213 0.0245 0.034"/></geometry>
+    </collision>
+  </link>
+  <joint name="RR_thigh_joint" type="revolute">
+    <origin xyz="0 -0.0955 0" rpy="0 0 0"/>
+    <parent link="RR_hip"/>
+    <child link="RR_thigh"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-0.5236" upper="4.5379" effort="23.7" velocity="30.1"/>
+  </joint>
+  <link name="RR_calf">
+    <inertial>
+      <origin xyz="0.00548 0.000975 -0.115" rpy="0 0 0"/>
+      <mass value="0.154"/>
+      <inertia ixx="0.00108" ixy="-3.4E-07" ixz="1.72E-05"
+               iyy="0.0011" iyz="-8.28E-06" izz="3.29E-05"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="${go2_mesh_root}/calf_mirror.dae"/></geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 -0.2 0" xyz="0.01 0 -0.06"/>
+      <geometry><cylinder length="0.12" radius="0.013"/></geometry>
+    </collision>
+  </link>
+  <joint name="RR_calf_joint" type="revolute">
+    <origin xyz="0 0 -0.213" rpy="0 0 0"/>
+    <parent link="RR_thigh"/>
+    <child link="RR_calf"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.7227" upper="-0.83776" effort="45.43" velocity="15.70"/>
+  </joint>
+  <link name="RR_foot">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.04"/>
+      <inertia ixx="9.6e-06" ixy="0" ixz="0" iyy="9.6e-06" iyz="0" izz="9.6e-06"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="${go2_mesh_root}/foot.dae"/></geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="-0.002 0 0"/>
+      <geometry><sphere radius="0.022"/></geometry>
+    </collision>
+  </link>
+  <joint name="RR_foot_joint" type="fixed" dont_collapse="true">
+    <origin xyz="0 0 -0.213" rpy="0 0 0"/>
+    <parent link="RR_calf"/>
+    <child link="RR_foot"/>
+  </joint>
+
+  <!-- ===== IMU + radar ===== -->
+  <link name="imu">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.001"/>
+      <inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9"/>
+    </inertial>
+  </link>
+  <joint name="imu_joint" type="fixed">
+    <origin xyz="-0.02557 0 0.04232" rpy="0 0 0"/>
+    <parent link="base"/>
+    <child link="imu"/>
+  </joint>
+  <link name="radar">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.001"/>
+      <inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9"/>
+    </inertial>
+  </link>
+  <joint name="radar_joint" type="fixed">
+    <origin xyz="0.28945 0 -0.046825" rpy="0 2.8782 0"/>
+    <parent link="base"/>
+    <child link="radar"/>
+  </joint>
+
+  <!-- ===== Front camera for VLM pipeline ===== -->
+  <link name="front_camera_link">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.001"/>
+      <inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.02 0.03 0.02"/></geometry>
+      <material name="camera_black">
+        <color rgba="0.1 0.1 0.1 1"/>
+      </material>
+    </visual>
+  </link>
+  <joint name="front_camera_joint" type="fixed">
+    <origin xyz="0.015 0.0 -0.02" rpy="0 0.0873 0"/>
+    <parent link="Head_upper"/>
+    <child link="front_camera_link"/>
+  </joint>
+
+  <!-- ===== Gazebo IMU stream (unused in MuJoCo but kept for parity) ===== -->
+  <gazebo reference="imu">
+    <sensor name="imu_sensor" type="imu">
+      <always_on>true</always_on>
+      <update_rate>200.0</update_rate>
+      <imu>
+        <angular_velocity>
+          <x><noise type="gaussian"><mean>0.0</mean><stddev>0.0017</stddev></noise></x>
+          <y><noise type="gaussian"><mean>0.0</mean><stddev>0.0017</stddev></noise></y>
+          <z><noise type="gaussian"><mean>0.0</mean><stddev>0.0017</stddev></noise></z>
+        </angular_velocity>
+        <linear_acceleration>
+          <x><noise type="gaussian"><mean>0.0</mean><stddev>0.017</stddev></noise></x>
+          <y><noise type="gaussian"><mean>0.0</mean><stddev>0.017</stddev></noise></y>
+          <z><noise type="gaussian"><mean>0.0</mean><stddev>0.017</stddev></noise></z>
+        </linear_acceleration>
+      </imu>
+      <plugin name="gazebo_ros_imu" filename="libgazebo_ros_imu_sensor.so">
+        <ros><remapping>~/out:=/imu/data</remapping></ros>
+        <frame_name>imu</frame_name>
+      </plugin>
+    </sensor>
+  </gazebo>
+
+  <gazebo reference="livox_mid360">
+    <sensor name="lidar_3d" type="gpu_ray">
+      <pose>0 0 0 0 0 0</pose>
+      <update_rate>10.0</update_rate>
+      <ray>
+        <scan>
+          <horizontal>
+            <samples>720</samples>
+            <resolution>1</resolution>
+            <min_angle>-3.14159</min_angle>
+            <max_angle>3.14159</max_angle>
+          </horizontal>
+          <vertical>
+            <samples>16</samples>
+            <resolution>1</resolution>
+            <min_angle>-0.261799</min_angle>
+            <max_angle>0.7330</max_angle>
+          </vertical>
+        </scan>
+        <range>
+          <min>0.05</min>
+          <max>20.0</max>
+          <resolution>0.01</resolution>
+        </range>
+        <xacro:if value="$(arg pointcloud_noise_enabled)">
+          <noise>
+            <type>gaussian</type>
+            <mean>$(arg pointcloud_noise_mean)</mean>
+            <stddev>$(arg pointcloud_noise_stddev)</stddev>
+          </noise>
+        </xacro:if>
+      </ray>
+      <plugin name="gazebo_ros_3d_lidar" filename="libgazebo_ros_ray_sensor.so">
+        <ros><remapping>~/out:=/registered_scan</remapping></ros>
+        <output_type>sensor_msgs/PointCloud2</output_type>
+        <frameName>livox_mid360</frameName>
+      </plugin>
+    </sensor>
+  </gazebo>
+
+  <gazebo reference="front_camera_link">
+    <sensor name="front_camera" type="camera">
+      <always_on>true</always_on>
+      <update_rate>10.0</update_rate>
+      <camera>
+        <horizontal_fov>2.0944</horizontal_fov>
+        <image>
+          <width>1280</width>
+          <height>720</height>
+          <format>R8G8B8</format>
+        </image>
+        <clip><near>0.05</near><far>30.0</far></clip>
+      </camera>
+      <plugin name="gazebo_ros_front_camera" filename="libgazebo_ros_camera.so">
+        <ros>
+          <remapping>~/image_raw:=front_camera/image_raw</remapping>
+          <remapping>~/camera_info:=front_camera/camera_info</remapping>
+        </ros>
+        <frame_name>front_camera_link</frame_name>
+      </plugin>
+    </sensor>
+  </gazebo>
+
+  <gazebo reference="base">
+    <sensor name="base_contact" type="contact">
+      <always_on>true</always_on>
+      <update_rate>30.0</update_rate>
+      <contact>
+        <collision>base_link_fixed_joint_lump__base_collision</collision>
+      </contact>
+      <plugin name="gazebo_ros_bumper" filename="libgazebo_ros_bumper.so">
+        <ros><remapping>bumper_states:=contact_states</remapping></ros>
+        <frame_name>base_link</frame_name>
+      </plugin>
+    </sensor>
+  </gazebo>
+
+  <gazebo>
+    <plugin name="p3d_base_controller" filename="libgazebo_ros_p3d.so">
+      <ros><remapping>odom:=odom/ground_truth</remapping></ros>
+      <body_name>base_link</body_name>
+      <frame_name>world</frame_name>
+      <update_rate>50.0</update_rate>
+      <xyz_offset>0 0 0</xyz_offset>
+      <rpy_offset>0 0 0</rpy_offset>
+      <gaussian_noise>0.01</gaussian_noise>
+    </plugin>
+  </gazebo>
+
+  <!-- ros2_control plugin loader. The plugin name and YAML path get string-
+       replaced by single_go2w_mujoco_cfpa2.launch.py when running under MuJoCo:
+         gazebo_ros2_control/GazeboSystem → mujoco_ros2_control/MujocoSystem
+       The YAML is swapped to ros_control_go2_robot_a.yaml via
+       build_namespaced_robot_description when has_wheels=false. -->
+  <gazebo>
+    <plugin filename="libgazebo_ros2_control.so" name="gazebo_ros2_control">
+      <parameters>$(find go2_gazebo_sim)/config/ros_control/ros_control_go2_robot_a.yaml</parameters>
+    </plugin>
+  </gazebo>
+
+  <ros2_control name="go2_system" type="system">
+    <hardware>
+      <plugin>gazebo_ros2_control/GazeboSystem</plugin>
+    </hardware>
+    <joint name="FL_hip_joint">
+      <command_interface name="effort"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="FL_thigh_joint">
+      <command_interface name="effort"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="FL_calf_joint">
+      <command_interface name="effort"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="FR_hip_joint">
+      <command_interface name="effort"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="FR_thigh_joint">
+      <command_interface name="effort"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="FR_calf_joint">
+      <command_interface name="effort"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="RL_hip_joint">
+      <command_interface name="effort"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="RL_thigh_joint">
+      <command_interface name="effort"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="RL_calf_joint">
+      <command_interface name="effort"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="RR_hip_joint">
+      <command_interface name="effort"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="RR_thigh_joint">
+      <command_interface name="effort"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="RR_calf_joint">
+      <command_interface name="effort"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+  </ros2_control>
+</robot>

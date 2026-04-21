@@ -1,11 +1,28 @@
 """Assets/spawn-domain launch builders."""
 
+import yaml
 from xml.dom import minidom
 
 from launch.actions import ExecuteProcess, RegisterEventHandler, TimerAction
 from launch.event_handlers import OnProcessExit
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
+
+
+def _load_ekf_params(yaml_path: str) -> dict:
+    """Load robot_localization EKF params from YAML, stripping the node-name key.
+
+    CHAMP's EKF YAMLs are keyed by node name (e.g. ``footprint_to_odom_ekf:
+    ros__parameters: ...``).  When the node runs in a namespace the key no
+    longer matches the fully-qualified name, so ``--params-file`` silently
+    drops all params.  Loading as a dict and passing directly avoids this.
+    """
+    with open(yaml_path) as f:
+        data = yaml.safe_load(f)
+    for key in data:
+        if isinstance(data[key], dict) and "ros__parameters" in data[key]:
+            return data[key]["ros__parameters"]
+    return data
 
 
 def _strip_comments(node):
@@ -174,6 +191,9 @@ def build_dual_robot_stack(
     wheel_spawner_delay_sec=None,
     rsp_publish_frequency=200.0,
     return_handles=False,
+    use_mujoco=False,
+    controller_manager_name=None,
+    skip_champ=False,
 ):
     tf_remaps = [("/tf", f"/{ns}/tf"), ("/tf_static", f"/{ns}/tf_static")]
 
@@ -202,12 +222,29 @@ def build_dual_robot_stack(
         output="screen",
     )
 
+    # Controller manager path — default: /{ns}/controller_manager.
+    # For dual-robot MuJoCo (shared CM), pass e.g. "/mujoco_sim/controller_manager".
+    cm_path = controller_manager_name or f"/{ns}/controller_manager"
+
     joint_state_controller_name = f"{ns}_joint_states_controller"
     effort_controller_name = f"{ns}_joint_group_effort_controller"
-    effort_topic = f"/{ns}/{effort_controller_name}/joint_trajectory"
+    # When using a shared controller manager (e.g. /mujoco_sim/controller_manager),
+    # controller topics live under the CM namespace, not the robot namespace.
+    cm_ns = cm_path.rsplit("/controller_manager", 1)[0]  # e.g. "/mujoco_sim" or "/{ns}"
+    effort_topic = f"{cm_ns}/{effort_controller_name}/joint_trajectory"
     wheel_controller_name = (wheel_controller_name or "").strip()
     if wheel_spawner_delay_sec is None:
         wheel_spawner_delay_sec = effort_spawner_delay_sec + 0.2
+
+    # Shared controller_manager → joint_state_broadcaster publishes under
+    # /{cm_ns}/joint_states, not /{ns}/joint_states. Remap CHAMP's input
+    # so it sees the broadcaster output.
+    champ_extra_remaps = []
+    if cm_ns and cm_ns != f"/{ns}":
+        champ_extra_remaps += [
+            ("joint_states", f"{cm_ns}/joint_states"),
+            (f"/{ns}/joint_states", f"{cm_ns}/joint_states"),
+        ]
 
     quadruped_controller_node = Node(
         package="champ_base",
@@ -226,6 +263,7 @@ def build_dual_robot_stack(
             gait_config,
         ],
         remappings=tf_remaps
+        + champ_extra_remaps
         + [
             ("cmd_vel/smooth", cmd_vel_input_topic),
             ("/cmd_vel/smooth", cmd_vel_input_topic),
@@ -251,15 +289,20 @@ def build_dual_robot_stack(
         output="screen",
     )
 
+    # CHAMP's state_estimation_node namespaces frame IDs (e.g. "robot/odom",
+    # "robot/base_footprint") which don't match the EKF's expected bare frames.
+    # In MuJoCo mode, mujoco_odom_bridge provides ground-truth odom→base_link
+    # TF instead, so EKF TF is disabled to avoid conflicts.
     base_to_footprint_ekf = Node(
         package="robot_localization",
         executable="ekf_node",
         namespace=ns,
         name="base_to_footprint_ekf",
         parameters=[
+            _load_ekf_params(ekf_base_to_footprint),
             {"base_link_frame": "base_link"},
             {"use_sim_time": use_sim_time},
-            ekf_base_to_footprint,
+            {"publish_tf": not use_mujoco},
         ],
         remappings=tf_remaps + [("odometry/filtered", "odom/local")],
         output="screen",
@@ -271,9 +314,10 @@ def build_dual_robot_stack(
         namespace=ns,
         name="footprint_to_odom_ekf",
         parameters=[
+            _load_ekf_params(ekf_footprint_to_odom),
             {"base_link_frame": "base_link"},
             {"use_sim_time": use_sim_time},
-            ekf_footprint_to_odom,
+            {"publish_tf": not use_mujoco},
         ],
         remappings=tf_remaps + [("odometry/filtered", "odom")],
         output="screen",
@@ -324,56 +368,49 @@ def build_dual_robot_stack(
         output="screen",
     )
 
-    joint_state_spawner_args = [
-        joint_state_controller_name,
-        "--controller-manager",
-        f"/{ns}/controller_manager",
-        "--controller-manager-timeout",
-        "60",
-    ]
-    effort_spawner_args = [
-        effort_controller_name,
-        "--controller-manager",
-        f"/{ns}/controller_manager",
-        "--controller-manager-timeout",
-        "60",
-    ]
-    if not activate_controllers_on_spawn:
-        joint_state_spawner_args.append("--inactive")
-        effort_spawner_args.append("--inactive")
+    # Use our race-tolerant spawner instead of `ros2 run controller_manager
+    # spawner`. Rationale: the upstream spawner has a hard-coded 10 s
+    # per-service-call timeout. Under MuJoCo startup the controller_manager
+    # routinely takes longer to return from load_controller; the spawner
+    # retries, collides with its own now-completed first attempt ("A
+    # controller named 'X' was already loaded"), and dies — the controller
+    # stays UNCONFIGURED, stand_up_slowly blocks forever. Our spawner takes
+    # a configurable (default 60 s) per-call timeout and treats
+    # "already-loaded" as benign. See docs/claude/go2_integration.md:385.
+    import os
+    _ROBUST_SPAWNER = os.path.expanduser(
+        "~/Collab_QRC/scripts/runtime/robust_controller_spawner.py"
+    )
 
-    load_joint_state_controller = Node(
-        package="controller_manager",
-        executable="spawner",
-        parameters=[{"use_sim_time": use_sim_time}],
-        arguments=joint_state_spawner_args,
+    def _robust_spawner_cmd(controller_name: str) -> list:
+        cmd = [
+            "python3", "-u", _ROBUST_SPAWNER,
+            controller_name,
+            "--controller-manager", cm_path,
+            "--controller-manager-timeout", "60",
+            "--timeout", "60",
+        ]
+        if not activate_controllers_on_spawn:
+            cmd.append("--inactive")
+        return cmd
+
+    load_joint_state_controller = ExecuteProcess(
+        cmd=_robust_spawner_cmd(joint_state_controller_name),
+        name=f"spawn_{joint_state_controller_name}",
         output="screen",
     )
 
-    load_joint_effort_controller = Node(
-        package="controller_manager",
-        executable="spawner",
-        parameters=[{"use_sim_time": use_sim_time}],
-        arguments=effort_spawner_args,
+    load_joint_effort_controller = ExecuteProcess(
+        cmd=_robust_spawner_cmd(effort_controller_name),
+        name=f"spawn_{effort_controller_name}",
         output="screen",
     )
 
     load_wheel_velocity_controller = None
     if wheel_controller_name:
-        wheel_spawner_args = [
-            wheel_controller_name,
-            "--controller-manager",
-            f"/{ns}/controller_manager",
-            "--controller-manager-timeout",
-            "60",
-        ]
-        if not activate_controllers_on_spawn:
-            wheel_spawner_args.append("--inactive")
-        load_wheel_velocity_controller = Node(
-            package="controller_manager",
-            executable="spawner",
-            parameters=[{"use_sim_time": use_sim_time}],
-            arguments=wheel_spawner_args,
+        load_wheel_velocity_controller = ExecuteProcess(
+            cmd=_robust_spawner_cmd(wheel_controller_name),
+            name=f"spawn_{wheel_controller_name}",
             output="screen",
         )
 
@@ -402,12 +439,20 @@ def build_dual_robot_stack(
         output="screen",
     )
 
+    # With a SHARED controller_manager (dual-robot MuJoCo, cm_path=/mujoco_sim/
+    # controller_manager), the joint_state_broadcaster publishes to
+    # /<cm_ns>/joint_states rather than /{ns}/joint_states — so polling the
+    # per-robot topic would never exit and stand-up would never fire.
+    # Watch the shared-CM topic in that case.
+    joint_states_wait_topic = f"/{ns}/joint_states"
+    if cm_ns and cm_ns != f"/{ns}":
+        joint_states_wait_topic = f"{cm_ns}/joint_states"
     wait_joint_states_ready = ExecuteProcess(
         cmd=[
             "bash",
             "-lc",
             (
-                f"until ros2 topic echo /{ns}/joint_states --once >/dev/null 2>&1; do "
+                f"until ros2 topic echo {joint_states_wait_topic} --once >/dev/null 2>&1; do "
                 "sleep 0.25; "
                 "done"
             ),
@@ -415,17 +460,23 @@ def build_dual_robot_stack(
         output="screen",
     )
 
-    stack_actions = [
-        robot_state_publisher_node,
-        quadruped_controller_node,
-        state_estimator_node,
-        base_to_footprint_ekf,
-        footprint_to_odom_ekf,
-        spawn_entity_node,
-        TimerAction(period=0.6, actions=[initial_pose_guard_node]),
+    # skip_champ: used by the RL-policy path, which owns the locomotion loop
+    # itself. We drop CHAMP's quadruped_controller (velocity → joint trajectory
+    # integrator) and its two EKFs / state estimator (CHAMP-internal pose). RSP,
+    # controller spawners, and the one-shot stand_up trajectory stay — the RL
+    # policy expects the robot to start near the default standing pose, and
+    # robot_state_publisher is still needed for TF.
+    stack_actions = [robot_state_publisher_node]
+    if not skip_champ:
+        stack_actions += [
+            quadruped_controller_node,
+            state_estimator_node,
+            base_to_footprint_ekf,
+            footprint_to_odom_ekf,
+        ]
+    stack_actions += [
         TimerAction(period=joint_state_spawner_delay_sec, actions=[load_joint_state_controller]),
         TimerAction(period=effort_spawner_delay_sec, actions=[load_joint_effort_controller]),
-        contact_sensor,
         TimerAction(period=standup_delay_sec, actions=[wait_joint_states_ready]),
         RegisterEventHandler(
             OnProcessExit(
@@ -434,9 +485,13 @@ def build_dual_robot_stack(
             )
         ),
     ]
+    if not use_mujoco:
+        # Gazebo-only: spawn entity into gzserver, hold pose, contact sensor plugin
+        stack_actions.insert(5, spawn_entity_node)
+        stack_actions.insert(6, TimerAction(period=0.6, actions=[initial_pose_guard_node]))
+        stack_actions.append(contact_sensor)
     if load_wheel_velocity_controller is not None:
-        stack_actions.insert(
-            stack_actions.index(contact_sensor),
+        stack_actions.append(
             TimerAction(period=wheel_spawner_delay_sec, actions=[load_wheel_velocity_controller]),
         )
     if return_handles:

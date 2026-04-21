@@ -6,13 +6,14 @@ from __future__ import annotations
 import struct
 from collections import deque
 
+import numpy as np
 import rclpy
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
-from sensor_msgs.msg import PointCloud2
+from sensor_msgs.msg import PointCloud2, PointField
 import tf2_ros
 from tf2_ros import (
     Buffer,
@@ -123,7 +124,7 @@ class PointCloudFrameBridge(Node):
             return False
 
         if frame_id == self.target_frame:
-            self.pub.publish(msg)
+            self.pub.publish(self._ensure_intensity(msg))
             return True
 
         try:
@@ -151,8 +152,58 @@ class PointCloudFrameBridge(Node):
                 self._warn_throttle(f"Fallback transform also failed: {e2}")
                 return False
 
-        self.pub.publish(transformed)
+        self.pub.publish(self._ensure_intensity(transformed))
         return True
+
+    @staticmethod
+    def _ensure_intensity(msg: PointCloud2) -> PointCloud2:
+        """Inject a zero-filled intensity field if the cloud lacks one.
+
+        CMU's FAR / terrain_analysis stack reads clouds as PointXYZI.
+        MuJoCo's LiDAR plugin emits PointXYZ, producing spammy PCL
+        "Failed to find match for field 'intensity'" warnings.
+        """
+        if any(f.name == "intensity" for f in msg.fields):
+            return msg
+        name_map = {f.name: f for f in msg.fields}
+        if not {"x", "y", "z"}.issubset(name_map):
+            return msg
+
+        ps = msg.point_step
+        npts = msg.width * msg.height
+        if npts == 0 or ps == 0 or len(msg.data) < npts * ps:
+            return msg
+
+        buf = np.frombuffer(msg.data, dtype=np.uint8).reshape(npts, ps)
+        ox = name_map["x"].offset
+        oy = name_map["y"].offset
+        oz = name_map["z"].offset
+        xs = np.frombuffer(buf[:, ox:ox + 4].tobytes(), dtype=np.float32)
+        ys = np.frombuffer(buf[:, oy:oy + 4].tobytes(), dtype=np.float32)
+        zs = np.frombuffer(buf[:, oz:oz + 4].tobytes(), dtype=np.float32)
+
+        out = np.zeros((npts, 4), dtype=np.float32)
+        out[:, 0] = xs
+        out[:, 1] = ys
+        out[:, 2] = zs
+        # intensity column left at 0.0
+
+        new_msg = PointCloud2()
+        new_msg.header = msg.header
+        new_msg.height = 1
+        new_msg.width = npts
+        new_msg.is_bigendian = msg.is_bigendian
+        new_msg.point_step = 16
+        new_msg.row_step = 16 * npts
+        new_msg.is_dense = msg.is_dense
+        new_msg.fields = [
+            PointField(name="x", offset=0, datatype=PointField.FLOAT32, count=1),
+            PointField(name="y", offset=4, datatype=PointField.FLOAT32, count=1),
+            PointField(name="z", offset=8, datatype=PointField.FLOAT32, count=1),
+            PointField(name="intensity", offset=12, datatype=PointField.FLOAT32, count=1),
+        ]
+        new_msg.data = out.tobytes()
+        return new_msg
 
     @staticmethod
     def _transform_preserve_fields(msg: PointCloud2, transform) -> PointCloud2:

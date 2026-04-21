@@ -1,0 +1,39 @@
+# MuJoCo-side ros2_control controller manifest for Go2 + RL policy.
+#
+# DFKI's mujoco_ros2_control plugin loads this file directly via
+# --params-file. The `type` entries determine which controller class is
+# instantiated in the CM. For RL mode we need a ForwardCommandController
+# on the effort interface so the RL node can publish raw torques without
+# any intermediate PID layer (the RL node does the PD itself with the
+# exact training-time gains kp=20/kd=0.5).
+#
+# The twin file go2w_mujoco_controllers.yaml keeps the
+# joint_trajectory_controller + wheel_velocity_controller combo for
+# CHAMP / Go2W. Use whichever matches the active mode.
+
+/**:
+  ros__parameters:
+    use_sim_time: true
+    update_rate: 200
+    robot_joint_states_controller:
+      type: joint_state_broadcaster/JointStateBroadcaster
+    robot_joint_group_effort_controller:
+      type: forward_command_controller/ForwardCommandController
+
+/**/robot_joint_group_effort_controller:
+  ros__parameters:
+    use_sim_time: true
+    interface_name: effort
+    joints:
+      - FL_hip_joint
+      - FL_thigh_joint
+      - FL_calf_joint
+      - FR_hip_joint
+      - FR_thigh_joint
+      - FR_calf_joint
+      - RL_hip_joint
+      - RL_thigh_joint
+      - RL_calf_joint
+      - RR_hip_joint
+      - RR_thigh_joint
+      - RR_calf_joint

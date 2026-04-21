@@ -1,0 +1,570 @@
+<mujoco model="lrc_maze_flat_go2w">
+  <compiler angle="radian" meshdir="assets" autolimits="true" />
+  <option timestep="0.002" gravity="0 0 -9.81" integrator="implicitfast" cone="elliptic" impratio="100" />
+  <statistic center="6 0 0.5" extent="8" />
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0" />
+    <rgba haze="0.15 0.25 0.35 1" />
+    <global azimuth="-130" elevation="-20" offwidth="1920" offheight="1080" />
+    <quality shadowsize="4096" offsamples="8" />
+    <map shadowscale="0.5" shadowclip="1" />
+  </visual>
+  <default>
+    <default class="go2">
+      <geom friction="0.4" margin="0.001" condim="1" />
+      <joint axis="0 1 0" damping="0.1" armature="0.01" frictionloss="0.2" />
+      <motor ctrlrange="-23.7 23.7" />
+      <default class="abduction">
+        <joint axis="1 0 0" range="-1.0472 1.0472" />
+      </default>
+      <default class="hip">
+        <default class="front_hip">
+          <joint range="-1.5708 3.4907" />
+        </default>
+        <default class="back_hip">
+          <joint range="-0.5236 4.5379" />
+        </default>
+      </default>
+      <default class="knee">
+        <joint range="-2.7227 -0.83776" />
+        <motor ctrlrange="-45.43 45.43" />
+      </default>
+      <default class="visual">
+        <geom type="mesh" contype="0" conaffinity="0" group="2" />
+      </default>
+      <default class="collision">
+        <geom group="3" />
+        <default class="foot">
+          <geom size="0.022" pos="-0.002 0 -0.2264" priority="1" condim="6" friction="0.8 0.02 0.01" />
+        </default>
+      </default>
+    </default>
+    <default class="world">
+      <geom contype="1" conaffinity="1" />
+    </default>
+  </default>
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072" />
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300" />
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2" />
+    <material name="metal" rgba=".9 .95 .95 1" />
+    <material name="black" rgba="0 0 0 1" />
+    <material name="white" rgba="1 1 1 1" />
+    <material name="gray" rgba="0.671705 0.692426 0.774270 1" />
+    <mesh file="base_0.obj" />
+    <mesh file="base_1.obj" />
+    <mesh file="base_2.obj" />
+    <mesh file="base_3.obj" />
+    <mesh file="base_4.obj" />
+    <mesh file="hip_0.obj" />
+    <mesh file="hip_1.obj" />
+    <mesh file="thigh_0.obj" />
+    <mesh file="thigh_1.obj" />
+    <mesh file="thigh_mirror_0.obj" />
+    <mesh file="thigh_mirror_1.obj" />
+    <mesh file="calf_mirror_0.obj" />
+    <mesh file="calf_mirror_1.obj" />
+    <mesh file="calf.stl" />
+    <mesh file="calf_mirror.stl" />
+    <mesh file="foot.obj" />
+    <mesh file="wheel.stl" />
+    <material name="wall_mat" rgba="0.7 0.7 0.75 1" />
+    <material name="divider_mat" rgba="0.8 0.7 0.6 1" />
+    <material name="green_mat" rgba="0.0 1.0 0.0 1" specular="0.3" />
+    <material name="obstacle_mat" rgba="0.6 0.5 0.4 1" />
+    <texture name="grid" type="2d" builtin="checker" rgb1="0.8 0.8 0.8" rgb2="0.7 0.7 0.7" width="512" height="512" />
+    <material name="ground_mat" texture="grid" texrepeat="10 10" />
+  </asset>
+  <worldbody>
+    <light pos="0 0 10" dir="-0.5 0.1 -0.9" diffuse="0.8 0.8 0.8" />
+    <geom name="ground" type="plane" size="25 25 0.1" material="ground_mat" />
+    <geom name="LA_S_a" type="box" pos="-1.1500 -10.6000 0.6000" size="0.6500 0.0750 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="LA_S_b" type="box" pos="1.1500 -10.6000 0.6000" size="0.6500 0.0750 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="LA_N_a" type="box" pos="-1.1500 -6.7000 0.6000" size="0.6500 0.0750 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="LA_N_b" type="box" pos="1.1500 -6.7000 0.6000" size="0.6500 0.0750 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="LA_W" type="box" pos="-1.8000 -8.6500 0.6000" size="0.0750 1.9500 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="LA_E" type="box" pos="1.8000 -8.6500 0.6000" size="0.0750 1.9500 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="LA_d0" type="box" pos="-0.6000 -9.3250 0.6000" size="1.2000 0.0750 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="LA_d1" type="box" pos="0.6000 -7.9750 0.6000" size="1.2000 0.0750 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="ramp_0_0_0" type="box" pos="-1.5000 -10.3000 0.0800" size="0.3000 0.3000 0.0800" rgba="0.55 0.45 0.35 1.0" euler="0.2618 0 0" />
+    <geom name="ramp_0_0_1" type="box" pos="-0.9000 -10.3000 0.0800" size="0.3000 0.3000 0.0800" rgba="0.55 0.45 0.35 1.0" euler="0 0.2618 0" />
+    <geom name="ramp_0_0_2" type="box" pos="-0.3000 -10.3000 0.0800" size="0.3000 0.3000 0.0800" rgba="0.55 0.45 0.35 1.0" euler="-0.2618 0 0" />
+    <geom name="ramp_0_0_3" type="box" pos="0.3000 -10.3000 0.0800" size="0.3000 0.3000 0.0800" rgba="0.55 0.45 0.35 1.0" euler="0 -0.2618 0" />
+    <geom name="ramp_0_0_4" type="box" pos="0.9000 -10.3000 0.0800" size="0.3000 0.3000 0.0800" rgba="0.55 0.45 0.35 1.0" euler="0.2618 0 0" />
+    <geom name="ramp_0_0_5" type="box" pos="1.5000 -10.3000 0.0800" size="0.3000 0.3000 0.0800" rgba="0.55 0.45 0.35 1.0" euler="0 0.2618 0" />
+    <geom name="ramp_0_1_0" type="box" pos="-1.5000 -9.7000 0.0800" size="0.3000 0.3000 0.0800" rgba="0.55 0.45 0.35 1.0" euler="0 0.2618 0" />
+    <geom name="ramp_0_1_1" type="box" pos="-0.9000 -9.7000 0.0800" size="0.3000 0.3000 0.0800" rgba="0.55 0.45 0.35 1.0" euler="-0.2618 0 0" />
+    <geom name="ramp_0_1_2" type="box" pos="-0.3000 -9.7000 0.0800" size="0.3000 0.3000 0.0800" rgba="0.55 0.45 0.35 1.0" euler="0 -0.2618 0" />
+    <geom name="ramp_0_1_3" type="box" pos="0.3000 -9.7000 0.0800" size="0.3000 0.3000 0.0800" rgba="0.55 0.45 0.35 1.0" euler="0.2618 0 0" />
+    <geom name="ramp_0_1_4" type="box" pos="0.9000 -9.7000 0.0800" size="0.3000 0.3000 0.0800" rgba="0.55 0.45 0.35 1.0" euler="0 0.2618 0" />
+    <geom name="ramp_0_1_5" type="box" pos="1.5000 -9.7000 0.0800" size="0.3000 0.3000 0.0800" rgba="0.55 0.45 0.35 1.0" euler="-0.2618 0 0" />
+    <geom name="ramp_1_0_0" type="box" pos="-1.5000 -8.9500 0.0800" size="0.3000 0.3000 0.0800" rgba="0.55 0.45 0.35 1.0" euler="0 0.2618 0" />
+    <geom name="ramp_1_0_1" type="box" pos="-0.9000 -8.9500 0.0800" size="0.3000 0.3000 0.0800" rgba="0.55 0.45 0.35 1.0" euler="-0.2618 0 0" />
+    <geom name="ramp_1_0_2" type="box" pos="-0.3000 -8.9500 0.0800" size="0.3000 0.3000 0.0800" rgba="0.55 0.45 0.35 1.0" euler="0 -0.2618 0" />
+    <geom name="ramp_1_0_3" type="box" pos="0.3000 -8.9500 0.0800" size="0.3000 0.3000 0.0800" rgba="0.55 0.45 0.35 1.0" euler="0.2618 0 0" />
+    <geom name="ramp_1_0_4" type="box" pos="0.9000 -8.9500 0.0800" size="0.3000 0.3000 0.0800" rgba="0.55 0.45 0.35 1.0" euler="0 0.2618 0" />
+    <geom name="ramp_1_0_5" type="box" pos="1.5000 -8.9500 0.0800" size="0.3000 0.3000 0.0800" rgba="0.55 0.45 0.35 1.0" euler="-0.2618 0 0" />
+    <geom name="ramp_1_1_0" type="box" pos="-1.5000 -8.3500 0.0800" size="0.3000 0.3000 0.0800" rgba="0.55 0.45 0.35 1.0" euler="-0.2618 0 0" />
+    <geom name="ramp_1_1_1" type="box" pos="-0.9000 -8.3500 0.0800" size="0.3000 0.3000 0.0800" rgba="0.55 0.45 0.35 1.0" euler="0 -0.2618 0" />
+    <geom name="ramp_1_1_2" type="box" pos="-0.3000 -8.3500 0.0800" size="0.3000 0.3000 0.0800" rgba="0.55 0.45 0.35 1.0" euler="0.2618 0 0" />
+    <geom name="ramp_1_1_3" type="box" pos="0.3000 -8.3500 0.0800" size="0.3000 0.3000 0.0800" rgba="0.55 0.45 0.35 1.0" euler="0 0.2618 0" />
+    <geom name="ramp_1_1_4" type="box" pos="0.9000 -8.3500 0.0800" size="0.3000 0.3000 0.0800" rgba="0.55 0.45 0.35 1.0" euler="-0.2618 0 0" />
+    <geom name="ramp_1_1_5" type="box" pos="1.5000 -8.3500 0.0800" size="0.3000 0.3000 0.0800" rgba="0.55 0.45 0.35 1.0" euler="0 -0.2618 0" />
+    <geom name="ramp_2_0_0" type="box" pos="-1.5000 -7.6000 0.0800" size="0.3000 0.3000 0.0800" rgba="0.55 0.45 0.35 1.0" euler="-0.2618 0 0" />
+    <geom name="ramp_2_0_1" type="box" pos="-0.9000 -7.6000 0.0800" size="0.3000 0.3000 0.0800" rgba="0.55 0.45 0.35 1.0" euler="0 -0.2618 0" />
+    <geom name="ramp_2_0_2" type="box" pos="-0.3000 -7.6000 0.0800" size="0.3000 0.3000 0.0800" rgba="0.55 0.45 0.35 1.0" euler="0.2618 0 0" />
+    <geom name="ramp_2_0_3" type="box" pos="0.3000 -7.6000 0.0800" size="0.3000 0.3000 0.0800" rgba="0.55 0.45 0.35 1.0" euler="0 0.2618 0" />
+    <geom name="ramp_2_0_4" type="box" pos="0.9000 -7.6000 0.0800" size="0.3000 0.3000 0.0800" rgba="0.55 0.45 0.35 1.0" euler="-0.2618 0 0" />
+    <geom name="ramp_2_0_5" type="box" pos="1.5000 -7.6000 0.0800" size="0.3000 0.3000 0.0800" rgba="0.55 0.45 0.35 1.0" euler="0 -0.2618 0" />
+    <geom name="ramp_2_1_0" type="box" pos="-1.5000 -7.0000 0.0800" size="0.3000 0.3000 0.0800" rgba="0.55 0.45 0.35 1.0" euler="0 -0.2618 0" />
+    <geom name="ramp_2_1_1" type="box" pos="-0.9000 -7.0000 0.0800" size="0.3000 0.3000 0.0800" rgba="0.55 0.45 0.35 1.0" euler="0.2618 0 0" />
+    <geom name="ramp_2_1_2" type="box" pos="-0.3000 -7.0000 0.0800" size="0.3000 0.3000 0.0800" rgba="0.55 0.45 0.35 1.0" euler="0 0.2618 0" />
+    <geom name="ramp_2_1_3" type="box" pos="0.3000 -7.0000 0.0800" size="0.3000 0.3000 0.0800" rgba="0.55 0.45 0.35 1.0" euler="-0.2618 0 0" />
+    <geom name="ramp_2_1_4" type="box" pos="0.9000 -7.0000 0.0800" size="0.3000 0.3000 0.0800" rgba="0.55 0.45 0.35 1.0" euler="0 -0.2618 0" />
+    <geom name="ramp_2_1_5" type="box" pos="1.5000 -7.0000 0.0800" size="0.3000 0.3000 0.0800" rgba="0.55 0.45 0.35 1.0" euler="0.2618 0 0" />
+    <geom name="qr_A" type="box" pos="-1.6500 -8.6500 0.6000" size="0.0100 0.0750 0.0750" rgba="0.0 0.8 0.0 1.0" />
+    <geom name="haz_A" type="box" pos="0.5000 -10.0000 0.0600" size="0.0600 0.0600 0.0600" rgba="1.0 0.5 0.0 1.0" />
+    <geom name="LB_S_a" type="box" pos="-1.1500 -5.7000 0.6000" size="0.6500 0.0750 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="LB_S_b" type="box" pos="1.1500 -5.7000 0.6000" size="0.6500 0.0750 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="LB_N_b" type="box" pos="0.4750 -1.8000 0.6000" size="1.3250 0.0750 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="LB_W" type="box" pos="-1.8000 -3.7500 0.6000" size="0.0750 1.9500 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="LB_E" type="box" pos="1.8000 -3.7500 0.6000" size="0.0750 1.9500 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="LB_d0" type="box" pos="0.6000 -4.4250 0.6000" size="1.2000 0.0750 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="LB_d1" type="box" pos="-0.6000 -3.0750 0.6000" size="1.2000 0.0750 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="plt_0_0_0" type="box" pos="-0.9600 -5.1000 0.1000" size="0.0500 0.5500 0.1000" rgba="0.65 0.5 0.3 1.0" />
+    <geom name="plt_0_0_1" type="box" pos="-0.7800 -5.1000 0.1000" size="0.0500 0.5500 0.1000" rgba="0.65 0.5 0.3 1.0" />
+    <geom name="plt_0_0_2" type="box" pos="-0.6000 -5.1000 0.1000" size="0.0500 0.5500 0.1000" rgba="0.65 0.5 0.3 1.0" />
+    <geom name="plt_0_0_3" type="box" pos="-0.4200 -5.1000 0.1000" size="0.0500 0.5500 0.1000" rgba="0.65 0.5 0.3 1.0" />
+    <geom name="plt_0_0_4" type="box" pos="-0.2400 -5.1000 0.1000" size="0.0500 0.5500 0.1000" rgba="0.65 0.5 0.3 1.0" />
+    <geom name="pipe_0_0" type="cylinder" pos="-1.1000 -5.1000 0.2500" size="0.05 0.5500" rgba="0.4 0.4 0.4 1.0" euler="1.5708 0 0" />
+    <geom name="plt_0_1_0" type="box" pos="0.2400 -5.1000 0.2000" size="0.0500 0.5500 0.2000" rgba="0.65 0.5 0.3 1.0" />
+    <geom name="plt_0_1_1" type="box" pos="0.4200 -5.1000 0.2000" size="0.0500 0.5500 0.2000" rgba="0.65 0.5 0.3 1.0" />
+    <geom name="plt_0_1_2" type="box" pos="0.6000 -5.1000 0.2000" size="0.0500 0.5500 0.2000" rgba="0.65 0.5 0.3 1.0" />
+    <geom name="plt_0_1_3" type="box" pos="0.7800 -5.1000 0.2000" size="0.0500 0.5500 0.2000" rgba="0.65 0.5 0.3 1.0" />
+    <geom name="plt_0_1_4" type="box" pos="0.9600 -5.1000 0.2000" size="0.0500 0.5500 0.2000" rgba="0.65 0.5 0.3 1.0" />
+    <geom name="pipe_0_1" type="cylinder" pos="0.1000 -5.1000 0.4500" size="0.05 0.5500" rgba="0.4 0.4 0.4 1.0" euler="1.5708 0 0" />
+    <geom name="plt_1_0_0" type="box" pos="-0.9600 -3.7500 0.1000" size="0.0500 0.5500 0.1000" rgba="0.65 0.5 0.3 1.0" />
+    <geom name="plt_1_0_1" type="box" pos="-0.7800 -3.7500 0.1000" size="0.0500 0.5500 0.1000" rgba="0.65 0.5 0.3 1.0" />
+    <geom name="plt_1_0_2" type="box" pos="-0.6000 -3.7500 0.1000" size="0.0500 0.5500 0.1000" rgba="0.65 0.5 0.3 1.0" />
+    <geom name="plt_1_0_3" type="box" pos="-0.4200 -3.7500 0.1000" size="0.0500 0.5500 0.1000" rgba="0.65 0.5 0.3 1.0" />
+    <geom name="plt_1_0_4" type="box" pos="-0.2400 -3.7500 0.1000" size="0.0500 0.5500 0.1000" rgba="0.65 0.5 0.3 1.0" />
+    <geom name="pipe_1_0" type="cylinder" pos="-1.1000 -3.7500 0.2500" size="0.05 0.5500" rgba="0.4 0.4 0.4 1.0" euler="1.5708 0 0" />
+    <geom name="plt_1_1_0" type="box" pos="0.2400 -3.7500 0.2000" size="0.0500 0.5500 0.2000" rgba="0.65 0.5 0.3 1.0" />
+    <geom name="plt_1_1_1" type="box" pos="0.4200 -3.7500 0.2000" size="0.0500 0.5500 0.2000" rgba="0.65 0.5 0.3 1.0" />
+    <geom name="plt_1_1_2" type="box" pos="0.6000 -3.7500 0.2000" size="0.0500 0.5500 0.2000" rgba="0.65 0.5 0.3 1.0" />
+    <geom name="plt_1_1_3" type="box" pos="0.7800 -3.7500 0.2000" size="0.0500 0.5500 0.2000" rgba="0.65 0.5 0.3 1.0" />
+    <geom name="plt_1_1_4" type="box" pos="0.9600 -3.7500 0.2000" size="0.0500 0.5500 0.2000" rgba="0.65 0.5 0.3 1.0" />
+    <geom name="pipe_1_1" type="cylinder" pos="0.1000 -3.7500 0.4500" size="0.05 0.5500" rgba="0.4 0.4 0.4 1.0" euler="1.5708 0 0" />
+    <geom name="plt_2_0_0" type="box" pos="-0.9600 -2.4000 0.1000" size="0.0500 0.5500 0.1000" rgba="0.65 0.5 0.3 1.0" />
+    <geom name="plt_2_0_1" type="box" pos="-0.7800 -2.4000 0.1000" size="0.0500 0.5500 0.1000" rgba="0.65 0.5 0.3 1.0" />
+    <geom name="plt_2_0_2" type="box" pos="-0.6000 -2.4000 0.1000" size="0.0500 0.5500 0.1000" rgba="0.65 0.5 0.3 1.0" />
+    <geom name="plt_2_0_3" type="box" pos="-0.4200 -2.4000 0.1000" size="0.0500 0.5500 0.1000" rgba="0.65 0.5 0.3 1.0" />
+    <geom name="plt_2_0_4" type="box" pos="-0.2400 -2.4000 0.1000" size="0.0500 0.5500 0.1000" rgba="0.65 0.5 0.3 1.0" />
+    <geom name="pipe_2_0" type="cylinder" pos="-1.1000 -2.4000 0.2500" size="0.05 0.5500" rgba="0.4 0.4 0.4 1.0" euler="1.5708 0 0" />
+    <geom name="plt_2_1_0" type="box" pos="0.2400 -2.4000 0.2000" size="0.0500 0.5500 0.2000" rgba="0.65 0.5 0.3 1.0" />
+    <geom name="plt_2_1_1" type="box" pos="0.4200 -2.4000 0.2000" size="0.0500 0.5500 0.2000" rgba="0.65 0.5 0.3 1.0" />
+    <geom name="plt_2_1_2" type="box" pos="0.6000 -2.4000 0.2000" size="0.0500 0.5500 0.2000" rgba="0.65 0.5 0.3 1.0" />
+    <geom name="plt_2_1_3" type="box" pos="0.7800 -2.4000 0.2000" size="0.0500 0.5500 0.2000" rgba="0.65 0.5 0.3 1.0" />
+    <geom name="plt_2_1_4" type="box" pos="0.9600 -2.4000 0.2000" size="0.0500 0.5500 0.2000" rgba="0.65 0.5 0.3 1.0" />
+    <geom name="pipe_2_1" type="cylinder" pos="0.1000 -2.4000 0.4500" size="0.05 0.5500" rgba="0.4 0.4 0.4 1.0" euler="1.5708 0 0" />
+    <geom name="qr_B" type="box" pos="1.6500 -3.7500 0.6000" size="0.0100 0.0750 0.0750" rgba="0.0 0.8 0.0 1.0" />
+    <geom name="haz_B" type="box" pos="-0.5000 -2.4000 0.0600" size="0.0600 0.0600 0.0600" rgba="1.0 0.5 0.0 1.0" />
+    <geom name="LC_S_a" type="box" pos="-1.9000 -0.8000 0.6000" size="0.0500 0.0750 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="LC_S_b" type="box" pos="0.5500 -0.8000 0.6000" size="1.4000 0.0750 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="LC_N" type="box" pos="0.0000 2.8000 0.6000" size="1.9500 0.0750 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="LC_W" type="box" pos="-1.9500 1.0000 0.6000" size="0.0750 1.8000 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="LC_E_a" type="box" pos="1.9500 0.5000 0.6000" size="0.0750 1.3000 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="LC_d0" type="box" pos="-0.6750 0.4000 0.6000" size="0.0750 1.2000 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="LC_d1" type="box" pos="0.6750 1.6000 0.6000" size="0.0750 1.2000 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="kr_0_0" type="box" pos="-1.3500 0.4000 0.0250" size="0.8500 0.0750 0.0250" rgba="0.5 0.5 0.5 1.0" euler="0 0 0.7854" />
+    <geom name="kr_0_1" type="box" pos="-1.3500 1.6000 0.0500" size="0.8500 0.0750 0.0500" rgba="0.5 0.5 0.5 1.0" euler="0 0 0.7854" />
+    <geom name="kr_1_0" type="box" pos="0.0000 0.4000 0.0750" size="0.8500 0.0750 0.0750" rgba="0.5 0.5 0.5 1.0" euler="0 0 0.7854" />
+    <geom name="kr_1_1" type="box" pos="0.0000 1.6000 0.1000" size="0.8500 0.0750 0.1000" rgba="0.5 0.5 0.5 1.0" euler="0 0 0.7854" />
+    <geom name="kr_2_0" type="box" pos="1.3500 0.4000 0.0250" size="0.8500 0.0750 0.0250" rgba="0.5 0.5 0.5 1.0" euler="0 0 0.7854" />
+    <geom name="kr_2_1" type="box" pos="1.3500 1.6000 0.0500" size="0.8500 0.0750 0.0500" rgba="0.5 0.5 0.5 1.0" euler="0 0 0.7854" />
+    <geom name="qr_C" type="box" pos="0 2.6500 0.6000" size="0.0750 0.0100 0.0750" rgba="0.0 0.8 0.0 1.0" />
+    <geom name="haz_C" type="box" pos="-1.3500 1.5000 0.0600" size="0.0600 0.0600 0.0600" rgba="1.0 0.5 0.0 1.0" />
+    <geom name="LD_S" type="box" pos="4.9000 -0.8000 0.6000" size="1.9500 0.0750 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="LD_N" type="box" pos="4.9000 2.8000 0.6000" size="1.9500 0.0750 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="LD_W_a" type="box" pos="2.9500 0.5000 0.6000" size="0.0750 1.3000 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="LD_E_b" type="box" pos="6.8500 1.5000 0.6000" size="0.0750 1.3000 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="LD_d0" type="box" pos="4.2250 1.6000 0.6000" size="0.0750 1.2000 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="LD_d1" type="box" pos="5.5750 0.4000 0.6000" size="0.0750 1.2000 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="sf_0_0_1" type="box" pos="3.1000 -0.3500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_0_0_2" type="box" pos="3.1000 -0.0500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_0_0_3" type="box" pos="3.1000 0.2500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_0_0_4" type="box" pos="3.1000 0.5500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_0_0_7" type="box" pos="3.1000 1.4500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_0_0_8" type="box" pos="3.1000 1.7500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_0_0_9" type="box" pos="3.1000 2.0500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_0_0_10" type="box" pos="3.1000 2.3500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_0_0_11" type="box" pos="3.1000 2.6500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_0_1_0" type="box" pos="3.4000 -0.6500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_0_1_1" type="box" pos="3.4000 -0.3500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_0_1_2" type="box" pos="3.4000 -0.0500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_0_1_3" type="box" pos="3.4000 0.2500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_0_1_4" type="box" pos="3.4000 0.5500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_0_1_7" type="box" pos="3.4000 1.4500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_0_1_10" type="box" pos="3.4000 2.3500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_0_2_0" type="box" pos="3.7000 -0.6500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_0_2_2" type="box" pos="3.7000 -0.0500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_0_2_3" type="box" pos="3.7000 0.2500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_0_2_4" type="box" pos="3.7000 0.5500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_0_2_5" type="box" pos="3.7000 0.8500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_0_2_7" type="box" pos="3.7000 1.4500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_0_2_8" type="box" pos="3.7000 1.7500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_0_2_9" type="box" pos="3.7000 2.0500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_0_2_10" type="box" pos="3.7000 2.3500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_0_2_11" type="box" pos="3.7000 2.6500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_0_3_0" type="box" pos="4.0000 -0.6500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_0_3_1" type="box" pos="4.0000 -0.3500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_0_3_2" type="box" pos="4.0000 -0.0500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_0_3_4" type="box" pos="4.0000 0.5500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_0_3_5" type="box" pos="4.0000 0.8500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_0_3_7" type="box" pos="4.0000 1.4500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_0_3_8" type="box" pos="4.0000 1.7500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_0_3_9" type="box" pos="4.0000 2.0500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_0_3_10" type="box" pos="4.0000 2.3500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_0_3_11" type="box" pos="4.0000 2.6500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_1_0_1" type="box" pos="4.4500 -0.3500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_1_0_2" type="box" pos="4.4500 -0.0500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_1_0_3" type="box" pos="4.4500 0.2500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_1_0_4" type="box" pos="4.4500 0.5500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_1_0_5" type="box" pos="4.4500 0.8500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_1_0_7" type="box" pos="4.4500 1.4500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_1_0_8" type="box" pos="4.4500 1.7500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_1_0_9" type="box" pos="4.4500 2.0500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_1_0_10" type="box" pos="4.4500 2.3500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_1_0_11" type="box" pos="4.4500 2.6500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_1_1_1" type="box" pos="4.7500 -0.3500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_1_1_2" type="box" pos="4.7500 -0.0500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_1_1_3" type="box" pos="4.7500 0.2500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_1_1_4" type="box" pos="4.7500 0.5500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_1_1_6" type="box" pos="4.7500 1.1500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_1_1_7" type="box" pos="4.7500 1.4500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_1_1_8" type="box" pos="4.7500 1.7500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_1_1_9" type="box" pos="4.7500 2.0500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_1_1_10" type="box" pos="4.7500 2.3500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_1_1_11" type="box" pos="4.7500 2.6500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_1_2_0" type="box" pos="5.0500 -0.6500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_1_2_1" type="box" pos="5.0500 -0.3500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_1_2_2" type="box" pos="5.0500 -0.0500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_1_2_3" type="box" pos="5.0500 0.2500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_1_2_4" type="box" pos="5.0500 0.5500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_1_2_5" type="box" pos="5.0500 0.8500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_1_2_7" type="box" pos="5.0500 1.4500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_1_2_11" type="box" pos="5.0500 2.6500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_1_3_0" type="box" pos="5.3500 -0.6500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_1_3_1" type="box" pos="5.3500 -0.3500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_1_3_3" type="box" pos="5.3500 0.2500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_1_3_4" type="box" pos="5.3500 0.5500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_1_3_5" type="box" pos="5.3500 0.8500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_1_3_6" type="box" pos="5.3500 1.1500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_1_3_8" type="box" pos="5.3500 1.7500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_1_3_11" type="box" pos="5.3500 2.6500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_2_0_0" type="box" pos="5.8000 -0.6500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_2_0_1" type="box" pos="5.8000 -0.3500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_2_0_2" type="box" pos="5.8000 -0.0500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_2_0_3" type="box" pos="5.8000 0.2500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_2_0_4" type="box" pos="5.8000 0.5500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_2_0_5" type="box" pos="5.8000 0.8500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_2_0_6" type="box" pos="5.8000 1.1500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_2_0_7" type="box" pos="5.8000 1.4500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_2_0_8" type="box" pos="5.8000 1.7500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_2_0_9" type="box" pos="5.8000 2.0500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_2_0_10" type="box" pos="5.8000 2.3500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_2_0_11" type="box" pos="5.8000 2.6500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_2_1_0" type="box" pos="6.1000 -0.6500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_2_1_1" type="box" pos="6.1000 -0.3500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_2_1_2" type="box" pos="6.1000 -0.0500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_2_1_3" type="box" pos="6.1000 0.2500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_2_1_4" type="box" pos="6.1000 0.5500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_2_1_5" type="box" pos="6.1000 0.8500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_2_1_7" type="box" pos="6.1000 1.4500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_2_1_8" type="box" pos="6.1000 1.7500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_2_2_0" type="box" pos="6.4000 -0.6500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_2_2_1" type="box" pos="6.4000 -0.3500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_2_2_2" type="box" pos="6.4000 -0.0500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_2_2_3" type="box" pos="6.4000 0.2500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_2_2_4" type="box" pos="6.4000 0.5500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_2_2_5" type="box" pos="6.4000 0.8500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_2_2_7" type="box" pos="6.4000 1.4500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_2_2_8" type="box" pos="6.4000 1.7500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_2_2_9" type="box" pos="6.4000 2.0500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_2_2_10" type="box" pos="6.4000 2.3500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_2_2_11" type="box" pos="6.4000 2.6500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_2_3_0" type="box" pos="6.7000 -0.6500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_2_3_1" type="box" pos="6.7000 -0.3500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_2_3_2" type="box" pos="6.7000 -0.0500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_2_3_3" type="box" pos="6.7000 0.2500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_2_3_5" type="box" pos="6.7000 0.8500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_2_3_6" type="box" pos="6.7000 1.1500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_2_3_7" type="box" pos="6.7000 1.4500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_2_3_9" type="box" pos="6.7000 2.0500 0.0750" size="0.1500 0.1500 0.0750" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_2_3_10" type="box" pos="6.7000 2.3500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="sf_2_3_11" type="box" pos="6.7000 2.6500 0.1500" size="0.1500 0.1500 0.1500" rgba="0.5 0.5 0.55 1.0" />
+    <geom name="qr_D" type="box" pos="4.9000 -0.6500 0.6000" size="0.0750 0.0100 0.0750" rgba="0.0 0.8 0.0 1.0" />
+    <geom name="haz_D" type="box" pos="4.9000 1.3000 0.0600" size="0.0600 0.0600 0.0600" rgba="1.0 0.5 0.0 1.0" />
+    <geom name="LE_S" type="box" pos="9.8000 -0.8000 0.6000" size="1.9500 0.0750 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="LE_N" type="box" pos="9.8000 2.8000 0.6000" size="1.9500 0.0750 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="LE_W_b" type="box" pos="7.8500 1.5000 0.6000" size="0.0750 1.3000 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="LE_E_a" type="box" pos="11.7500 0.5000 0.6000" size="0.0750 1.3000 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="LE_d0" type="box" pos="9.1250 0.4000 0.6000" size="0.0750 1.2000 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="LE_d1" type="box" pos="10.4750 1.6000 0.6000" size="0.0750 1.2000 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="pclimb_0_0_0" type="box" pos="8.4500 0.0400 0.2000" size="0.5500 0.0500 0.2000" rgba="0.6 0.45 0.25 1.0" />
+    <geom name="pclimb_0_0_1" type="box" pos="8.4500 0.2200 0.2000" size="0.5500 0.0500 0.2000" rgba="0.6 0.45 0.25 1.0" />
+    <geom name="pclimb_0_0_2" type="box" pos="8.4500 0.4000 0.2000" size="0.5500 0.0500 0.2000" rgba="0.6 0.45 0.25 1.0" />
+    <geom name="pclimb_0_0_3" type="box" pos="8.4500 0.5800 0.2000" size="0.5500 0.0500 0.2000" rgba="0.6 0.45 0.25 1.0" />
+    <geom name="pclimb_0_0_4" type="box" pos="8.4500 0.7600 0.2000" size="0.5500 0.0500 0.2000" rgba="0.6 0.45 0.25 1.0" />
+    <geom name="cpipe_0_0_0" type="cylinder" pos="8.3000 -0.1000 0.4500" size="0.05 0.4400" rgba="0.4 0.4 0.4 1.0" euler="0 1.5708 0" />
+    <geom name="cpipe_0_0_1" type="cylinder" pos="8.6000 -0.1000 0.4500" size="0.05 0.4400" rgba="0.4 0.4 0.4 1.0" euler="0 1.5708 0" />
+    <geom name="pclimb_0_1_0" type="box" pos="8.4500 1.2400 0.3000" size="0.5500 0.0500 0.3000" rgba="0.6 0.45 0.25 1.0" />
+    <geom name="pclimb_0_1_1" type="box" pos="8.4500 1.4200 0.3000" size="0.5500 0.0500 0.3000" rgba="0.6 0.45 0.25 1.0" />
+    <geom name="pclimb_0_1_2" type="box" pos="8.4500 1.6000 0.3000" size="0.5500 0.0500 0.3000" rgba="0.6 0.45 0.25 1.0" />
+    <geom name="pclimb_0_1_3" type="box" pos="8.4500 1.7800 0.3000" size="0.5500 0.0500 0.3000" rgba="0.6 0.45 0.25 1.0" />
+    <geom name="pclimb_0_1_4" type="box" pos="8.4500 1.9600 0.3000" size="0.5500 0.0500 0.3000" rgba="0.6 0.45 0.25 1.0" />
+    <geom name="cpipe_0_1_0" type="cylinder" pos="8.3000 1.1000 0.6500" size="0.05 0.4400" rgba="0.4 0.4 0.4 1.0" euler="0 1.5708 0" />
+    <geom name="cpipe_0_1_1" type="cylinder" pos="8.6000 1.1000 0.6500" size="0.05 0.4400" rgba="0.4 0.4 0.4 1.0" euler="0 1.5708 0" />
+    <geom name="pclimb_1_0_0" type="box" pos="9.8000 0.0400 0.4000" size="0.5500 0.0500 0.4000" rgba="0.6 0.45 0.25 1.0" />
+    <geom name="pclimb_1_0_1" type="box" pos="9.8000 0.2200 0.4000" size="0.5500 0.0500 0.4000" rgba="0.6 0.45 0.25 1.0" />
+    <geom name="pclimb_1_0_2" type="box" pos="9.8000 0.4000 0.4000" size="0.5500 0.0500 0.4000" rgba="0.6 0.45 0.25 1.0" />
+    <geom name="pclimb_1_0_3" type="box" pos="9.8000 0.5800 0.4000" size="0.5500 0.0500 0.4000" rgba="0.6 0.45 0.25 1.0" />
+    <geom name="pclimb_1_0_4" type="box" pos="9.8000 0.7600 0.4000" size="0.5500 0.0500 0.4000" rgba="0.6 0.45 0.25 1.0" />
+    <geom name="cpipe_1_0_0" type="cylinder" pos="9.6500 -0.1000 0.8500" size="0.05 0.4400" rgba="0.4 0.4 0.4 1.0" euler="0 1.5708 0" />
+    <geom name="cpipe_1_0_1" type="cylinder" pos="9.9500 -0.1000 0.8500" size="0.05 0.4400" rgba="0.4 0.4 0.4 1.0" euler="0 1.5708 0" />
+    <geom name="pclimb_1_1_0" type="box" pos="9.8000 1.2400 0.2000" size="0.5500 0.0500 0.2000" rgba="0.6 0.45 0.25 1.0" />
+    <geom name="pclimb_1_1_1" type="box" pos="9.8000 1.4200 0.2000" size="0.5500 0.0500 0.2000" rgba="0.6 0.45 0.25 1.0" />
+    <geom name="pclimb_1_1_2" type="box" pos="9.8000 1.6000 0.2000" size="0.5500 0.0500 0.2000" rgba="0.6 0.45 0.25 1.0" />
+    <geom name="pclimb_1_1_3" type="box" pos="9.8000 1.7800 0.2000" size="0.5500 0.0500 0.2000" rgba="0.6 0.45 0.25 1.0" />
+    <geom name="pclimb_1_1_4" type="box" pos="9.8000 1.9600 0.2000" size="0.5500 0.0500 0.2000" rgba="0.6 0.45 0.25 1.0" />
+    <geom name="cpipe_1_1_0" type="cylinder" pos="9.6500 1.1000 0.4500" size="0.05 0.4400" rgba="0.4 0.4 0.4 1.0" euler="0 1.5708 0" />
+    <geom name="cpipe_1_1_1" type="cylinder" pos="9.9500 1.1000 0.4500" size="0.05 0.4400" rgba="0.4 0.4 0.4 1.0" euler="0 1.5708 0" />
+    <geom name="pclimb_2_0_0" type="box" pos="11.1500 0.0400 0.3000" size="0.5500 0.0500 0.3000" rgba="0.6 0.45 0.25 1.0" />
+    <geom name="pclimb_2_0_1" type="box" pos="11.1500 0.2200 0.3000" size="0.5500 0.0500 0.3000" rgba="0.6 0.45 0.25 1.0" />
+    <geom name="pclimb_2_0_2" type="box" pos="11.1500 0.4000 0.3000" size="0.5500 0.0500 0.3000" rgba="0.6 0.45 0.25 1.0" />
+    <geom name="pclimb_2_0_3" type="box" pos="11.1500 0.5800 0.3000" size="0.5500 0.0500 0.3000" rgba="0.6 0.45 0.25 1.0" />
+    <geom name="pclimb_2_0_4" type="box" pos="11.1500 0.7600 0.3000" size="0.5500 0.0500 0.3000" rgba="0.6 0.45 0.25 1.0" />
+    <geom name="cpipe_2_0_0" type="cylinder" pos="11.0000 -0.1000 0.6500" size="0.05 0.4400" rgba="0.4 0.4 0.4 1.0" euler="0 1.5708 0" />
+    <geom name="cpipe_2_0_1" type="cylinder" pos="11.3000 -0.1000 0.6500" size="0.05 0.4400" rgba="0.4 0.4 0.4 1.0" euler="0 1.5708 0" />
+    <geom name="pclimb_2_1_0" type="box" pos="11.1500 1.2400 0.4000" size="0.5500 0.0500 0.4000" rgba="0.6 0.45 0.25 1.0" />
+    <geom name="pclimb_2_1_1" type="box" pos="11.1500 1.4200 0.4000" size="0.5500 0.0500 0.4000" rgba="0.6 0.45 0.25 1.0" />
+    <geom name="pclimb_2_1_2" type="box" pos="11.1500 1.6000 0.4000" size="0.5500 0.0500 0.4000" rgba="0.6 0.45 0.25 1.0" />
+    <geom name="pclimb_2_1_3" type="box" pos="11.1500 1.7800 0.4000" size="0.5500 0.0500 0.4000" rgba="0.6 0.45 0.25 1.0" />
+    <geom name="pclimb_2_1_4" type="box" pos="11.1500 1.9600 0.4000" size="0.5500 0.0500 0.4000" rgba="0.6 0.45 0.25 1.0" />
+    <geom name="cpipe_2_1_0" type="cylinder" pos="11.0000 1.1000 0.8500" size="0.05 0.4400" rgba="0.4 0.4 0.4 1.0" euler="0 1.5708 0" />
+    <geom name="cpipe_2_1_1" type="cylinder" pos="11.3000 1.1000 0.8500" size="0.05 0.4400" rgba="0.4 0.4 0.4 1.0" euler="0 1.5708 0" />
+    <geom name="qr_E" type="box" pos="9.8000 2.6500 0.6000" size="0.0750 0.0100 0.0750" rgba="0.0 0.8 0.0 1.0" />
+    <geom name="haz_E" type="box" pos="8.4500 0.7000 0.0600" size="0.0600 0.0600 0.0600" rgba="1.0 0.5 0.0 1.0" />
+    <geom name="LF_S" type="box" pos="14.7000 -0.8000 0.6000" size="1.9500 0.0750 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="LF_N" type="box" pos="14.7000 2.8000 0.6000" size="1.9500 0.0750 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="LF_W_a" type="box" pos="12.7500 0.5000 0.6000" size="0.0750 1.3000 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="LF_E_b" type="box" pos="16.6500 1.5000 0.6000" size="0.0750 1.3000 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="LF_d0" type="box" pos="14.0250 1.6000 0.6000" size="0.0750 1.2000 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="LF_d1" type="box" pos="15.3750 0.4000 0.6000" size="0.0750 1.2000 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="stup_0_0" type="box" pos="13.3500 0.1000 0.0750" size="0.5500 0.1500 0.0750" rgba="0.55 0.55 0.55 1.0" />
+    <geom name="stup_0_1" type="box" pos="13.3500 0.4000 0.1500" size="0.5500 0.1500 0.1500" rgba="0.55 0.55 0.55 1.0" />
+    <geom name="stup_0_2" type="box" pos="13.3500 0.7000 0.2250" size="0.5500 0.1500 0.2250" rgba="0.55 0.55 0.55 1.0" />
+    <geom name="stland_0" type="box" pos="13.3500 1.0000 0.2250" size="0.5500 0.1500 0.2250" rgba="0.55 0.55 0.55 1.0" />
+    <geom name="stdn_0_0" type="box" pos="13.3500 1.3000 0.2250" size="0.5500 0.1500 0.2250" rgba="0.55 0.55 0.55 1.0" />
+    <geom name="stdn_0_1" type="box" pos="13.3500 1.6000 0.1500" size="0.5500 0.1500 0.1500" rgba="0.55 0.55 0.55 1.0" />
+    <geom name="stdn_0_2" type="box" pos="13.3500 1.9000 0.0750" size="0.5500 0.1500 0.0750" rgba="0.55 0.55 0.55 1.0" />
+    <geom name="debup_0" type="cylinder" pos="13.3500 0.2500 0.3200" size="0.02 0.5500" rgba="0.4 0.4 0.4 1.0" euler="0.3500 1.5708 0" />
+    <geom name="debdn_0" type="cylinder" pos="13.3500 1.4500 0.3200" size="0.02 0.5500" rgba="0.4 0.4 0.4 1.0" euler="-0.3500 1.5708 0" />
+    <geom name="stup_1_0" type="box" pos="14.7000 0.1000 0.0750" size="0.5500 0.1500 0.0750" rgba="0.55 0.55 0.55 1.0" />
+    <geom name="stup_1_1" type="box" pos="14.7000 0.4000 0.1500" size="0.5500 0.1500 0.1500" rgba="0.55 0.55 0.55 1.0" />
+    <geom name="stup_1_2" type="box" pos="14.7000 0.7000 0.2250" size="0.5500 0.1500 0.2250" rgba="0.55 0.55 0.55 1.0" />
+    <geom name="stland_1" type="box" pos="14.7000 1.0000 0.2250" size="0.5500 0.1500 0.2250" rgba="0.55 0.55 0.55 1.0" />
+    <geom name="stdn_1_0" type="box" pos="14.7000 1.3000 0.2250" size="0.5500 0.1500 0.2250" rgba="0.55 0.55 0.55 1.0" />
+    <geom name="stdn_1_1" type="box" pos="14.7000 1.6000 0.1500" size="0.5500 0.1500 0.1500" rgba="0.55 0.55 0.55 1.0" />
+    <geom name="stdn_1_2" type="box" pos="14.7000 1.9000 0.0750" size="0.5500 0.1500 0.0750" rgba="0.55 0.55 0.55 1.0" />
+    <geom name="debup_1" type="cylinder" pos="14.7000 0.2500 0.3200" size="0.02 0.5500" rgba="0.4 0.4 0.4 1.0" euler="0.3500 1.5708 0" />
+    <geom name="debdn_1" type="cylinder" pos="14.7000 1.4500 0.3200" size="0.02 0.5500" rgba="0.4 0.4 0.4 1.0" euler="-0.3500 1.5708 0" />
+    <geom name="stup_2_0" type="box" pos="16.0500 0.1000 0.0750" size="0.5500 0.1500 0.0750" rgba="0.55 0.55 0.55 1.0" />
+    <geom name="stup_2_1" type="box" pos="16.0500 0.4000 0.1500" size="0.5500 0.1500 0.1500" rgba="0.55 0.55 0.55 1.0" />
+    <geom name="stup_2_2" type="box" pos="16.0500 0.7000 0.2250" size="0.5500 0.1500 0.2250" rgba="0.55 0.55 0.55 1.0" />
+    <geom name="stland_2" type="box" pos="16.0500 1.0000 0.2250" size="0.5500 0.1500 0.2250" rgba="0.55 0.55 0.55 1.0" />
+    <geom name="stdn_2_0" type="box" pos="16.0500 1.3000 0.2250" size="0.5500 0.1500 0.2250" rgba="0.55 0.55 0.55 1.0" />
+    <geom name="stdn_2_1" type="box" pos="16.0500 1.6000 0.1500" size="0.5500 0.1500 0.1500" rgba="0.55 0.55 0.55 1.0" />
+    <geom name="stdn_2_2" type="box" pos="16.0500 1.9000 0.0750" size="0.5500 0.1500 0.0750" rgba="0.55 0.55 0.55 1.0" />
+    <geom name="debup_2" type="cylinder" pos="16.0500 0.2500 0.3200" size="0.02 0.5500" rgba="0.4 0.4 0.4 1.0" euler="0.3500 1.5708 0" />
+    <geom name="debdn_2" type="cylinder" pos="16.0500 1.4500 0.3200" size="0.02 0.5500" rgba="0.4 0.4 0.4 1.0" euler="-0.3500 1.5708 0" />
+    <geom name="qr_F" type="box" pos="16.5000 1.0000 0.6000" size="0.0100 0.0750 0.0750" rgba="0.0 0.8 0.0 1.0" />
+    <geom name="haz_F" type="box" pos="13.3500 0.5000 0.0600" size="0.0600 0.0600 0.0600" rgba="1.0 0.5 0.0 1.0" />
+    <geom name="cor0_W" type="box" pos="-0.5000 -6.2000 0.6000" size="0.0750 0.5000 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="cor0_E" type="box" pos="0.5000 -6.2000 0.6000" size="0.0750 0.5000 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="cor1_W" type="box" pos="-1.8500 -1.3000 0.6000" size="0.0750 0.5000 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="cor1_E" type="box" pos="-0.8500 -1.3000 0.6000" size="0.0750 0.5000 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="cor2_S" type="box" pos="2.4500 1.8000 0.6000" size="0.5000 0.0750 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="cor2_N" type="box" pos="2.4500 2.8000 0.6000" size="0.5000 0.0750 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="cor3_S" type="box" pos="7.3500 -0.8000 0.6000" size="0.5000 0.0750 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="cor3_N" type="box" pos="7.3500 0.2000 0.6000" size="0.5000 0.0750 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="cor4_S" type="box" pos="12.2500 1.8000 0.6000" size="0.5000 0.0750 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="cor4_N" type="box" pos="12.2500 2.8000 0.6000" size="0.5000 0.0750 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="start_W" type="box" pos="-1.8000 -11.8500 0.6000" size="0.0750 1.2500 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="start_E" type="box" pos="1.8000 -11.8500 0.6000" size="0.0750 1.2500 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="start_S" type="box" pos="0 -13.1000 0.6000" size="1.8000 0.0750 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="start_marker" type="box" pos="0 -11.8500 0.0050" size="0.3000 0.3000 0.0050" rgba="0.0 0.7 0.2 1.0" />
+    <geom name="finish_S" type="box" pos="17.9000 -0.8000 0.6000" size="1.2500 0.0750 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="finish_N" type="box" pos="17.9000 2.8000 0.6000" size="1.2500 0.0750 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="finish_E" type="box" pos="19.1500 1.0000 0.6000" size="0.0750 1.8000 0.6000" rgba="0.6 0.55 0.45 1.0" />
+    <geom name="finish_marker" type="box" pos="17.9000 1.0000 0.0050" size="0.3000 0.3000 0.0050" rgba="0.8 0.1 0.1 1.0" />
+    <body name="base_link" pos="0.0 -11.85 0.6" childclass="go2">
+      <inertial pos="0.021112 0 -0.005366" quat="-0.000543471 0.713435 -0.00173769 0.700719" mass="6.921" diaginertia="0.107027 0.0980771 0.0244531" />
+      <freejoint name="root" />
+      <geom mesh="base_0" material="black" class="visual" />
+      <geom mesh="base_1" material="black" class="visual" />
+      <geom mesh="base_2" material="black" class="visual" />
+      <geom mesh="base_3" material="white" class="visual" />
+      <geom mesh="base_4" material="gray" class="visual" />
+      <geom name="base_collision" size="0.1881 0.04675 0.057" type="box" class="collision" />
+      <geom name="head_upper_collision" size="0.05 0.045" pos="0.285 0 0.01" type="cylinder" class="collision" />
+      <geom name="head_lower_collision" size="0.047" pos="0.293 0 -0.06" class="collision" />
+      <site name="base_link_site" pos="0 0 0" size="0.01" />
+      <site name="imu" pos="-0.02557 0 0.04232" size="0.01" />
+      <site name="livox_mid360" pos="0.16143 0 0.12262" euler="0 0.2269 0" size="0.01" />
+      <camera name="front_camera" pos="0.30 0 -0.01" xyaxes="0 -1 0 0.0872 0 0.9962" fovy="80" resolution="1280 720" mode="fixed" />
+      <body name="FL_hip" pos="0.1934 0.0465 0">
+        <inertial pos="-0.0054 0.00194 -0.000105" quat="0.497014 0.499245 0.505462 0.498237" mass="0.678" diaginertia="0.00088403 0.000596003 0.000479967" />
+        <joint name="FL_hip_joint" class="abduction" />
+        <geom mesh="hip_0" material="metal" class="visual" />
+        <geom mesh="hip_1" material="gray" class="visual" />
+        <geom name="FL_hip_collision" size="0.046 0.02" pos="0 0.08 0" quat="1 1 0 0" type="cylinder" class="collision" />
+        <body name="FL_thigh" pos="0 0.0955 0">
+          <inertial pos="-0.00374 -0.0223 -0.0327" quat="0.829533 0.0847635 -0.0200632 0.551623" mass="1.152" diaginertia="0.00594973 0.00584149 0.000878787" />
+          <joint name="FL_thigh_joint" class="front_hip" />
+          <geom mesh="thigh_0" material="metal" class="visual" />
+          <geom mesh="thigh_1" material="gray" class="visual" />
+          <geom name="FL_thigh_collision" size="0.1065 0.01225 0.017" pos="0 0 -0.1065" quat="0.707107 0 0.707107 0" type="box" class="collision" />
+          <body name="FL_calf" pos="0 0 -0.213">
+            <inertial pos="0.00629595 -0.000622121 -0.141417" quat="0.710672 0.00154099 -0.00450087 0.703508" mass="0.241352" diaginertia="0.0014901 0.00146356 5.31397e-05" />
+            <joint name="FL_calf_joint" class="knee" />
+            <geom mesh="calf" material="gray" class="visual" />
+            <geom name="FL_calf_upper_collision" size="0.012 0.06" pos="0.008 0 -0.06" quat="0.994493 0 -0.104807 0" type="cylinder" class="collision" />
+            <geom name="FL_calf_lower_collision" size="0.011 0.0325" pos="0.02 0 -0.148" quat="0.999688 0 0.0249974 0" type="cylinder" class="collision" />
+            <body name="FL_foot" pos="0 0 -0.2264">
+              <inertial pos="-0.0 0.04 -0.0" quat="0.661419 0.248219 0.250051 0.662108" mass="0.98" diaginertia="0.003 0.0016 0.0016" />
+              <joint name="FL_foot_joint" pos="0 0 0" axis="0 1 0" />
+              <geom type="mesh" rgba="0.15 0.15 0.15 1" mesh="wheel" pos="0 0.0 0" quat="0.0 1.0 0.0 0.0" class="visual" />
+              <geom name="FL_wheel_collision" type="cylinder" size="0.086 0.026" pos="0 0 0" quat="0.707107 0.707107 0 0" class="collision" condim="6" priority="1" friction="0.8 0.02 0.01" />
+              <site name="FL_foot_site" pos="0 0.04 0" size="0.01" />
+            </body>
+          </body>
+        </body>
+      </body>
+      <body name="FR_hip" pos="0.1934 -0.0465 0">
+        <inertial pos="-0.0054 -0.00194 -0.000105" quat="0.498237 0.505462 0.499245 0.497014" mass="0.678" diaginertia="0.00088403 0.000596003 0.000479967" />
+        <joint name="FR_hip_joint" class="abduction" />
+        <geom mesh="hip_0" material="metal" class="visual" quat="4.63268e-05 1 0 0" />
+        <geom mesh="hip_1" material="gray" class="visual" quat="4.63268e-05 1 0 0" />
+        <geom name="FR_hip_collision" size="0.046 0.02" pos="0 -0.08 0" quat="0.707107 0.707107 0 0" type="cylinder" class="collision" />
+        <body name="FR_thigh" pos="0 -0.0955 0">
+          <inertial pos="-0.00374 0.0223 -0.0327" quat="0.551623 -0.0200632 0.0847635 0.829533" mass="1.152" diaginertia="0.00594973 0.00584149 0.000878787" />
+          <joint name="FR_thigh_joint" class="front_hip" />
+          <geom mesh="thigh_mirror_0" material="metal" class="visual" />
+          <geom mesh="thigh_mirror_1" material="gray" class="visual" />
+          <geom name="FR_thigh_collision" size="0.1065 0.01225 0.017" pos="0 0 -0.1065" quat="0.707107 0 0.707107 0" type="box" class="collision" />
+          <body name="FR_calf" pos="0 0 -0.213">
+            <inertial pos="0.00629595 0.000622121 -0.141417" quat="0.703508 -0.00450087 0.00154099 0.710672" mass="0.241352" diaginertia="0.0014901 0.00146356 5.31397e-05" />
+            <joint name="FR_calf_joint" class="knee" />
+            <geom mesh="calf_mirror" material="gray" class="visual" />
+            <geom name="FR_calf_upper_collision" size="0.013 0.06" pos="0.01 0 -0.06" quat="0.995004 0 -0.0998334 0" type="cylinder" class="collision" />
+            <geom name="FR_calf_lower_collision" size="0.011 0.0325" pos="0.02 0 -0.148" quat="0.999688 0 0.0249974 0" type="cylinder" class="collision" />
+            <body name="FR_foot" pos="0 0 -0.2264">
+              <inertial pos="-0.0 -0.04 -0.0" quat="0.661419 0.248219 0.250051 0.662108" mass="0.98" diaginertia="0.003 0.0016 0.0016" />
+              <joint name="FR_foot_joint" pos="0 0 0" axis="0 1 0" />
+              <geom type="mesh" rgba="0.15 0.15 0.15 1" mesh="wheel" pos="0 -0.0 0" class="visual" />
+              <geom name="FR_wheel_collision" type="cylinder" size="0.086 0.026" pos="0 0 0" quat="0.707107 0.707107 0 0" class="collision" condim="6" priority="1" friction="0.8 0.02 0.01" />
+              <site name="FR_foot_site" pos="0 -0.04 0" size="0.01" />
+            </body>
+          </body>
+        </body>
+      </body>
+      <body name="RL_hip" pos="-0.1934 0.0465 0">
+        <inertial pos="0.0054 0.00194 -0.000105" quat="0.505462 0.498237 0.497014 0.499245" mass="0.678" diaginertia="0.00088403 0.000596003 0.000479967" />
+        <joint name="RL_hip_joint" class="abduction" />
+        <geom mesh="hip_0" material="metal" class="visual" quat="4.63268e-05 0 1 0" />
+        <geom mesh="hip_1" material="gray" class="visual" quat="4.63268e-05 0 1 0" />
+        <geom name="RL_hip_collision" size="0.046 0.02" pos="0 0.08 0" quat="0.707107 0.707107 0 0" type="cylinder" class="collision" />
+        <body name="RL_thigh" pos="0 0.0955 0">
+          <inertial pos="-0.00374 -0.0223 -0.0327" quat="0.829533 0.0847635 -0.0200632 0.551623" mass="1.152" diaginertia="0.00594973 0.00584149 0.000878787" />
+          <joint name="RL_thigh_joint" class="back_hip" />
+          <geom mesh="thigh_0" material="metal" class="visual" />
+          <geom mesh="thigh_1" material="gray" class="visual" />
+          <geom name="RL_thigh_collision" size="0.1065 0.01225 0.017" pos="0 0 -0.1065" quat="0.707107 0 0.707107 0" type="box" class="collision" />
+          <body name="RL_calf" pos="0 0 -0.213">
+            <inertial pos="0.00629595 -0.000622121 -0.141417" quat="0.710672 0.00154099 -0.00450087 0.703508" mass="0.241352" diaginertia="0.0014901 0.00146356 5.31397e-05" />
+            <joint name="RL_calf_joint" class="knee" />
+            <geom mesh="calf" material="gray" class="visual" />
+            <geom name="RL_calf_upper_collision" size="0.013 0.06" pos="0.01 0 -0.06" quat="0.995004 0 -0.0998334 0" type="cylinder" class="collision" />
+            <geom name="RL_calf_lower_collision" size="0.011 0.0325" pos="0.02 0 -0.148" quat="0.999688 0 0.0249974 0" type="cylinder" class="collision" />
+            <body name="RL_foot" pos="0 0 -0.2264">
+              <inertial pos="-0.0 0.04 -0.0" quat="0.661419 0.248219 0.250051 0.662108" mass="0.98" diaginertia="0.003 0.0016 0.0016" />
+              <joint name="RL_foot_joint" pos="0 0 0" axis="0 1 0" />
+              <geom type="mesh" rgba="0.15 0.15 0.15 1" mesh="wheel" pos="0 0.0 0" quat="0.0 1.0 0.0 0.0" class="visual" />
+              <geom name="RL_wheel_collision" type="cylinder" size="0.086 0.026" pos="0 0 0" quat="0.707107 0.707107 0 0" class="collision" condim="6" priority="1" friction="0.8 0.02 0.01" />
+              <site name="RL_foot_site" pos="0 0.04 0" size="0.01" />
+            </body>
+          </body>
+        </body>
+      </body>
+      <body name="RR_hip" pos="-0.1934 -0.0465 0">
+        <inertial pos="0.0054 -0.00194 -0.000105" quat="0.499245 0.497014 0.498237 0.505462" mass="0.678" diaginertia="0.00088403 0.000596003 0.000479967" />
+        <joint name="RR_hip_joint" class="abduction" />
+        <geom mesh="hip_0" material="metal" class="visual" quat="2.14617e-09 4.63268e-05 4.63268e-05 -1" />
+        <geom mesh="hip_1" material="gray" class="visual" quat="2.14617e-09 4.63268e-05 4.63268e-05 -1" />
+        <geom name="RR_hip_collision" size="0.046 0.02" pos="0 -0.08 0" quat="0.707107 0.707107 0 0" type="cylinder" class="collision" />
+        <body name="RR_thigh" pos="0 -0.0955 0">
+          <inertial pos="-0.00374 0.0223 -0.0327" quat="0.551623 -0.0200632 0.0847635 0.829533" mass="1.152" diaginertia="0.00594973 0.00584149 0.000878787" />
+          <joint name="RR_thigh_joint" class="back_hip" />
+          <geom mesh="thigh_mirror_0" material="metal" class="visual" />
+          <geom mesh="thigh_mirror_1" material="gray" class="visual" />
+          <geom name="RR_thigh_collision" size="0.1065 0.01225 0.017" pos="0 0 -0.1065" quat="0.707107 0 0.707107 0" type="box" class="collision" />
+          <body name="RR_calf" pos="0 0 -0.213">
+            <inertial pos="0.00629595 0.000622121 -0.141417" quat="0.703508 -0.00450087 0.00154099 0.710672" mass="0.241352" diaginertia="0.0014901 0.00146356 5.31397e-05" />
+            <joint name="RR_calf_joint" class="knee" />
+            <geom mesh="calf_mirror" material="gray" class="visual" />
+            <geom name="RR_calf_upper_collision" size="0.013 0.06" pos="0.01 0 -0.06" quat="0.995004 0 -0.0998334 0" type="cylinder" class="collision" />
+            <geom name="RR_calf_lower_collision" size="0.011 0.0325" pos="0.02 0 -0.148" quat="0.999688 0 0.0249974 0" type="cylinder" class="collision" />
+            <body name="RR_foot" pos="0 0 -0.2264">
+              <inertial pos="-0.0 -0.04 -0.0" quat="0.661419 0.248219 0.250051 0.662108" mass="0.98" diaginertia="0.003 0.0016 0.0016" />
+              <joint name="RR_foot_joint" pos="0 0 0" axis="0 1 0" />
+              <geom type="mesh" rgba="0.15 0.15 0.15 1" mesh="wheel" pos="0 -0.00 0" class="visual" />
+              <geom name="RR_wheel_collision" type="cylinder" size="0.086 0.026" pos="0 0 0" quat="0.707107 0.707107 0 0" class="collision" condim="6" priority="1" friction="0.8 0.02 0.01" />
+              <site name="RR_foot_site" pos="0 -0.04 0" size="0.01" />
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor class="abduction" name="FL_hip" joint="FL_hip_joint" />
+    <motor class="front_hip" name="FL_thigh" joint="FL_thigh_joint" />
+    <motor class="knee" name="FL_calf" joint="FL_calf_joint" />
+    <motor class="abduction" name="FR_hip" joint="FR_hip_joint" />
+    <motor class="front_hip" name="FR_thigh" joint="FR_thigh_joint" />
+    <motor class="knee" name="FR_calf" joint="FR_calf_joint" />
+    <motor class="abduction" name="RL_hip" joint="RL_hip_joint" />
+    <motor class="back_hip" name="RL_thigh" joint="RL_thigh_joint" />
+    <motor class="knee" name="RL_calf" joint="RL_calf_joint" />
+    <motor class="abduction" name="RR_hip" joint="RR_hip_joint" />
+    <motor class="back_hip" name="RR_thigh" joint="RR_thigh_joint" />
+    <motor class="knee" name="RR_calf" joint="RR_calf_joint" />
+    <velocity name="FL_wheel" joint="FL_foot_joint" ctrlrange="-15 15" kv="5.0" />
+    <velocity name="FR_wheel" joint="FR_foot_joint" ctrlrange="-15 15" kv="5.0" />
+    <velocity name="RL_wheel" joint="RL_foot_joint" ctrlrange="-15 15" kv="5.0" />
+    <velocity name="RR_wheel" joint="RR_foot_joint" ctrlrange="-15 15" kv="5.0" />
+  </actuator>
+  <sensor>
+    <accelerometer name="imu_accel" site="imu" />
+    <gyro name="imu_gyro" site="imu" />
+    <touch name="FL_foot_contact" site="FL_foot_site" />
+    <touch name="FR_foot_contact" site="FR_foot_site" />
+    <touch name="RL_foot_contact" site="RL_foot_site" />
+    <touch name="RR_foot_contact" site="RR_foot_site" />
+    <framepos name="base_pos" objtype="site" objname="base_link_site" />
+    <framequat name="base_quat" objtype="site" objname="base_link_site" />
+    <framelinvel name="base_linvel" objtype="site" objname="base_link_site" />
+    <frameangvel name="base_angvel" objtype="site" objname="base_link_site" />
+  </sensor>
+</mujoco>

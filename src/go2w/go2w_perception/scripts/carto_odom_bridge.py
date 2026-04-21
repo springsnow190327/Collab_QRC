@@ -34,7 +34,7 @@ class CartoOdomBridge(Node):
         self.parent_frame = str(parent)
         self.child_frame = str(child)
 
-        self.tf_buffer = Buffer()
+        self.tf_buffer = Buffer(node=self)
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
         self.odom_pub = self.create_publisher(Odometry, str(output_topic), 10)

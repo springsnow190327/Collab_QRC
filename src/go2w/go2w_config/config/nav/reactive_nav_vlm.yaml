@@ -23,7 +23,31 @@
     rrt_rewire_radius: 0.60
     rrt_grid_radius: 4.0
     rrt_grid_resolution: 0.10
-    rrt_inflation_radius: 0.22
+    # Iter 7: derived from URDF geometry rather than heuristic.
+    #
+    # reactive_nav_node inflates obstacles circularly around the LIDAR
+    # ORIGIN (that's where the obstacle cloud is referenced). The inflation
+    # radius must therefore be the worst-case distance from the LiDAR
+    # optical frame to any point on the robot footprint, including wheels.
+    #
+    # TF chain (base_link → livox_mid360 origin):
+    #   base → imu           (-0.02557, 0, 0.04232)   go2w.urdf.xacro
+    #   imu  → livox_mid360  (+0.18700, 0, 0.08030)   livox_mid360.xacro
+    #   LiDAR xy in base   = (+0.16143, 0)
+    #
+    # Robot footprint in base frame (from URDF + MJCF + wheel.stl):
+    #   front   x : +0.340 m  (front sensor sphere: pos 0.293, r 0.047)
+    #   rear    x : -0.279 m  (rear wheel centre -0.1934 - radius 0.086)
+    #   lateral y : ±0.168 m  (hip 0.0465 + thigh 0.0955 + wheel
+    #                           half-thickness 0.026)
+    #
+    # Distances from LiDAR (0.1614, 0) to each corner:
+    #   front-left/right : 0.245 m
+    #   rear-left/right  : 0.472 m  ← worst case
+    #
+    # Forward-mounted LiDAR makes the REAR corners the binding constraint.
+    # 0.472 m geometric worst case + ~3 cm margin, rounded to 0.50.
+    rrt_inflation_radius: 0.5
     rrt_replan_sec: 0.5
     rrt_informed_enabled: true
     rrt_goal_clip_distance: 3.5
@@ -33,6 +57,9 @@
     rrt_unknown_is_obstacle: true
 
     global_downsample: 3
-    global_inflation_m: 0.15
+    # Iter 7: match rrt_inflation_radius so the global A* doesn't route
+    # through corridors the local RRT* can't execute. See derivation in
+    # the rrt_inflation_radius comment above.
+    global_inflation_m: 0.5
     global_replan_sec: 3.0
     global_waypoint_spacing_m: 1.5

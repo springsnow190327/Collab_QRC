@@ -58,6 +58,7 @@ class DefaultNav(Node):
         # Exploration evaluation state
         self._backtrack_count = 0
         self._wall_hit_count = 0
+        self._prev_stall_event_count = 0   # for nav_status/v1 stall detection delta
         self._wall_hit_threshold = 0.15           # min_front below this = wall hit
         self._min_travel_for_pass = 3.0           # must travel at least 3m
         self._eval_done = False
@@ -372,6 +373,38 @@ class DefaultNav(Node):
         if teammate_diag:
             diag.update(teammate_diag)
 
+        # ── nav_status/v1 canonical fields (see docs/claude/nav_status_contract.md) ──
+        # Layered on top of legacy fields (mode, stall_event_count, …) so the
+        # existing coordinator stall path keeps working. New fields let CFPA2
+        # fast-blacklist unreachable goals.
+        diag["schema"] = "nav_status/v1"
+        diag["source"] = "default_nav"
+        mode_str = str(diag.get("mode", ""))
+        has_goal = self.goal_state.x is not None and self.goal_state.y is not None
+        if not has_goal:
+            diag["state"] = "idle"
+            diag["goal"] = None
+            diag["reason"] = "no_goal"
+        elif mode_str == "goal_reached":
+            diag["state"] = "goal_reached"
+            diag["goal"] = [float(self.goal_state.x), float(self.goal_state.y)]
+            diag["reason"] = "reached"
+        elif mode_str == "stuck" or diag.get("stall_event_count", 0) > self._prev_stall_event_count:
+            diag["state"] = "stalled"
+            diag["goal"] = [float(self.goal_state.x), float(self.goal_state.y)]
+            diag["reason"] = diag.get("zero_reason", "stalled")
+        elif self.runtime_state.plan_waypoints_world is None and self.last_map is not None:
+            # Global A* tried and failed — definitive unreachable.
+            diag["state"] = "unreachable"
+            diag["goal"] = [float(self.goal_state.x), float(self.goal_state.y)]
+            diag["reason"] = "astar_no_path"
+        else:
+            diag["state"] = "navigating"
+            diag["goal"] = [float(self.goal_state.x), float(self.goal_state.y)]
+            diag["reason"] = mode_str or "navigating"
+        diag["stamp_sec"] = round(now_sec, 3)
+        self._prev_stall_event_count = diag.get("stall_event_count", 0)
+
         status_msg = String()
         status_msg.data = json.dumps(diag, separators=(",", ":"))
         self.status_pub.publish(status_msg)
@@ -652,11 +685,11 @@ class DefaultNav(Node):
         marker.scale.x = 1.0
         marker.scale.y = 1.0
         marker.scale.z = 1.0
-        # Cyan triangle, semi-transparent
-        marker.color.r = 0.0
-        marker.color.g = 0.9
-        marker.color.b = 1.0
-        marker.color.a = 0.85
+        # Red triangle, semi-transparent — stands out on Cartographer's grey/black grid.
+        marker.color.r = 1.0
+        marker.color.g = 0.10
+        marker.color.b = 0.10
+        marker.color.a = 0.90
 
         # Build triangle pointing in yaw direction — sized to match Go2W footprint
         # Go2W is ~0.70m long × 0.35m wide (including legs)

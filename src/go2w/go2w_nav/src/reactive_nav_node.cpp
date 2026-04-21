@@ -9,6 +9,7 @@
  */
 
 #include <cmath>
+#include <cstdio>
 #include <cstdint>
 #include <cstring>
 #include <algorithm>
@@ -23,6 +24,7 @@
 #include <tf2_ros/transform_listener.h>
 #include <tf2/utils.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <geometry_msgs/msg/point.hpp>
 #include <geometry_msgs/msg/point_stamped.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/twist_stamped.hpp>
@@ -729,9 +731,16 @@ public:
             [this](geometry_msgs::msg::PointStamped::SharedPtr msg) {
                 double new_gx = msg->point.x, new_gy = msg->point.y;
                 // Invalidate global plan if goal changed significantly
-                if (std::hypot(new_gx - goal_x_, new_gy - goal_y_) > 0.5) {
+                bool new_goal = std::hypot(new_gx - goal_x_, new_gy - goal_y_) > 0.5 || !has_goal_;
+                if (new_goal) {
                     global_waypoints_.clear();
                     last_global_plan_time_ = -1;
+                    // Reset nav_status reachability trackers for the new goal
+                    consecutive_plan_failures_ = 0;
+                    consecutive_astar_failures_ = 0;
+                    ++goal_seq_;
+                    current_state_ = "navigating";
+                    current_reason_ = "new_goal";
                 }
                 goal_x_ = new_gx; goal_y_ = new_gy;
                 has_goal_ = true;
@@ -841,13 +850,11 @@ private:
             return;
         }
 
-        if (!has_goal_ || !last_scan_) {
-            publish_cmd(0.0, 0.0);
-            return;
-        }
-
-        // Look up robot pose in map frame via TF2
-        // (odom pose may differ from map pose when Cartographer corrects drift)
+        // Look up robot pose in map frame via TF2 EVERY tick, regardless of
+        // goal/scan availability. The pose marker + trajectory are pure
+        // visualization — they should track the robot whether or not we are
+        // navigating. Otherwise RViz shows no red triangle until CFPA2
+        // publishes its first goal, which can take 5-10s after launch.
         try {
             auto tf = tf_buffer_->lookupTransform(
                 map_frame_, "base_link", tf2::TimePointZero);
@@ -866,6 +873,20 @@ private:
             // else keep the last good TF pose
         }
 
+        // Emit robot-pose marker + trajectory unconditionally so RViz is
+        // useful even in idle state. Skip if TF never resolved.
+        if (has_map_tf_) {
+            trajectory_.emplace_back(map_robot_x_, map_robot_y_);
+            if (trajectory_.size() > 2000) trajectory_.erase(trajectory_.begin());
+            publish_trajectory();
+            publish_pose_marker();
+        }
+
+        if (!has_goal_ || !last_scan_) {
+            publish_cmd(0.0, 0.0);
+            return;
+        }
+
         double goal_dx = goal_x_ - map_robot_x_;
         double goal_dy = goal_y_ - map_robot_y_;
         double dist_to_goal = std::hypot(goal_dx, goal_dy);
@@ -873,6 +894,9 @@ private:
         // Goal reached
         if (dist_to_goal < goal_tolerance_) {
             publish_cmd(0.0, 0.0);
+            current_state_ = "goal_reached";
+            current_reason_ = "reached";
+            publish_status();
             if (last_replan_time_ < 0 || (now_sec - last_replan_time_) >= goal_reached_replan_cooldown_) {
                 replan_pub_->publish(std_msgs::msg::Empty());
                 last_replan_time_ = now_sec;
@@ -903,6 +927,7 @@ private:
             if (gplan.valid && !gplan.waypoints.empty()) {
                 global_waypoints_ = std::move(gplan.waypoints);
                 last_global_plan_time_ = now_sec;
+                consecutive_astar_failures_ = 0;
                 RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
                     "Global A*: %zu waypoints to goal (%.1f, %.1f)",
                     global_waypoints_.size(), goal_x_, goal_y_);
@@ -910,6 +935,11 @@ private:
                 RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
                     "Global A* failed to find path to (%.1f, %.1f)", goal_x_, goal_y_);
                 last_global_plan_time_ = now_sec;  // avoid spamming
+                ++consecutive_astar_failures_;
+                if (consecutive_astar_failures_ >= nav_status_unreachable_fail_count_) {
+                    current_state_ = "unreachable";
+                    current_reason_ = "astar_no_path";
+                }
             }
             publish_global_path();
         }
@@ -951,7 +981,31 @@ private:
         if (need_replan) {
             plan_path(local_goal_dx, local_goal_dy);
             last_plan_time_ = now_sec;
+            // RRT* outcome tracking for nav_status
+            if (path_world_.empty()) {
+                ++consecutive_plan_failures_;
+                if (consecutive_plan_failures_ >= nav_status_unreachable_fail_count_
+                    && consecutive_astar_failures_ >= nav_status_unreachable_fail_count_) {
+                    // Both global A* and local RRT* failed repeatedly → unreachable.
+                    // Require both because isolated RRT* misses are common in tight
+                    // spaces; combined with A* failure it's a definitive verdict.
+                    current_state_ = "unreachable";
+                    current_reason_ = "rrt_and_astar_no_path";
+                } else if (current_state_ == "navigating") {
+                    current_reason_ = "rrt_no_path";
+                }
+            } else {
+                consecutive_plan_failures_ = 0;
+                if (current_state_ == "unreachable") {
+                    // Recovered — probably map grew or replan succeeded
+                    current_state_ = "navigating";
+                    current_reason_ = "recovered";
+                }
+            }
         }
+
+        // Publish nav_status every tick (throttled inside publish_status).
+        publish_status();
 
         // Select pursuit target
         double target_x = goal_x_, target_y = goal_y_;
@@ -996,9 +1050,15 @@ private:
                 lin *= std::max(0.0, (sm.min_front - obstacle_stop_dist_) / rng);
         }
         bool blocked_front = sm.min_front < obstacle_stop_dist_;
-        if (blocked_front || external_stop_ != 0) {
+        // When externally stopped, skip publishing entirely so that other
+        // controllers (e.g. PUSH skill) can command the robot without
+        // interference from zero-velocity messages.
+        if (external_stop_ != 0) {
+            return;
+        }
+        if (blocked_front) {
             lin = 0.0;
-            if (blocked_front && turn_in_place_on_block_ && external_stop_ == 0) {
+            if (turn_in_place_on_block_) {
                 if (std::abs(ang) < 0.1)
                     ang = max_angular_speed_ * 0.5 * ((sm.right_push > sm.left_push) ? 1.0 : -1.0);
             } else {
@@ -1013,17 +1073,10 @@ private:
             replan_pub_->publish(std_msgs::msg::Empty());
         }
 
-        // Publish path visualization
+        // Publish path visualization (trajectory + pose already emitted above
+        // in the unconditional viz block at the top of tick()).
         publish_path();
-
-        // Trajectory
-        trajectory_.emplace_back(map_robot_x_, map_robot_y_);
-        if (trajectory_.size() > 2000) trajectory_.erase(trajectory_.begin());
-        publish_trajectory();
-
-        // Markers
         publish_goal_marker();
-        publish_pose_marker();
     }
 
     // ── RRT* Planning ────────────────────────────────────────────────
@@ -1142,17 +1195,40 @@ private:
     }
 
     void publish_pose_marker() {
+        // Red TRIANGLE_LIST shaped like the robot footprint, pointing in yaw
+        // direction. Matches default_nav.py's visual so swapping nav backends
+        // doesn't change what the operator sees on RViz.
         visualization_msgs::msg::Marker m;
         m.header.stamp = this->now();
         m.header.frame_id = map_frame_;
-        m.ns = "reactive_nav_pose"; m.id = 0;
-        m.type = visualization_msgs::msg::Marker::ARROW;
+        m.ns = "robot_pose"; m.id = 0;
+        m.type = visualization_msgs::msg::Marker::TRIANGLE_LIST;
         m.action = visualization_msgs::msg::Marker::ADD;
-        m.pose.position.x = map_robot_x_; m.pose.position.y = map_robot_y_; m.pose.position.z = 0.15;
-        m.pose.orientation.z = std::sin(map_robot_yaw_ / 2.0);
-        m.pose.orientation.w = std::cos(map_robot_yaw_ / 2.0);
-        m.scale.x = 0.3; m.scale.y = 0.08; m.scale.z = 0.08;
-        m.color.r = 0.2; m.color.g = 0.8; m.color.b = 1.0; m.color.a = 0.9;
+        m.pose.orientation.w = 1.0;   // vertices carry the pose in world frame
+        m.scale.x = 1.0; m.scale.y = 1.0; m.scale.z = 1.0;
+        m.color.r = 1.0; m.color.g = 0.10; m.color.b = 0.10; m.color.a = 0.90;
+
+        // Go2W footprint ~0.70 × 0.35 m; Go2 is narrower but same length.
+        // Keep width conservative so the marker reads on both models.
+        const double half_length = 0.35;
+        const double half_width  = 0.175;
+        const double cx = map_robot_x_, cy = map_robot_y_, yaw = map_robot_yaw_;
+
+        geometry_msgs::msg::Point p0, p1, p2;
+        // Front tip
+        p0.x = cx + half_length * std::cos(yaw);
+        p0.y = cy + half_length * std::sin(yaw);
+        p0.z = 0.05;
+        // Rear left
+        p1.x = cx - half_length * std::cos(yaw) + half_width * std::cos(yaw + M_PI_2);
+        p1.y = cy - half_length * std::sin(yaw) + half_width * std::sin(yaw + M_PI_2);
+        p1.z = 0.05;
+        // Rear right
+        p2.x = cx - half_length * std::cos(yaw) - half_width * std::cos(yaw + M_PI_2);
+        p2.y = cy - half_length * std::sin(yaw) - half_width * std::sin(yaw + M_PI_2);
+        p2.z = 0.05;
+        m.points = {p0, p1, p2};
+
         pose_marker_pub_->publish(m);
     }
 
@@ -1168,6 +1244,44 @@ private:
             msg.poses.push_back(ps);
         }
         global_path_pub_->publish(msg);
+    }
+
+    // Emit nav_status/v1 JSON — consumed by CFPA2 for fast-blacklist feedback.
+    // See docs/claude/nav_status_contract.md for the schema.
+    // Throttled to ~5 Hz to avoid flooding CFPA2's callback.
+    void publish_status() {
+        double now_sec = this->now().seconds();
+        if (last_status_pub_sec_ > 0.0
+            && (now_sec - last_status_pub_sec_) < status_pub_min_period_sec_) {
+            return;
+        }
+        last_status_pub_sec_ = now_sec;
+
+        // Hand-rolled JSON (no nlohmann dep in this node's build).
+        char buf[512];
+        if (!has_goal_) {
+            std::snprintf(buf, sizeof(buf),
+                "{\"schema\":\"nav_status/v1\",\"source\":\"reactive_nav\","
+                "\"state\":\"idle\",\"goal\":null,\"goal_seq\":%llu,"
+                "\"reason\":\"no_goal\",\"stamp_sec\":%.3f}",
+                static_cast<unsigned long long>(goal_seq_), now_sec);
+        } else {
+            std::snprintf(buf, sizeof(buf),
+                "{\"schema\":\"nav_status/v1\",\"source\":\"reactive_nav\","
+                "\"state\":\"%s\",\"goal\":[%.3f,%.3f],\"goal_seq\":%llu,"
+                "\"reason\":\"%s\",\"stamp_sec\":%.3f,"
+                "\"pos\":[%.3f,%.3f],\"speed\":%.3f,\"dist_goal_live\":%.3f,"
+                "\"astar_fails\":%d,\"rrt_fails\":%d}",
+                current_state_.c_str(), goal_x_, goal_y_,
+                static_cast<unsigned long long>(goal_seq_),
+                current_reason_.c_str(), now_sec,
+                map_robot_x_, map_robot_y_, robot_speed_,
+                std::hypot(goal_x_ - map_robot_x_, goal_y_ - map_robot_y_),
+                consecutive_astar_failures_, consecutive_plan_failures_);
+        }
+        std_msgs::msg::String msg;
+        msg.data = buf;
+        status_pub_->publish(msg);
     }
 
     // ── State ────────────────────────────────────────────────────────
@@ -1211,6 +1325,16 @@ private:
     std::vector<std::pair<double,double>> global_waypoints_;
     double last_global_plan_time_ = -1;
     std::mt19937 rng_;
+
+    // nav_status/v1 state machine
+    std::string current_state_ = "idle";         // idle|navigating|goal_reached|unreachable|stalled|failed
+    std::string current_reason_ = "init";
+    uint64_t    goal_seq_ = 0;
+    int         consecutive_plan_failures_ = 0;   // RRT* empty-path streak
+    int         consecutive_astar_failures_ = 0;  // Global A* no-path streak
+    int         nav_status_unreachable_fail_count_ = 3;
+    double      last_status_pub_sec_ = -1;
+    double      status_pub_min_period_sec_ = 0.2;  // throttle at ~5 Hz
 
     // Scan & map
     sensor_msgs::msg::LaserScan::SharedPtr last_scan_;

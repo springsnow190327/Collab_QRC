@@ -1,0 +1,35 @@
+octomap_server_node:
+  ros__parameters:
+    # === Octomap 3D → 2D projected occupancy grid ===
+    resolution: 0.05
+    frame_id: "map"
+    base_frame_id: "base_link"
+    sensor_model:
+      max_range: 8.0
+      hit: 0.65
+      miss: 0.3
+      min: 0.12
+      max: 0.97
+
+    # Height band — with filter_ground_plane disabled, z-filter operates
+    # in MAP frame (ground = z≈0).  Reject everything below 0.15m to
+    # exclude all ground returns from the 13°-pitched lidar.
+    point_cloud_min_z: 0.15
+    point_cloud_max_z: 0.80
+    occupancy_min_z: 0.15
+    occupancy_max_z: 0.60
+
+    # Disable RANSAC ground filtering — it transforms to base_link frame
+    # which shifts the z-filter reference, and the plane fit can fail with
+    # a tilted sensor, leaking ground points as occupied hits.
+    filter_ground_plane: false
+
+    # 2D projection
+    incremental_2D_projection: true
+    publish_free_space: true
+    use_height_map: true
+    compress_map: true
+    latch: false
+
+    # Filter speckle noise
+    filter_speckles: true

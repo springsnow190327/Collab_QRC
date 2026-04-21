@@ -1,0 +1,239 @@
+Panels:
+  - Class: rviz_common/Displays
+    Help Height: 70
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /OccupancyGrid1
+        - /OctomapVoxels1
+      Splitter Ratio: 0.5
+    Tree Height: 648
+Visualization Manager:
+  Class: ""
+  Displays:
+    # Ground grid
+    - Alpha: 0.35
+      Cell Size: 1
+      Class: rviz_default_plugins/Grid
+      Color: 55; 89; 122
+      Enabled: true
+      Line Style:
+        Line Width: 0.03
+        Value: Lines
+      Name: Grid
+      Normal Cell Count: 0
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Plane: XY
+      Plane Cell Count: 200
+      Reference Frame: <Fixed Frame>
+      Value: true
+
+    # Robot pose axes
+    - Class: rviz_default_plugins/Axes
+      Enabled: true
+      Length: 0.5
+      Name: Robot Pose
+      Radius: 0.08
+      Reference Frame: body
+      Value: true
+
+    # Octomap 3D voxels
+    - Class: octomap_rviz_plugins/OccupancyGrid
+      Enabled: true
+      Max. Height Display: 1.5
+      Max. Octree Depth: 16
+      Min. Height Display: 0.0
+      Name: OctomapVoxels
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /octomap_full
+      Voxel Alpha: 0.6
+      Voxel Coloring: Z-Axis
+      Voxel Rendering: Occupied Voxels
+      Value: true
+
+    # 2D occupancy grid from scan mapper (proper raycasted free/occ/unknown)
+    - Alpha: 0.65
+      Class: rviz_default_plugins/Map
+      Color Scheme: map
+      Draw Behind: true
+      Enabled: true
+      Name: OccupancyGrid
+      Topic:
+        Depth: 5
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /robot/map
+      Use Timestamp: false
+      Value: true
+
+    # Raw probabilistic Cartographer occupancy grid (debug/reference)
+    - Alpha: 0.30
+      Class: rviz_default_plugins/Map
+      Color Scheme: map
+      Draw Behind: true
+      Enabled: false
+      Name: RawProbMap
+      Topic:
+        Depth: 5
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /robot/map_prob
+      Use Timestamp: false
+      Value: false
+
+    # Frontier cylinders (3D vertical markers from frontier_3d_markers.py)
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: FrontierCylinders
+      Namespaces:
+        frontiers: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /frontier_cylinders
+      Value: true
+
+    # Planned path from default_nav (A* / local planner target chain)
+    - Alpha: 1
+      Buffer Length: 1
+      Class: rviz_default_plugins/Path
+      Color: 255; 50; 50
+      Enabled: true
+      Head Diameter: 0.2
+      Head Length: 0.2
+      Length: 0.3
+      Line Style: Billboards
+      Line Width: 0.05
+      Name: PlannedPath
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Pose Color: 255; 85; 255
+      Pose Style: None
+      Radius: 0.03
+      Shaft Diameter: 0.1
+      Shaft Length: 0.1
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /robot/planned_path
+      Value: true
+
+    # Executed robot trajectory
+    - Alpha: 1
+      Buffer Length: 1
+      Class: rviz_default_plugins/Path
+      Color: 30; 220; 50
+      Enabled: true
+      Head Diameter: 0.0
+      Head Length: 0.0
+      Length: 0.3
+      Line Style: Billboards
+      Line Width: 0.03
+      Name: RobotTrajectory
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Pose Color: 30; 220; 50
+      Pose Style: None
+      Radius: 0.03
+      Shaft Diameter: 0.0
+      Shaft Length: 0.0
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /robot/robot_trajectory
+      Value: true
+
+    # TF tree
+    - Class: rviz_default_plugins/TF
+      Enabled: true
+      Frame Timeout: 15
+      Frames:
+        All Enabled: true
+      Marker Scale: 0.5
+      Name: TF
+      Show Arrows: false
+      Show Axes: true
+      Show Names: false
+      Update Interval: 0
+      Value: true
+
+  Enabled: true
+  Global Options:
+    Background Color: 235; 237; 240
+    Fixed Frame: map
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/Interact
+      Hide Inactive Objects: true
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/FocusCamera
+  Transformation:
+    Current:
+      Class: rviz_default_plugins/TF
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 12
+      Enable Stereo Rendering:
+        Stereo Eye Separation: 0.06
+        Stereo Focal Distance: 1
+        Swap Stereo Eyes: false
+        Value: false
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+      Focal Shape Fixed Size: true
+      Focal Shape Size: 0.05
+      Invert Z Axis: false
+      Name: 3D Orbit
+      Near Clip Distance: 0.01
+      Pitch: 0.5
+      Target Frame: body
+      Value: Orbit (rviz_default_plugins)
+      Yaw: 0.8
+    Saved:
+      - Angle: 0
+        Class: rviz_default_plugins/TopDownOrtho
+        Enable Stereo Rendering:
+          Stereo Eye Separation: 0.06
+          Stereo Focal Distance: 1
+          Swap Stereo Eyes: false
+          Value: false
+        Name: Top-Down 2D
+        Near Clip Distance: 0.01
+        Scale: 25
+        Target Frame: body
+        Value: TopDownOrtho (rviz_default_plugins)
+        X: 0
+        Y: 0
+Window Geometry:
+  Displays:
+    collapsed: false
+  Height: 900
+  Hide Left Dock: false
+  Hide Right Dock: true
+  Width: 700
+  X: 750
+  Y: 50

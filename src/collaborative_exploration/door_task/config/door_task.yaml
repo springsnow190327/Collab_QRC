@@ -1,0 +1,80 @@
+# Door task configuration (VLM path only — legacy FSM has been deleted).
+door_monitor:
+  ros__parameters:
+    pose_topic: /mujoco_sim/door_panel_pose_sensor/pose
+    door_state_topic: /door_task/door_state
+    door_open_topic: /door_task/door_open
+    open_threshold_rad: 0.5        # ~29 degrees
+    held_threshold_rad: 0.7        # ~40 degrees
+    publish_rate: 20.0
+
+button_monitor:
+  ros__parameters:
+    robot_namespaces: ["robot_a", "robot_b"]
+    button_x: 7.0
+    button_y: 2.0
+    press_radius_m: 0.5
+    publish_rate: 20.0
+    button_topic: /door_task/button_pressed
+
+perception_node:
+  ros__parameters:
+    robot_namespaces: ["robot_a", "robot_b"]
+    camera_topics:
+      - /front_camera/color/image_raw
+      - /b_front_camera/color/image_raw
+    depth_topics:
+      - /front_camera/depth/image_rect_raw
+      - /b_front_camera/depth/image_rect_raw
+    camera_width: 1280
+    camera_height: 720
+    camera_fovy_deg: 80.0
+    fallback_depth_m: 2.5    # only used if depth topic is silent (toy-sim safety)
+    # Door-task scene bounds — projections outside this rectangle are
+    # dropped to keep hallucinated points out of the world_dict.
+    scene_x_min: 0.0
+    scene_x_max: 8.0
+    scene_y_min: 0.0
+    scene_y_max: 4.0
+    detect_rate: 5.0         # Hz, YOLO inference per camera batch
+    publish_rate: 4.0        # Hz, /perception/world_dict
+    conf_threshold: 0.20
+    max_detections: 10
+    model_id: yolov8n.pt
+    device: cuda
+    merge_radius_m: 0.6
+    decay_sec: 30.0
+    iou_threshold: 0.3
+    max_misses: 5
+    # Phase 1b CLIP inspector
+    inspector_enabled: true
+    inspector_queries:
+      - "red button"
+      - "red pressure pad"
+      - "door"
+      - "wall"
+      - "floor"
+      - "robot"
+      - "unknown object"
+    inspector_window: 5
+    inspector_model_id: "openai/clip-vit-base-patch32"
+    inspector_min_confidence: 0.55
+
+vlm_controller:
+  ros__parameters:
+    robot_namespaces: ["robot_a", "robot_b"]
+    vlm_provider: "xai"
+    vlm_model: "grok-4-1-fast-non-reasoning"
+    vlm_temperature: 0.3
+    vlm_max_tokens: 512
+    vlm_timeout_sec: 8.0
+    vlm_tick_sec: 1.0        # how often to query the VLM
+    control_tick_sec: 0.1    # how often to republish cmd_vel
+    vx_max: 0.55             # max forward speed
+    wz_max: 0.25             # max yaw rate — kept small so the VLM's
+                             # ~1.5s inference latency doesn't outrun
+                             # the camera view during a scan
+    heading_kp: 2.0          # wz = kp * heading_err (clamped to wz_max)
+    heading_err_turn_only: 0.40   # rad; > this -> turn in place (vx=0)
+    arrive_tol: 0.20         # m; dist < this -> stop at target
+    action_stale_sec: 4.0

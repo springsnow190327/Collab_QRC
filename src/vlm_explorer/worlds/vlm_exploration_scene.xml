@@ -1,0 +1,321 @@
+<mujoco model="vlm_exploration_scene">
+  <!-- meshdir resolved relative to the installed scene file location:
+       install/vlm_explorer/share/vlm_explorer/worlds/vlm_exploration_scene.xml
+       Meshes live at:
+       install/go2_gazebo_sim/share/go2_gazebo_sim/mujoco/meshes/
+       Relative path: ../../../../go2_gazebo_sim/share/go2_gazebo_sim/mujoco/meshes -->
+  <compiler angle="radian" meshdir="../../../../go2_gazebo_sim/share/go2_gazebo_sim/mujoco/meshes"/>
+
+  <option timestep="0.002" gravity="0 0 -9.81" integrator="implicitfast"/>
+
+  <default>
+    <joint damping="0.5" armature="0.01"/>
+    <geom friction="1.0 0.005 0.001" condim="3" conaffinity="1" contype="1"/>
+    <motor ctrllimited="true"/>
+  </default>
+
+  <asset>
+    <!-- Robot mesh assets -->
+    <mesh name="left_wheel" file="left_wheel.stl"/>
+    <mesh name="right_wheel" file="right_wheel.stl"/>
+
+    <!-- World texture / material assets -->
+    <texture name="grid" type="2d" builtin="checker"
+             rgb1="0.8 0.8 0.8" rgb2="0.7 0.7 0.7"
+             width="512" height="512"/>
+    <material name="ground_mat" texture="grid" texrepeat="10 10"/>
+    <material name="wall_mat" rgba="0.7 0.7 0.75 1"/>
+    <material name="divider_mat" rgba="0.8 0.7 0.6 1"/>
+    <material name="green_mat" rgba="0.0 1.0 0.0 1" specular="0.3"/>
+    <material name="obstacle_mat" rgba="0.6 0.5 0.4 1"/>
+    <material name="red_mat" rgba="1.0 0.05 0.05 1" specular="0.3"/>
+  </asset>
+
+  <worldbody>
+    <!-- Lighting from VLM exploration world -->
+    <light pos="0 0 10" dir="-0.5 0.1 -0.9" diffuse="0.8 0.8 0.8" castshadow="true"/>
+
+    <!-- Ground plane from VLM exploration world -->
+    <geom name="ground" type="plane" size="50 50 0.1" material="ground_mat"
+          contype="1" conaffinity="1"/>
+
+    <!-- === Outer walls === -->
+    <!-- North wall: SDF size 12.2 0.2 1.0 -> half 6.1 0.1 0.5 -->
+    <geom name="wall_north" type="box" pos="6.0 4.1 0.5"
+          size="6.1 0.1 0.5" material="wall_mat"
+          contype="1" conaffinity="1"/>
+    <!-- South wall -->
+    <geom name="wall_south" type="box" pos="6.0 -4.1 0.5"
+          size="6.1 0.1 0.5" material="wall_mat"
+          contype="1" conaffinity="1"/>
+    <!-- West wall: SDF size 0.2 8.2 1.0 -> half 0.1 4.1 0.5 -->
+    <geom name="wall_west" type="box" pos="-0.1 0 0.5"
+          size="0.1 4.1 0.5" material="wall_mat"
+          contype="1" conaffinity="1"/>
+    <!-- East wall -->
+    <geom name="wall_east" type="box" pos="12.1 0 0.5"
+          size="0.1 4.1 0.5" material="wall_mat"
+          contype="1" conaffinity="1"/>
+
+    <!-- === Central corridor dividers === -->
+    <!-- West segment: SDF size 3.0 0.15 1.0 -> half 1.5 0.075 0.5 -->
+    <geom name="divider_h_west" type="box" pos="1.5 0 0.5"
+          size="1.5 0.075 0.5" material="divider_mat"
+          contype="1" conaffinity="1"/>
+    <!-- East segment: SDF size 5.1 0.15 1.0 -> half 2.55 0.075 0.5 -->
+    <geom name="divider_h_east" type="box" pos="8.55 0 0.5"
+          size="2.55 0.075 0.5" material="divider_mat"
+          contype="1" conaffinity="1"/>
+    <!-- Vertical divider (Room A / Room B): SDF size 0.15 3.0 1.0 -> half 0.075 1.5 0.5 -->
+    <geom name="divider_v_north" type="box" pos="5.5 2.5 0.5"
+          size="0.075 1.5 0.5" material="divider_mat"
+          contype="1" conaffinity="1"/>
+
+    <!-- === Green marker cylinders (VLM targets) === -->
+    <!-- Green Marker 1: Room A (north-west) -->
+    <geom name="green_marker_1" type="cylinder" pos="2.5 2.5 0.25"
+          size="0.15 0.25" material="green_mat"
+          contype="1" conaffinity="1"/>
+    <!-- Green Marker 2: Room B center -->
+    <geom name="green_marker_2" type="cylinder" pos="8.5 2.5 0.25"
+          size="0.15 0.25" material="green_mat"
+          contype="1" conaffinity="1"/>
+    <!-- Green Marker 3: Room C/D (south) -->
+    <geom name="green_marker_3" type="cylinder" pos="7.0 -2.5 0.25"
+          size="0.15 0.25" material="green_mat"
+          contype="1" conaffinity="1"/>
+
+    <!-- === Box obstacles === -->
+    <!-- box_obstacle_1: SDF size 0.6 0.6 0.6 -> half 0.3 0.3 0.3, yaw=0.3 -->
+    <geom name="box_obstacle_1" type="box" pos="4.0 -2.0 0.3"
+          size="0.3 0.3 0.3" euler="0 0 0.3" material="obstacle_mat"
+          contype="1" conaffinity="1"/>
+    <!-- box_obstacle_2: SDF size 0.5 0.8 0.6 -> half 0.25 0.4 0.3, yaw=0.7 -->
+    <geom name="box_obstacle_2" type="box" pos="10.0 -1.5 0.3"
+          size="0.25 0.4 0.3" euler="0 0 0.7" material="obstacle_mat"
+          contype="1" conaffinity="1"/>
+
+    <!-- === Red blocks (0.1m cubes -> half-size 0.05) === -->
+    <!-- Room A: tucked against north wall -->
+    <geom name="red_block_1" type="box" pos="1.8 3.5 0.05"
+          size="0.05 0.05 0.05" euler="0 0 0.4" material="red_mat"
+          contype="1" conaffinity="1"/>
+    <!-- Room A: floor center -->
+    <geom name="red_block_2" type="box" pos="3.2 1.8 0.05"
+          size="0.05 0.05 0.05" euler="0 0 0.9" material="red_mat"
+          contype="1" conaffinity="1"/>
+    <!-- Room B: west side (near divider) -->
+    <geom name="red_block_3" type="box" pos="8.0 3.0 0.05"
+          size="0.05 0.05 0.05" euler="0 0 0.2" material="red_mat"
+          contype="1" conaffinity="1"/>
+    <!-- Room B: east side -->
+    <geom name="red_block_4" type="box" pos="11.2 1.5 0.05"
+          size="0.05 0.05 0.05" euler="0 0 1.1" material="red_mat"
+          contype="1" conaffinity="1"/>
+    <!-- Corridor: on the floor mid-passage -->
+    <geom name="red_block_5" type="box" pos="4.5 0.3 0.05"
+          size="0.05 0.05 0.05" material="red_mat"
+          contype="1" conaffinity="1"/>
+    <!-- Room C/D south: near box_obstacle_1 -->
+    <geom name="red_block_6" type="box" pos="3.5 -3.0 0.05"
+          size="0.05 0.05 0.05" euler="0 0 0.6" material="red_mat"
+          contype="1" conaffinity="1"/>
+    <!-- Room D: far east -->
+    <geom name="red_block_7" type="box" pos="10.5 -3.2 0.05"
+          size="0.05 0.05 0.05" euler="0 0 1.5" material="red_mat"
+          contype="1" conaffinity="1"/>
+    <!-- Room C: west side -->
+    <geom name="red_block_8" type="box" pos="1.2 -2.0 0.05"
+          size="0.05 0.05 0.05" euler="0 0 0.8" material="red_mat"
+          contype="1" conaffinity="1"/>
+
+    <!-- === Go2W Robot === -->
+    <!-- Spawned at x=4.0, y=0, z=0.5 (corridor center, clear of horizontal dividers) -->
+    <body name="base_link" pos="4.0 0 0.5">
+      <freejoint name="root"/>
+      <inertial pos="0.021112 0 -0.005366" mass="6.921"
+                fullinertia="0.02448 0.098077 0.107 0.00012166 0.0014849 -3.12e-05"/>
+      <!-- Base collision box -->
+      <geom name="base_collision" size="0.1881 0.04675 0.057" type="box" rgba="0.671705 0.692426 0.77427 1"/>
+      <!-- Head upper -->
+      <geom size="0.06 0.045" pos="0.285 0 0.01" type="cylinder" contype="0" conaffinity="0"/>
+      <!-- Head lower -->
+      <geom size="0.06" pos="0.293 0 -0.06" contype="0" conaffinity="0"/>
+      <!-- LiDAR mount -->
+      <geom size="0.043 0.043 0.021" pos="0.16143 0 0.12262"
+            quat="-0.0800485 0.0800501 0.702563 0.70256" type="box" contype="0" conaffinity="0"/>
+
+      <!-- IMU site (on base body) -->
+      <site name="imu_site" pos="0.16143 0 0.09787" size="0.01"/>
+
+      <!-- Camera site (front-facing) -->
+      <camera name="front_camera" pos="0.3 0 0.0" euler="0 0 0" fovy="120"
+              resolution="1280 720" mode="fixed"/>
+
+      <!-- ====== Front-Left leg ====== -->
+      <body name="FL_hip" pos="0.1934 0.0465 0">
+        <inertial pos="-0.0054 0.00194 -0.000105" quat="0.497014 0.499245 0.505462 0.498237"
+                  mass="0.678" diaginertia="0.00088403 0.000596003 0.000479967"/>
+        <joint name="FL_hip_joint" axis="1 0 0" range="-1.0472 1.0472"/>
+        <geom size="0.046 0.02" pos="0 0.08 0" quat="0.707107 0.707107 0 0" type="cylinder"
+              rgba="0.671705 0.692426 0.77427 1"/>
+        <body name="FL_thigh" pos="0 0.0955 0">
+          <inertial pos="-0.00374 -0.0223 -0.0327" quat="0.829533 0.0847635 -0.0200632 0.551623"
+                    mass="1.152" diaginertia="0.00594973 0.00584149 0.000878787"/>
+          <joint name="FL_thigh_joint" axis="0 1 0" range="-1.5708 3.4907"/>
+          <geom size="0.055 0.01225 0.017" pos="0 0 -0.1065" quat="0.707107 0 0.707107 0"
+                type="box" rgba="0.671705 0.692426 0.77427 1"/>
+          <body name="FL_calf" pos="0 0 -0.213">
+            <inertial pos="-0.00583047 -0.000177199 -0.202827" quat="0.706542 0.0341434 0.029565 0.706229"
+                      mass="0.847352" diaginertia="0.00439089 0.00374067 0.0010673"/>
+            <joint name="FL_calf_joint" axis="0 1 0" range="-2.7227 -0.83776"/>
+            <geom size="0.012 0.06" pos="0.008 0 -0.06" quat="0.994493 0 -0.104807 0" type="cylinder" rgba="1 1 1 1"/>
+            <geom size="0.011 0.0325" pos="0.02 0 -0.148" quat="0.999688 0 0.0249974 0" type="cylinder"/>
+            <geom size="0.0155 0.015" pos="0.00801333 0 -0.18745" quat="0.965093 0 0.261909 0" type="cylinder"/>
+            <geom size="0.05 0.025" pos="0 0.01 -0.2264" quat="0.707107 0.707107 0 0" type="cylinder"/>
+            <body name="FL_foot" pos="0 0 -0.2264">
+              <inertial pos="0 0.06 0" quat="0.707107 0 0 0.707107" mass="0.52" diaginertia="0.0012 0.0007 0.0007"/>
+              <joint name="FL_foot_joint" axis="0 1 0"/>
+              <geom type="mesh" rgba="1 1 1 1" mesh="left_wheel"/>
+              <site name="FL_foot_site" pos="0 0.06 0" size="0.01"/>
+            </body>
+          </body>
+        </body>
+      </body>
+
+      <!-- ====== Front-Right leg ====== -->
+      <body name="FR_hip" pos="0.1934 -0.0465 0">
+        <inertial pos="-0.0054 -0.00194 -0.000105" quat="0.498237 0.505462 0.499245 0.497014"
+                  mass="0.678" diaginertia="0.00088403 0.000596003 0.000479967"/>
+        <joint name="FR_hip_joint" axis="1 0 0" range="-1.0472 1.0472"/>
+        <geom size="0.046 0.02" pos="0 -0.08 0" quat="0.707107 0.707107 0 0" type="cylinder"
+              rgba="0.671705 0.692426 0.77427 1"/>
+        <body name="FR_thigh" pos="0 -0.0955 0">
+          <inertial pos="-0.00374 0.0223 -0.0327" quat="0.551623 -0.0200632 0.0847635 0.829533"
+                    mass="1.152" diaginertia="0.00594973 0.00584149 0.000878787"/>
+          <joint name="FR_thigh_joint" axis="0 1 0" range="-1.5708 3.4907"/>
+          <geom size="0.055 0.01225 0.017" pos="0 0 -0.1065" quat="0.707107 0 0.707107 0"
+                type="box" rgba="0.671705 0.692426 0.77427 1"/>
+          <body name="FR_calf" pos="0 0 -0.213">
+            <inertial pos="0.00941703 0.000177199 -0.202827" quat="0.706926 -0.0108701 -0.00627168 0.707176"
+                      mass="0.847352" diaginertia="0.00434456 0.00372059 0.00104105"/>
+            <joint name="FR_calf_joint" axis="0 1 0" range="-2.7227 -0.83776"/>
+            <geom size="0.013 0.06" pos="0.01 0 -0.06" quat="0.995004 0 -0.0998334 0" type="cylinder" rgba="1 1 1 1"/>
+            <geom size="0.011 0.0325" pos="0.02 0 -0.148" quat="0.999688 0 0.0249974 0" type="cylinder"/>
+            <geom size="0.0155 0.015" pos="0.00801333 0 -0.18745" quat="0.965093 0 0.261909 0" type="cylinder"/>
+            <geom size="0.05 0.025" pos="0 -0.01 -0.2264" quat="0.707107 0.707107 0 0" type="cylinder"/>
+            <body name="FR_foot" pos="0 0 -0.2264">
+              <inertial pos="0 -0.06 0" quat="0.707107 0 0 0.707107" mass="0.52" diaginertia="0.0012 0.0007 0.0007"/>
+              <joint name="FR_foot_joint" axis="0 1 0"/>
+              <geom type="mesh" rgba="1 1 1 1" mesh="right_wheel"/>
+              <site name="FR_foot_site" pos="0 -0.06 0" size="0.01"/>
+            </body>
+          </body>
+        </body>
+      </body>
+
+      <!-- ====== Rear-Left leg ====== -->
+      <body name="RL_hip" pos="-0.1934 0.0465 0">
+        <inertial pos="0.0054 0.00194 -0.000105" quat="0.505462 0.498237 0.497014 0.499245"
+                  mass="0.678" diaginertia="0.00088403 0.000596003 0.000479967"/>
+        <joint name="RL_hip_joint" axis="1 0 0" range="-1.0472 1.0472"/>
+        <geom size="0.046 0.02" pos="0 0.08 0" quat="0.707107 0.707107 0 0" type="cylinder"
+              rgba="0.671705 0.692426 0.77427 1"/>
+        <body name="RL_thigh" pos="0 0.0955 0">
+          <inertial pos="-0.00374 -0.0223 -0.0327" quat="0.829533 0.0847635 -0.0200632 0.551623"
+                    mass="1.152" diaginertia="0.00594973 0.00584149 0.000878787"/>
+          <joint name="RL_thigh_joint" axis="0 1 0" range="-0.5236 4.5379"/>
+          <geom size="0.055 0.01225 0.017" pos="0 0 -0.1065" quat="0.707107 0 0.707107 0"
+                type="box" rgba="0.671705 0.692426 0.77427 1"/>
+          <body name="RL_calf" pos="0 0 -0.213">
+            <inertial pos="-0.00583047 -0.000177199 -0.202827" quat="0.706542 0.0341434 0.029565 0.706229"
+                      mass="0.847352" diaginertia="0.00439089 0.00374067 0.0010673"/>
+            <joint name="RL_calf_joint" axis="0 1 0" range="-2.7227 -0.83776"/>
+            <geom size="0.013 0.06" pos="0.01 0 -0.06" quat="0.995004 0 -0.0998334 0" type="cylinder" rgba="1 1 1 1"/>
+            <geom size="0.011 0.0325" pos="0.02 0 -0.148" quat="0.999688 0 0.0249974 0" type="cylinder"/>
+            <geom size="0.0155 0.015" pos="0.00801333 0 -0.18745" quat="0.965093 0 0.261909 0" type="cylinder"/>
+            <geom size="0.05 0.025" pos="0 0.01 -0.2264" quat="0.707107 0.707107 0 0" type="cylinder"/>
+            <body name="RL_foot" pos="0 0 -0.2264">
+              <inertial pos="0 0.06 0" quat="0.707107 0 0 0.707107" mass="0.52" diaginertia="0.0012 0.0007 0.0007"/>
+              <joint name="RL_foot_joint" axis="0 1 0"/>
+              <geom type="mesh" rgba="1 1 1 1" mesh="left_wheel"/>
+              <site name="RL_foot_site" pos="0 0.06 0" size="0.01"/>
+            </body>
+          </body>
+        </body>
+      </body>
+
+      <!-- ====== Rear-Right leg ====== -->
+      <body name="RR_hip" pos="-0.1934 -0.0465 0">
+        <inertial pos="0.0054 -0.00194 -0.000105" quat="0.499245 0.497014 0.498237 0.505462"
+                  mass="0.678" diaginertia="0.00088403 0.000596003 0.000479967"/>
+        <joint name="RR_hip_joint" axis="1 0 0" range="-1.0472 1.0472"/>
+        <geom size="0.046 0.02" pos="0 -0.08 0" quat="0.707107 0.707107 0 0" type="cylinder"
+              rgba="0.671705 0.692426 0.77427 1"/>
+        <body name="RR_thigh" pos="0 -0.0955 0">
+          <inertial pos="-0.00374 0.0223 -0.0327" quat="0.551623 -0.0200632 0.0847635 0.829533"
+                    mass="1.152" diaginertia="0.00594973 0.00584149 0.000878787"/>
+          <joint name="RR_thigh_joint" axis="0 1 0" range="-0.5236 4.5379"/>
+          <geom size="0.055 0.01225 0.017" pos="0 0 -0.1065" quat="0.707107 0 0.707107 0"
+                type="box" rgba="0.671705 0.692426 0.77427 1"/>
+          <body name="RR_calf" pos="0 0 -0.213">
+            <inertial pos="0.00941703 0.000177199 -0.202827" quat="0.706926 -0.0108701 -0.00627168 0.707176"
+                      mass="0.847352" diaginertia="0.00434456 0.00372059 0.00104105"/>
+            <joint name="RR_calf_joint" axis="0 1 0" range="-2.7227 -0.83776"/>
+            <geom size="0.013 0.06" pos="0.01 0 -0.06" quat="0.995004 0 -0.0998334 0" type="cylinder" rgba="1 1 1 1"/>
+            <geom size="0.011 0.0325" pos="0.02 0 -0.148" quat="0.999688 0 0.0249974 0" type="cylinder"/>
+            <geom size="0.0155 0.015" pos="0.00801333 0 -0.18745" quat="0.965093 0 0.261909 0" type="cylinder"/>
+            <geom size="0.05 0.025" pos="0 -0.01 -0.2264" quat="0.707107 0.707107 0 0" type="cylinder"/>
+            <body name="RR_foot" pos="0 0 -0.2264">
+              <inertial pos="0 -0.06 0" quat="0.707107 0 0 0.707107" mass="0.52" diaginertia="0.0012 0.0007 0.0007"/>
+              <joint name="RR_foot_joint" axis="0 1 0"/>
+              <geom type="mesh" rgba="1 1 1 1" mesh="right_wheel"/>
+              <site name="RR_foot_site" pos="0 -0.06 0" size="0.01"/>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <!-- Actuators: effort for leg joints, velocity for wheel joints -->
+  <actuator>
+    <!-- Hip joints (effort-controlled) -->
+    <motor name="FL_hip_motor" joint="FL_hip_joint" ctrlrange="-23.7 23.7" gear="1"/>
+    <motor name="FR_hip_motor" joint="FR_hip_joint" ctrlrange="-23.7 23.7" gear="1"/>
+    <motor name="RL_hip_motor" joint="RL_hip_joint" ctrlrange="-23.7 23.7" gear="1"/>
+    <motor name="RR_hip_motor" joint="RR_hip_joint" ctrlrange="-23.7 23.7" gear="1"/>
+    <!-- Thigh joints (effort-controlled) -->
+    <motor name="FL_thigh_motor" joint="FL_thigh_joint" ctrlrange="-23.7 23.7" gear="1"/>
+    <motor name="FR_thigh_motor" joint="FR_thigh_joint" ctrlrange="-23.7 23.7" gear="1"/>
+    <motor name="RL_thigh_motor" joint="RL_thigh_joint" ctrlrange="-23.7 23.7" gear="1"/>
+    <motor name="RR_thigh_motor" joint="RR_thigh_joint" ctrlrange="-23.7 23.7" gear="1"/>
+    <!-- Calf joints (effort-controlled, higher torque) -->
+    <motor name="FL_calf_motor" joint="FL_calf_joint" ctrlrange="-35.55 35.55" gear="1"/>
+    <motor name="FR_calf_motor" joint="FR_calf_joint" ctrlrange="-35.55 35.55" gear="1"/>
+    <motor name="RL_calf_motor" joint="RL_calf_joint" ctrlrange="-35.55 35.55" gear="1"/>
+    <motor name="RR_calf_motor" joint="RR_calf_joint" ctrlrange="-35.55 35.55" gear="1"/>
+    <!-- Wheel joints (velocity-controlled) -->
+    <velocity name="FL_wheel_motor" joint="FL_foot_joint" ctrlrange="-23.7 23.7" kv="5.0"/>
+    <velocity name="FR_wheel_motor" joint="FR_foot_joint" ctrlrange="-23.7 23.7" kv="5.0"/>
+    <velocity name="RL_wheel_motor" joint="RL_foot_joint" ctrlrange="-23.7 23.7" kv="5.0"/>
+    <velocity name="RR_wheel_motor" joint="RR_foot_joint" ctrlrange="-23.7 23.7" kv="5.0"/>
+  </actuator>
+
+  <!-- Sensors -->
+  <sensor>
+    <!-- IMU -->
+    <accelerometer name="imu_accel" site="imu_site"/>
+    <gyro name="imu_gyro" site="imu_site"/>
+    <!-- Foot contact (touch sensors) -->
+    <touch name="FL_foot_contact" site="FL_foot_site"/>
+    <touch name="FR_foot_contact" site="FR_foot_site"/>
+    <touch name="RL_foot_contact" site="RL_foot_site"/>
+    <touch name="RR_foot_contact" site="RR_foot_site"/>
+    <!-- Base body state (ground truth) -->
+    <framepos name="base_pos" objtype="body" objname="base_link"/>
+    <framequat name="base_quat" objtype="body" objname="base_link"/>
+    <framelinvel name="base_linvel" objtype="body" objname="base_link"/>
+    <frameangvel name="base_angvel" objtype="body" objname="base_link"/>
+  </sensor>
+</mujoco>

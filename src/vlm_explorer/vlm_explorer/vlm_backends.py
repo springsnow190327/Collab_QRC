@@ -15,6 +15,8 @@ def resolve_provider(provider: str) -> str:
     p = provider.strip().lower()
     if p and p != "auto":
         return p
+    if os.environ.get("SILICONFLOW_API_KEY"):
+        return "siliconflow"
     if os.environ.get("XAI_API_KEY"):
         return "xai"
     if os.environ.get("OPENAI_API_KEY"):
@@ -24,14 +26,23 @@ def resolve_provider(provider: str) -> str:
     return "none"
 
 
+def _clean(s: str) -> str:
+    """Strip any whitespace (including embedded newlines from line-wrapped
+    pastes) from an API key. Nothing legal in a bearer token is whitespace,
+    so it's safe to rip all of it out."""
+    return "".join(s.split()) if s else ""
+
+
 def resolve_api_key(provider: str) -> str:
     p = resolve_provider(provider)
+    if p == "siliconflow":
+        return _clean(os.environ.get("SILICONFLOW_API_KEY", ""))
     if p == "xai":
-        return os.environ.get("XAI_API_KEY", "")
+        return _clean(os.environ.get("XAI_API_KEY", ""))
     if p == "openai":
-        return os.environ.get("OPENAI_API_KEY", "")
+        return _clean(os.environ.get("OPENAI_API_KEY", ""))
     if p == "anthropic":
-        return os.environ.get("ANTHROPIC_API_KEY", "")
+        return _clean(os.environ.get("ANTHROPIC_API_KEY", ""))
     return ""
 
 
@@ -126,11 +137,15 @@ def query_vlm(
             raise VLMBackendError("Anthropic response contained no content")
         return str(content[0].get("text", ""))
 
-    if p in {"openai", "xai"}:
+    if p in {"openai", "xai", "siliconflow"}:
         url = "https://api.openai.com/v1/chat/completions"
         auth_key = api_key
         if p == "xai":
             url = os.environ.get("XAI_API_BASE_URL", "https://api.x.ai/v1").rstrip("/") + "/chat/completions"
+        elif p == "siliconflow":
+            url = os.environ.get(
+                "SILICONFLOW_API_BASE_URL", "https://api.siliconflow.com/v1"
+            ).rstrip("/") + "/chat/completions"
         payload = {
             "model": model,
             "temperature": temperature,

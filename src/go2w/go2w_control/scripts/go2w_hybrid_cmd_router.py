@@ -41,6 +41,15 @@ class Go2WHybridCmdRouter(Node):
         self.declare_parameter("wheel_curvature_threshold", 0.45)
         self.declare_parameter("wheel_mode_hold_sec", 0.6)
         self.declare_parameter("legged_mode_hold_sec", 0.6)
+        # NOTE (iter 7): wheel_pivot / wheel_curve modes were removed.
+        # Rationale: CHAMP's leg joints remain compliant under the impedance
+        # controller even when cmd_vel_legged=0, so any lateral scrub force
+        # from a wheel skid-steer pivot propagates up the calf/thigh/hip
+        # chain and causes body oscillation → the "spinning circles"
+        # failure mode we observed. CHAMP already supports an in-place
+        # rotation gait (triggered by cmd_vel = (0,0,ω)) that does this
+        # deterministically with zero ground slip. Legs for turns, wheels
+        # for forward straight-line highways only.
         self.declare_parameter("wheel_radius_m", 0.09)
         self.declare_parameter("wheel_track_m", 0.40)
         self.declare_parameter("wheel_max_angular_speed", 8.5)
@@ -119,8 +128,12 @@ class Go2WHybridCmdRouter(Node):
         angular_z = abs(float(cmd.angular.z))
         curvature = angular_z / max(linear_x, 0.05)
 
-        # Wheel mode only for forward straight-line driving; reverse uses
-        # legged gait which has better traction and stability going backward.
+        # wheel cruise: forward, fast, near-straight. The ONLY wheel-mode
+        # case. Everything else — rotation, tight curves, reverse, strafe —
+        # uses CHAMP's legged gait, which handles in-place rotation and
+        # narrow turns deterministically via foot-step placement, whereas
+        # skid-steer wheel pivot causes body oscillation because CHAMP's
+        # compliant legs can't lock rigidly.
         if (
             raw_linear_x > 0
             and linear_x >= self.thresholds.wheel_linear
@@ -129,6 +142,7 @@ class Go2WHybridCmdRouter(Node):
             and curvature <= self.thresholds.wheel_curvature
         ):
             return "wheel"
+
         return "legged"
 
     def _select_mode(self, requested_mode: str, now_sec: float) -> str:
@@ -143,8 +157,9 @@ class Go2WHybridCmdRouter(Node):
 
     def _wheel_command(self, cmd: Twist) -> Float64MultiArray:
         half_track = 0.5 * self.wheel_track_m
-        left_linear = float(cmd.linear.x) - (float(cmd.angular.z) * half_track)
-        right_linear = float(cmd.linear.x) + (float(cmd.angular.z) * half_track)
+        angular = float(cmd.angular.z)
+        left_linear = float(cmd.linear.x) - (angular * half_track)
+        right_linear = float(cmd.linear.x) + (angular * half_track)
         left_omega = left_linear / self.wheel_radius_m
         right_omega = right_linear / self.wheel_radius_m
         left_omega = max(-self.wheel_max_angular_speed, min(self.wheel_max_angular_speed, left_omega))

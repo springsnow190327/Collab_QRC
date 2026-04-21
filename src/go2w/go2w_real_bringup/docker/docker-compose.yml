@@ -1,0 +1,62 @@
+services:
+  go2w_driver:
+    build:
+      context: ../..          # repo root (Dockerfile COPYs from src/)
+      dockerfile: docker/go2w_real/Dockerfile
+    network_mode: host        # required for DDS multicast
+    environment:
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - CYCLONEDDS_URI=file:///ws/cyclonedds_wifi.xml
+      - ROS_DOMAIN_ID=0
+      - WIFI_IFACE=${WIFI_IFACE:-wlan0}
+    # Default: launch driver (no sim, no rviz)
+    command: ros2 launch go2w_bringup go2w.launch.py sim:=false rviz:=false
+
+  # Topic echo sidecar — runs verification then exits
+  echo_topics:
+    build:
+      context: ../..
+      dockerfile: docker/go2w_real/Dockerfile
+    network_mode: host
+    environment:
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - CYCLONEDDS_URI=file:///ws/cyclonedds_wifi.xml
+      - ROS_DOMAIN_ID=0
+      - WIFI_IFACE=${WIFI_IFACE:-wlan0}
+    depends_on:
+      - go2w_driver
+    command: >
+      bash -c '
+        source /opt/ros/humble/setup.bash &&
+        source /ws/install/setup.bash &&
+        echo "=== Waiting 5s for driver startup... ==" &&
+        sleep 5 &&
+        echo "" &&
+        echo "============================================" &&
+        echo "  TOPIC LIST" &&
+        echo "============================================" &&
+        ros2 topic list &&
+        echo "" &&
+        echo "============================================" &&
+        echo "  /joint_states (one message)" &&
+        echo "============================================" &&
+        timeout 10 ros2 topic echo /joint_states --once || echo "(no message received within 10s)" &&
+        echo "" &&
+        echo "============================================" &&
+        echo "  /joint_states frequency" &&
+        echo "============================================" &&
+        timeout 5 ros2 topic hz /joint_states || true &&
+        echo "" &&
+        echo "============================================" &&
+        echo "  /cmd_vel info" &&
+        echo "============================================" &&
+        ros2 topic info /cmd_vel -v || echo "(topic not found — will appear when publisher connects)" &&
+        echo "" &&
+        echo "============================================" &&
+        echo "  ✅ VERIFICATION COMPLETE" &&
+        echo "  Interfaces exposed:" &&
+        echo "    → /cmd_vel       (geometry_msgs/Twist) — SEND commands here" &&
+        echo "    ← /joint_states  (sensor_msgs/JointState) — READ joint data here" &&
+        echo "    ← /odom          (nav_msgs/Odometry) — READ odometry here" &&
+        echo "============================================"
+      '

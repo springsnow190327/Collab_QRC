@@ -1,11 +1,10 @@
--- Cartographer 2D config for Go2W Gazebo simulation using PointCloud2 input.
+-- Cartographer 2D config for Go2W MuJoCo simulation using PointCloud2 input.
 --
--- Motivation:
---   The 3D Cartographer occupancy grid is useful for SLAM visualization, but in
---   this stack it often produces "occupied + unknown" with very little explicit
---   free space after 2D projection. For CFPA2/default_nav we want a planner-
---   friendly 2D map with proper free-space carving, so this config runs
---   Cartographer's 2D trajectory builder directly on the 3D lidar PointCloud2.
+-- TF architecture (MuJoCo):
+--   Cartographer publishes: map → base_link  (provide_odom_frame = false, published_frame = "base_link")
+--   No odom frame in TF tree.  carto_odom_bridge converts map→base_link TF to Odometry msg.
+--   mujoco_odom_bridge: TF disabled (publish_tf=false) to avoid dual-parent on base_link.
+--   Inputs: IMU + LiDAR only (no odometry topic).
 
 include "map_builder.lua"
 include "trajectory_builder.lua"
@@ -17,7 +16,7 @@ options = {
   tracking_frame = "imu",
   published_frame = "base_link",
   odom_frame = "odom",
-  provide_odom_frame = true,
+  provide_odom_frame = false,
   publish_frame_projected_to_2d = true,
   use_pose_extrapolator = true,
   use_odometry = false,
@@ -41,6 +40,15 @@ options = {
 
 MAP_BUILDER.use_trajectory_builder_2d = true
 
+-- MuJoCo IMU: DFKI plugin reads correct accel/gyro from mj_sensordata but
+-- leaves orientation at identity (0,0,0,1).  Cartographer's ImuTracker does
+-- NOT use the orientation field — it estimates gravity from linear_acceleration
+-- and integrates angular_velocity, so the identity quaternion is harmless.
+-- The original wall-clock timestamp issue is fixed in mujoco_odom_bridge which
+-- now re-stamps IMU with sim time before republishing.
+-- IMU re-enabled: mujoco_odom_bridge re-stamps IMU with sim time and drops
+-- duplicates via monotonicity guard.  Lidar stamps AFTER raycasting to
+-- guarantee its timestamp >= latest dispatched IMU timestamp.
 TRAJECTORY_BUILDER_2D.use_imu_data = true
 TRAJECTORY_BUILDER_2D.num_accumulated_range_data = 1
 TRAJECTORY_BUILDER_2D.min_range = 0.2
@@ -64,7 +72,16 @@ TRAJECTORY_BUILDER_2D.submaps.range_data_inserter.probability_grid_range_data_in
 TRAJECTORY_BUILDER_2D.submaps.range_data_inserter.probability_grid_range_data_inserter.hit_probability = 0.70
 TRAJECTORY_BUILDER_2D.submaps.range_data_inserter.probability_grid_range_data_inserter.miss_probability = 0.48
 
+-- Correlative scan matcher: let scan matching drive pose estimation
+-- (no odometry, IMU-only prediction has near-zero linear displacement).
 TRAJECTORY_BUILDER_2D.use_online_correlative_scan_matching = true
+TRAJECTORY_BUILDER_2D.real_time_correlative_scan_matcher.linear_search_window = 0.15
+TRAJECTORY_BUILDER_2D.real_time_correlative_scan_matcher.angular_search_window = math.rad(10.)
+TRAJECTORY_BUILDER_2D.real_time_correlative_scan_matcher.translation_delta_cost_weight = 1e1
+TRAJECTORY_BUILDER_2D.real_time_correlative_scan_matcher.rotation_delta_cost_weight = 1e1
+
+-- Scan-match dominant: without odometry, trust scan matching over the
+-- IMU-only motion prediction for translation.
 TRAJECTORY_BUILDER_2D.ceres_scan_matcher.translation_weight = 10.
 TRAJECTORY_BUILDER_2D.ceres_scan_matcher.rotation_weight = 40.
 

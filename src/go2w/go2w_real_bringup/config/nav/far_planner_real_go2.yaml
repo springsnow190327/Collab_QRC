@@ -1,0 +1,34 @@
+# FAR planner tuning for real Unitree Go2 (no-wheel).
+#
+# Starts from far_planner_real.yaml (Go2W-tuned) with these deltas:
+#   util/obs_inflate_size    2 → 1   (Go2 is narrower; 1×voxel_dim = 0.2 m inflate per side
+#                                     = 0.4 m total added width — matches stock Go2 body)
+#   sensor_range             4.0 → 4.5  (walking gait is slower; FAR has more time to react,
+#                                        so we can look slightly further without flicker)
+#   g_planner/path_momentum_thred  20 → 15  (shorter momentum — Go2 pivots more freely
+#                                            than Go2W rolls, can change heading faster)
+#
+# Tune on hardware first.
+
+far_planner:
+  ros__parameters:
+    g_planner/converge_distance: 0.5
+    g_planner/path_momentum_thred: 15
+    graph/connect_votes_size: 6
+
+    voxel_dim: 0.2
+
+    util/terrain_free_Z: 0.45
+    util/obs_inflate_size: 1
+    util/dynamic_obs_dacay_time: 1.5
+    util/new_points_decay_time: 1.5
+
+    sensor_range: 4.5
+    terrain_range: 3.5
+    local_planner_range: 2.0
+    map_handler/map_grid_max_length: 30.0
+
+    is_debug_output: false
+    is_opencv_visual: false
+
+    world_frame: "map"

@@ -22,6 +22,7 @@ install(DIRECTORY
   urdf
   rviz
   config
+  mujoco
   DESTINATION share/${PROJECT_NAME}
 )
 

@@ -1,0 +1,13 @@
+std_msgs/Header header
+int32 id
+geometry_msgs/Point position
+int32 freetype
+int32 is_covered
+int32 is_frontier
+int32 is_navpoint
+int32 is_boundary
+geometry_msgs/Point[] surface_dirs
+int32[] connect_nodes
+int32[] poly_connects
+int32[] contour_connects
+int32[] trajectory_connects

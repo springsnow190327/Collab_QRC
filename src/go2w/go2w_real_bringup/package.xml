@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>go2w_real_bringup</name>
+  <version>0.1.0</version>
+  <description>Real-robot bringup for Go2W: launch, SLAM/nav configs, docker, connect docs.</description>
+  <maintainer email="hz@todo.todo">hz</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>go2w_control</exec_depend>
+  <exec_depend>go2w_nav</exec_depend>
+  <exec_depend>go2w_safety</exec_depend>
+  <exec_depend>go2w_config</exec_depend>
+  <exec_depend>go2w_perception</exec_depend>
+  <exec_depend>go2_nav_algorithms</exec_depend>
+  <exec_depend>cfpa2_collaborative_autonomy</exec_depend>
+  <exec_depend>go2_tare_planner_ros2</exec_depend>
+  <exec_depend>unitree_go2w_ros2</exec_depend>
+  <exec_depend>fast_lio</exec_depend>
+  <exec_depend>livox_ros_driver2</exec_depend>
+  <exec_depend>cartographer_ros</exec_depend>
+  <exec_depend>octomap_server</exec_depend>
+  <exec_depend>pointcloud_to_laserscan</exec_depend>
+  <exec_depend>joy</exec_depend>
+  <exec_depend>teleop_twist_joy</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

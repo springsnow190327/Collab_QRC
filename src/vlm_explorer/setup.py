@@ -14,7 +14,7 @@ setup(
         ("share/" + package_name, ["package.xml"]),
         ("share/" + package_name + "/config", glob("config/*.yaml") + glob("config/*.lua")),
         ("share/" + package_name + "/launch", glob("launch/*.launch.py")),
-        ("share/" + package_name + "/worlds", glob("worlds/*.world")),
+        ("share/" + package_name + "/worlds", glob("worlds/*.world") + glob("worlds/*.xml")),
         ("share/" + package_name + "/rviz", glob("rviz/*.rviz")),
     ],
     install_requires=["setuptools"],
@@ -35,6 +35,7 @@ setup(
             "florence2_detector_node = vlm_explorer.florence2_detector_node:main",
             "red_block_detector_node = vlm_explorer.red_block_detector_node:main",
             "yolo_detector_node = vlm_explorer.yolo_detector_node:main",
+            "artifact_scorer_node = vlm_explorer.artifact_scorer_node:main",
         ],
     },
 )

@@ -1,0 +1,87 @@
+# SLAM Toolbox online async mapping for Go2W in the VLM exploration
+# scene. Customized from /opt/ros/humble/share/slam_toolbox/config/
+# mapper_params_online_async.yaml.
+#
+# Frame / topic conventions match the rest of the Go2W stack:
+#   - LiDAR scan:  /robot/scan_3d   (2D LaserScan from pointcloud_to_laserscan)
+#   - Odom:        /robot/odom/nav  (from carto_odom_bridge → SLAM Toolbox takes over)
+#   - Base frame:  base_link
+#   - Map frame:   map
+#
+# The base platform launch publishes odom → base_link TF via
+# mujoco_odom_bridge; slam_toolbox publishes map → odom TF.
+#
+# This config is real-robot transferable — same topic names work on
+# a real Go2W with a Livox MID-360 + pointcloud_to_laserscan 2D slice.
+
+slam_toolbox:
+  ros__parameters:
+
+    # Solver
+    solver_plugin: solver_plugins::CeresSolver
+    ceres_linear_solver: SPARSE_NORMAL_CHOLESKY
+    ceres_preconditioner: SCHUR_JACOBI
+    ceres_trust_strategy: LEVENBERG_MARQUARDT
+    ceres_dogleg_type: TRADITIONAL_DOGLEG
+    ceres_loss_function: None
+
+    # ROS frames + topics
+    use_sim_time: true
+    odom_frame: odom
+    map_frame: map
+    base_frame: base_link
+    scan_topic: /robot/scan_3d
+    use_map_saver: false
+    mode: mapping
+
+    # Async mapping knobs
+    debug_logging: false
+    throttle_scans: 1
+    transform_publish_period: 0.02   # 50 Hz map→odom TF
+    map_update_interval: 2.0         # republish occupancy grid every 2 s
+    resolution: 0.05                 # 5 cm grid cells (matches nav2 costmap)
+    min_laser_range: 0.05
+    max_laser_range: 8.0
+    minimum_time_interval: 0.1       # min 100 ms between scan-match updates
+    transform_timeout: 0.2
+    tf_buffer_duration: 30.0
+    stack_size_to_use: 40000000
+    enable_interactive_mode: false
+
+    # Core scan matching — these are the knobs that matter for robustness.
+    # Defaults are aggressive; we're slightly more conservative because
+    # the scene is small and rectangular (symmetry hazard).
+    use_scan_matching: true
+    use_scan_barycenter: true
+    minimum_travel_distance: 0.2     # accept a new node every 0.2 m of motion
+    minimum_travel_heading: 0.17     # or every ~10° of rotation
+    scan_buffer_size: 20
+    scan_buffer_maximum_scan_distance: 10.0
+    link_match_minimum_response_fine: 0.10
+    link_scan_maximum_distance: 1.5
+    do_loop_closing: true
+    loop_search_maximum_distance: 3.0
+    loop_match_minimum_chain_size: 6
+    loop_match_maximum_variance_coarse: 3.0
+    loop_match_minimum_response_coarse: 0.35
+    loop_match_minimum_response_fine: 0.45
+
+    # Correlation parameters for the scan matcher (Karto core)
+    correlation_search_space_dimension: 0.5
+    correlation_search_space_resolution: 0.01
+    correlation_search_space_smear_deviation: 0.1
+
+    # Loop-closure parameters
+    loop_search_space_dimension: 8.0
+    loop_search_space_resolution: 0.05
+    loop_search_space_smear_deviation: 0.03
+
+    # Scan matcher parameters
+    distance_variance_penalty: 0.5
+    angle_variance_penalty: 1.0
+    fine_search_angle_offset: 0.00349   # 0.2°
+    coarse_search_angle_offset: 0.349   # 20°
+    coarse_angle_resolution: 0.0349     # 2°
+    minimum_angle_penalty: 0.9
+    minimum_distance_penalty: 0.5
+    use_response_expansion: true

@@ -50,8 +50,6 @@ def _setup(context):
     robot_ns = _get(context, "robot_namespace")
     use_sim_time = _as_bool(_get(context, "use_sim_time"))
     map_frame = _get(context, "map_frame")
-    external_mapper = _as_bool(_get(context, "external_mapper"))
-    broadcast_tf = _as_bool(_get(context, "broadcast_tf"))
     remap_tf = _as_bool(_get(context, "remap_tf"))
     nav_backend = _get(context, "nav_backend").strip().lower() or "reactive"
 
@@ -78,7 +76,6 @@ def _setup(context):
     far_robot_id = int(_get(context, "far_robot_id"))
 
     nav_config = _get(context, "nav_config")
-    mapper_config = _get(context, "mapper_config")
     cfpa2_config = _get(context, "cfpa2_config")
 
     tf_remaps = []
@@ -95,35 +92,6 @@ def _setup(context):
 
     actions = []
 
-    # ── Mapper ──
-    if not external_mapper:
-        nav_pkg = get_package_share_directory("go2_nav_algorithms")
-        actions.append(
-            Node(
-                package="go2_nav_algorithms",
-                executable="simple_scan_mapper_cpp",
-                namespace=robot_ns,
-                name="simple_scan_mapper_cpp",
-                parameters=[
-                    os.path.join(nav_pkg, "config", "nav", "geometric_frontier_single.yaml"),
-                    mapper_config,
-                    {
-                        "use_sim_time": use_sim_time,
-                        "scan_topic": scan_topic,
-                        "odom_topic": odom_topic,
-                        "map_topic": map_topic,
-                        "map_frame": map_frame,
-                        "startup_delay": 0.0,
-                        "scan_frame": "base_link",
-                        "broadcast_tf": broadcast_tf,
-                    },
-                ],
-                remappings=tf_remaps[:] if remap_tf else [],
-                ros_arguments=log_warn,
-                output="screen",
-            )
-        )
-
     # ── CFPA2 Frontier ──
     cfpa2_params = {
         "use_sim_time": use_sim_time,
@@ -139,19 +107,23 @@ def _setup(context):
     if switch_hysteresis_str:
         cfpa2_params["switch_hysteresis"] = float(switch_hysteresis_str)
 
-    actions.append(
-        Node(
-            package="cfpa2_collaborative_autonomy",
-            executable="cfpa2_single_robot_node",
-            name="cfpa2_single_robot",
-            parameters=[cfpa2_config, cfpa2_params],
-            ros_arguments=log_info,
-            output="screen",
+    explore_flag = _as_bool(_get(context, "explore"))
+    if explore_flag:
+        actions.append(
+            Node(
+                package="cfpa2_collaborative_autonomy",
+                executable="cfpa2_single_robot_node",
+                name="cfpa2_single_robot",
+                parameters=[cfpa2_config, cfpa2_params],
+                ros_arguments=log_info,
+                output="screen",
+            )
         )
-    )
 
     # ── Local Planner Backend ──
     if nav_backend == "far":
+        far_goal_topic_override = _get(context, "far_goal_topic").strip()
+        far_way_point_out_override = _get(context, "far_way_point_out").strip()
         actions.extend(
             _build_far_stack(
                 robot_ns=robot_ns,
@@ -163,8 +135,15 @@ def _setup(context):
                 tf_remaps=tf_remaps,
                 max_speed=far_max_speed,
                 robot_id=far_robot_id,
+                far_goal_topic_override=far_goal_topic_override,
+                far_way_point_out_override=far_way_point_out_override,
             )
         )
+        # FAR doesn't speak nav_status/v1 natively — adapter bridges its
+        # /far_reach_goal_status + /way_point outputs into the canonical
+        # topic so CFPA2 can fast-blacklist unreachable goals regardless
+        # of which planner is active.
+        actions.append(_far_status_adapter_node(robot_ns, use_sim_time, odom_topic, waypoint_suffix))
     elif nav_backend == "far_rrt_star":
         # FAR as global planner + RRT* as local planner.
         # FAR terrain + far_planner produce /{ns}/way_point (intermediate
@@ -182,6 +161,11 @@ def _setup(context):
                 robot_id=far_robot_id,
             )
         )
+        # Adapter also runs for the FAR-global-only path — FAR still publishes
+        # the same reach/way_point topics. RRT* (the local planner) will
+        # publish its own nav_status/v1 on the same topic. CFPA2 uses the
+        # UNION — either leg can declare the goal unreachable.
+        actions.append(_far_status_adapter_node(robot_ns, use_sim_time, odom_topic, waypoint_suffix))
         # RRT* receives way_point from FAR (not raw CFPA2 frontier)
         nav_remappings = [
             ("/way_point", f"/{robot_ns}/way_point"),
@@ -275,6 +259,35 @@ def _setup(context):
             )
 
     return actions
+
+
+def _far_status_adapter_node(robot_ns: str, use_sim_time: bool, odom_topic: str, waypoint_suffix: str):
+    """Spawn far_status_adapter.py — bridges FAR's native outputs into
+    nav_status/v1 JSON so CFPA2 can fast-blacklist unreachable goals.
+    See docs/claude/nav_status_contract.md.
+    """
+    return Node(
+        package="go2w_nav",
+        executable="far_status_adapter.py",
+        namespace=robot_ns,
+        name="far_status_adapter",
+        parameters=[{
+            "use_sim_time": use_sim_time,
+            "way_point_timeout_sec": 2.0,
+            "unreachable_timeout_sec": 3.0,
+            "far_heartbeat_timeout_sec": 5.0,
+            "publish_rate_hz": 5.0,
+        }],
+        remappings=[
+            ("/nav_status", f"/{robot_ns}/nav_status"),
+            ("/far_reach_goal_status", f"/{robot_ns}/far_reach_goal_status"),
+            ("/goal_point", f"/{robot_ns}{waypoint_suffix}"),
+            ("/way_point", f"/{robot_ns}/way_point"),
+            ("/far_planning_time", f"/{robot_ns}/far_planning_time"),
+            ("/odom/ground_truth", odom_topic),
+        ],
+        output="screen",
+    )
 
 
 def _build_far_global_only(
@@ -402,6 +415,8 @@ def _build_far_stack(
     tf_remaps: list,
     max_speed: float,
     robot_id: int,
+    far_goal_topic_override: str = "",
+    far_way_point_out_override: str = "",
 ) -> list:
     """Build the CMU autonomy FAR planner stack with full namespacing.
 
@@ -525,8 +540,18 @@ def _build_far_stack(
                 ("/terrain_cloud", f"/{ns}/terrain_map_ext"),
                 ("/scan_cloud", f"/{ns}/terrain_map"),
                 ("/terrain_local_cloud", registered_scan_topic),
-                ("/goal_point", f"/{ns}{waypoint_suffix}"),
-                ("/way_point", f"/{ns}/way_point"),
+                # Optional unwire: empty far_goal_topic_override leaves FAR
+                # listening on its normal /{ns}{waypoint_suffix} input.
+                # Non-empty redirects it (including "" to a topic with no
+                # publisher, effectively idling FAR).
+                ("/goal_point",
+                 far_goal_topic_override if far_goal_topic_override
+                 else f"/{ns}{waypoint_suffix}"),
+                # Same pattern on the output side — redirect to a dead sink
+                # when a TARE-direct pipeline owns /{ns}/way_point.
+                ("/way_point",
+                 far_way_point_out_override if far_way_point_out_override
+                 else f"/{ns}/way_point"),
                 ("/joy", f"/{ns}/joy"),
                 ("/navigation_boundary", f"/{ns}/navigation_boundary"),
                 ("/runtime", f"/{ns}/far_runtime"),
@@ -702,8 +727,6 @@ def generate_launch_description():
             DeclareLaunchArgument("robot_namespace", default_value="robot"),
             DeclareLaunchArgument("use_sim_time", default_value="true"),
             DeclareLaunchArgument("map_frame", default_value="world"),
-            DeclareLaunchArgument("external_mapper", default_value="false"),
-            DeclareLaunchArgument("broadcast_tf", default_value="true"),
             DeclareLaunchArgument("remap_tf", default_value="true"),
             DeclareLaunchArgument(
                 "nav_backend",
@@ -724,10 +747,6 @@ def generate_launch_description():
                 default_value=os.path.join(go2w_config_pkg, "config", "nav", "default_nav_single_go2w.yaml"),
             ),
             DeclareLaunchArgument(
-                "mapper_config",
-                default_value=os.path.join(go2w_config_pkg, "config", "nav", "simple_scan_mapper_single_go2w.yaml"),
-            ),
-            DeclareLaunchArgument(
                 "cfpa2_config",
                 default_value=os.path.join(cfpa2_pkg, "config", "cfpa2_single_robot.yaml"),
             ),
@@ -746,6 +765,16 @@ def generate_launch_description():
                 default_value="0",
                 description="Robot ID for FAR graph_msger (unique per robot in multi-robot setups)",
             ),
+            # When false, skip the CFPA2 frontier picker — the caller supplies
+            # goals from elsewhere (e.g. real CMU TARE). Default true for
+            # back-compat with existing invocations.
+            DeclareLaunchArgument("explore", default_value="true"),
+            # Overrides for wiring FAR OUT of the exploration pipeline:
+            # set far_goal_topic=""  → no publisher drives FAR's goal input;
+            # set far_way_point_out to a dead sink so FAR's output doesn't
+            # collide with a TARE-direct publication to /{ns}/way_point.
+            DeclareLaunchArgument("far_goal_topic", default_value=""),
+            DeclareLaunchArgument("far_way_point_out", default_value=""),
             OpaqueFunction(function=_setup),
         ]
     )

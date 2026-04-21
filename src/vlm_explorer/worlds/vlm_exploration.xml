@@ -1,0 +1,112 @@
+<mujoco model="vlm_exploration">
+  <compiler angle="radian" coordinate="local"/>
+  <option timestep="0.002" gravity="0 0 -9.81"/>
+
+  <asset>
+    <texture name="grid" type="2d" builtin="checker"
+             rgb1="0.8 0.8 0.8" rgb2="0.7 0.7 0.7"
+             width="512" height="512"/>
+    <material name="ground_mat" texture="grid" texrepeat="10 10"/>
+    <material name="wall_mat" rgba="0.7 0.7 0.75 1"/>
+    <material name="divider_mat" rgba="0.8 0.7 0.6 1"/>
+    <material name="green_mat" rgba="0.0 1.0 0.0 1" specular="0.3"/>
+    <material name="obstacle_mat" rgba="0.6 0.5 0.4 1"/>
+    <material name="red_mat" rgba="1.0 0.05 0.05 1" specular="0.3"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 10" dir="-0.5 0.1 -0.9" diffuse="0.8 0.8 0.8" castshadow="true"/>
+    <geom name="ground" type="plane" size="50 50 0.1" material="ground_mat"
+          contype="1" conaffinity="1"/>
+
+    <!-- === Outer walls === -->
+    <!-- North wall: SDF size 12.2 0.2 1.0 -> half 6.1 0.1 0.5 -->
+    <geom name="wall_north" type="box" pos="6.0 4.1 0.5"
+          size="6.1 0.1 0.5" material="wall_mat"
+          contype="1" conaffinity="1"/>
+    <!-- South wall -->
+    <geom name="wall_south" type="box" pos="6.0 -4.1 0.5"
+          size="6.1 0.1 0.5" material="wall_mat"
+          contype="1" conaffinity="1"/>
+    <!-- West wall: SDF size 0.2 8.2 1.0 -> half 0.1 4.1 0.5 -->
+    <geom name="wall_west" type="box" pos="-0.1 0 0.5"
+          size="0.1 4.1 0.5" material="wall_mat"
+          contype="1" conaffinity="1"/>
+    <!-- East wall -->
+    <geom name="wall_east" type="box" pos="12.1 0 0.5"
+          size="0.1 4.1 0.5" material="wall_mat"
+          contype="1" conaffinity="1"/>
+
+    <!-- === Central corridor dividers === -->
+    <!-- West segment: SDF size 3.0 0.15 1.0 -> half 1.5 0.075 0.5 -->
+    <geom name="divider_h_west" type="box" pos="1.5 0 0.5"
+          size="1.5 0.075 0.5" material="divider_mat"
+          contype="1" conaffinity="1"/>
+    <!-- East segment: SDF size 5.1 0.15 1.0 -> half 2.55 0.075 0.5 -->
+    <geom name="divider_h_east" type="box" pos="8.55 0 0.5"
+          size="2.55 0.075 0.5" material="divider_mat"
+          contype="1" conaffinity="1"/>
+    <!-- Vertical divider (Room A / Room B): SDF size 0.15 3.0 1.0 -> half 0.075 1.5 0.5 -->
+    <geom name="divider_v_north" type="box" pos="5.5 2.5 0.5"
+          size="0.075 1.5 0.5" material="divider_mat"
+          contype="1" conaffinity="1"/>
+
+    <!-- === Green marker cylinders (VLM targets) === -->
+    <!-- Green Marker 1: Room A (north-west) -->
+    <geom name="green_marker_1" type="cylinder" pos="2.5 2.5 0.25"
+          size="0.15 0.25" material="green_mat"
+          contype="1" conaffinity="1"/>
+    <!-- Green Marker 2: Room B center -->
+    <geom name="green_marker_2" type="cylinder" pos="8.5 2.5 0.25"
+          size="0.15 0.25" material="green_mat"
+          contype="1" conaffinity="1"/>
+    <!-- Green Marker 3: Room C/D (south) -->
+    <geom name="green_marker_3" type="cylinder" pos="7.0 -2.5 0.25"
+          size="0.15 0.25" material="green_mat"
+          contype="1" conaffinity="1"/>
+
+    <!-- === Box obstacles === -->
+    <!-- box_obstacle_1: SDF size 0.6 0.6 0.6 -> half 0.3 0.3 0.3, yaw=0.3 -->
+    <geom name="box_obstacle_1" type="box" pos="4.0 -2.0 0.3"
+          size="0.3 0.3 0.3" euler="0 0 0.3" material="obstacle_mat"
+          contype="1" conaffinity="1"/>
+    <!-- box_obstacle_2: SDF size 0.5 0.8 0.6 -> half 0.25 0.4 0.3, yaw=0.7 -->
+    <geom name="box_obstacle_2" type="box" pos="10.0 -1.5 0.3"
+          size="0.25 0.4 0.3" euler="0 0 0.7" material="obstacle_mat"
+          contype="1" conaffinity="1"/>
+
+    <!-- === Red blocks (0.1m cubes -> half-size 0.05) === -->
+    <!-- Room A: tucked against north wall -->
+    <geom name="red_block_1" type="box" pos="1.8 3.5 0.05"
+          size="0.05 0.05 0.05" euler="0 0 0.4" material="red_mat"
+          contype="1" conaffinity="1"/>
+    <!-- Room A: floor center -->
+    <geom name="red_block_2" type="box" pos="3.2 1.8 0.05"
+          size="0.05 0.05 0.05" euler="0 0 0.9" material="red_mat"
+          contype="1" conaffinity="1"/>
+    <!-- Room B: west side (near divider) -->
+    <geom name="red_block_3" type="box" pos="8.0 3.0 0.05"
+          size="0.05 0.05 0.05" euler="0 0 0.2" material="red_mat"
+          contype="1" conaffinity="1"/>
+    <!-- Room B: east side -->
+    <geom name="red_block_4" type="box" pos="11.2 1.5 0.05"
+          size="0.05 0.05 0.05" euler="0 0 1.1" material="red_mat"
+          contype="1" conaffinity="1"/>
+    <!-- Corridor: on the floor mid-passage -->
+    <geom name="red_block_5" type="box" pos="4.5 0.3 0.05"
+          size="0.05 0.05 0.05" material="red_mat"
+          contype="1" conaffinity="1"/>
+    <!-- Room C/D south: near box_obstacle_1 -->
+    <geom name="red_block_6" type="box" pos="3.5 -3.0 0.05"
+          size="0.05 0.05 0.05" euler="0 0 0.6" material="red_mat"
+          contype="1" conaffinity="1"/>
+    <!-- Room D: far east -->
+    <geom name="red_block_7" type="box" pos="10.5 -3.2 0.05"
+          size="0.05 0.05 0.05" euler="0 0 1.5" material="red_mat"
+          contype="1" conaffinity="1"/>
+    <!-- Room C: west side -->
+    <geom name="red_block_8" type="box" pos="1.2 -2.0 0.05"
+          size="0.05 0.05 0.05" euler="0 0 0.8" material="red_mat"
+          contype="1" conaffinity="1"/>
+  </worldbody>
+</mujoco>

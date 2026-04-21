@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CycloneDDS>
+  <Domain>
+    <General>
+      <Interfaces>
+        <!-- Default: wlan0. Override at runtime with WIFI_IFACE env var -->
+        <NetworkInterface name="wlan0" priority="default" multicast="default" />
+      </Interfaces>
+    </General>
+  </Domain>
+</CycloneDDS>

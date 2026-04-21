@@ -1,0 +1,42 @@
+# ros2_control config for Go2 + RL policy running in direct-torque mode.
+#
+# The RL policy was trained with PD gains kp=20, kd=0.5 applied by the
+# motor driver (Unitree LowCmd computes τ = kp·(q_des − q) + kd·(dq_des − dq)
+# on the onboard Jetson before the current loop). Running through
+# joint_trajectory_controller's internal PID with different gains makes the
+# policy's action magnitudes produce wildly different torques — stable at
+# idle but unstable under any non-zero cmd_vel. Solution: publish torques
+# directly and do the PD ourselves in the RL node.
+#
+# This YAML loads a ForwardCommandController on the effort interface. The
+# RL node publishes a 12-element Float64MultiArray to
+#   /robot/robot_joint_group_effort_controller/commands
+# in the SAME joint order listed below (leg-grouped: FL, FR, RL, RR ×
+# hip, thigh, calf). The RL node handles the IL→YAML reorder internally.
+
+/robot/controller_manager:
+  ros__parameters:
+    use_sim_time: True
+    update_rate: 100
+    robot_joint_states_controller:
+      type: joint_state_broadcaster/JointStateBroadcaster
+    robot_joint_group_effort_controller:
+      type: forward_command_controller/ForwardCommandController
+
+/robot/robot_joint_group_effort_controller:
+  ros__parameters:
+    use_sim_time: True
+    interface_name: effort
+    joints:
+      - FL_hip_joint
+      - FL_thigh_joint
+      - FL_calf_joint
+      - FR_hip_joint
+      - FR_thigh_joint
+      - FR_calf_joint
+      - RL_hip_joint
+      - RL_thigh_joint
+      - RL_calf_joint
+      - RR_hip_joint
+      - RR_thigh_joint
+      - RR_calf_joint
