@@ -4,12 +4,16 @@
       knee_orientation: ">>"
       pantograph_leg: false
       odom_scaler: 0.9
-      max_linear_velocity_x: 0.3
-      max_linear_velocity_y: 0.25
+      # Bumped 0.3 → 0.6 so legged-only robot_b (Go2 in mixed launch) can
+      # reach astar's max_linear_speed cap. Robot_a (Go2W) is unaffected
+      # at this cap because the hybrid_cmd_router routes higher-speed
+      # commands to the wheels, not through this CHAMP gait clamp.
+      max_linear_velocity_x: 0.6
+      max_linear_velocity_y: 0.4
       # Match the Go2W local-nav yaw ceiling so turning is not clamped down by CHAMP.
       max_angular_velocity_z: 1.0
       com_x_translation: 0.0
       swing_height: 0.04
       stance_depth: 0.01
       stance_duration: 0.25
-      nominal_height: 0.225
+      nominal_height: 0.28

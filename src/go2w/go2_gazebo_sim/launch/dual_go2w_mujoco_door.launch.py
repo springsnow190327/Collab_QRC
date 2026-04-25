@@ -38,6 +38,7 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 sys.path.append(os.path.dirname(__file__))
+from modules import _find_mujoco_plugin_dir
 from modules.assets import build_dual_robot_stack, build_namespaced_robot_description
 from modules.dual_urdf import build_dual_mujoco_urdf, build_robot_b_urdf
 from modules.orchestration import build_rviz_node
@@ -147,10 +148,7 @@ def _launch_setup(context):
     ekf_base = os.path.join(champ_base_pkg, "config", "ekf", "base_to_footprint.yaml")
     ekf_odom = os.path.join(champ_base_pkg, "config", "ekf", "footprint_to_odom.yaml")
 
-    mujoco_plugin_dir = os.path.join(
-        os.path.expanduser("~"), ".local", "lib", "python3.10",
-        "site-packages", "mujoco", "plugin",
-    )
+    mujoco_plugin_dir = _find_mujoco_plugin_dir()
 
     sim_ns = "mujoco_sim"
     cm_path = f"/{sim_ns}/controller_manager"
@@ -456,7 +454,7 @@ def _launch_setup(context):
 
         # Mapper:
         # - FSM path uses simple_scan_mapper_cpp (LaserScan → /{ns}/map) to
-        #   feed reactive_nav's RRT* planner.
+        #   feed astar_nav's A* planner.
         # - VLM path uses Cartographer per robot to emit /{ns}/map which
         #   vlm_controller renders as the SLAM occupancy panel.
         if not use_vlm_controller:
@@ -593,18 +591,18 @@ def _launch_setup(context):
             )
 
         # Navigation sub-launch.
-        # Skip it entirely for the LLM controller path: reactive_nav publishes
-        # zero cmd_vel_stamped at ~12 Hz even when /stop=1 (it has early-exit
-        # branches in !has_goal / startup paths that publish before the
-        # external_stop check), and that zero flows through twist_bridge to
-        # cmd_vel_legged and overwrites the LLM's commands. With the nav
-        # sub-launch off, the LLM controller is the only publisher on
-        # cmd_vel_legged.
+        # Skip it entirely for the LLM controller path: the nav planner
+        # publishes cmd_vel_stamped at its control rate even while /stop=1
+        # (its early-exit branches in !has_goal / startup paths still emit),
+        # and that flow goes through twist_bridge → cmd_vel_legged and
+        # overwrites the LLM's commands. With the nav sub-launch off, the
+        # LLM controller is the only publisher on cmd_vel_legged.
         if enable_navigation and not use_vlm_controller:
             # Door task uses aggressive obstacle thresholds so the robot
             # drives close enough for bumper contact with the door panel.
+            # Migrated from reactive_nav_node → astar_nav_node (2026-04-24).
             door_nav_config = os.path.join(
-                go2w_config_pkg, "config", "nav", "reactive_nav_door.yaml"
+                go2w_config_pkg, "config", "nav", "astar_nav_door.yaml"
             )
             robot_actions.append(
                 IncludeLaunchDescription(
@@ -614,7 +612,7 @@ def _launch_setup(context):
                         "use_sim_time": str(use_sim_time),
                         "map_frame": "world",
                         "remap_tf": "true",
-                        "nav_backend": "rrt_star",
+                        "nav_backend": "astar",
                         "nav_config": door_nav_config,
                         "scan_topic": planning_scan_topic,
                         "odom_topic": nav_odom_topic,
@@ -626,9 +624,9 @@ def _launch_setup(context):
 
         # Safety sub-launch DISABLED for door task.
         # wall_collision_checker publishes stop=1 at 0.32m from walls,
-        # which triggers reactive_nav external_stop and prevents the
-        # robot from approaching the door closely enough for bumper contact.
-        # autonomy_enabler is only needed for FAR planner, not reactive_nav.
+        # which triggers the nav planner's external_stop and prevents
+        # the robot from approaching the door closely enough for bumper
+        # contact. autonomy_enabler is only needed for FAR, not astar.
 
         # Observability sub-launch
         robot_actions.append(

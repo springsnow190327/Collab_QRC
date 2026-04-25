@@ -3,7 +3,7 @@
 <package format="3">
   <name>go2w_nav</name>
   <version>0.1.0</version>
-  <description>Navigation planners for Go2W: default_nav (Python A* grid) and reactive_nav (C++ RRT*)</description>
+  <description>Navigation planners for Go2W: default_nav (Python A* grid + D* Lite + recovery) and astar_nav (C++ A* + pure-pursuit + oriented footprint validation)</description>
   <maintainer email="hz@ucl.ac.uk">hz</maintainer>
   <license>MIT</license>
   <buildtool_depend>ament_cmake</buildtool_depend>

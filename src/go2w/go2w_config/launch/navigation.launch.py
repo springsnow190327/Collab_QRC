@@ -4,9 +4,9 @@
 Included by both sim and real top-level launch files with platform-appropriate args.
 
 nav_backend:
-  reactive  — default_nav.py (default, our grid-based local planner)
-  rrt_star  — reactive_nav_node (C++ RRT*-based reactive planner, fast replanning)
-  far       — CMU autonomy stack: terrain_analysis + far_planner + localPlanner/pathFollower
+  default  — default_nav.py (Python A* grid planner with D* Lite + recovery)
+  astar    — astar_nav_node (C++ A* + pure-pursuit + oriented footprint check)
+  far      — CMU autonomy stack: terrain_analysis + far_planner + localPlanner/pathFollower
 """
 
 import os
@@ -51,7 +51,15 @@ def _setup(context):
     use_sim_time = _as_bool(_get(context, "use_sim_time"))
     map_frame = _get(context, "map_frame")
     remap_tf = _as_bool(_get(context, "remap_tf"))
-    nav_backend = _get(context, "nav_backend").strip().lower() or "reactive"
+    nav_backend = _get(context, "nav_backend").strip().lower() or "default"
+    # Back-compat alias: old invocations still pass "reactive" — accept it
+    # as synonymous with the Python default_nav. "rrt_star" and "far_rrt_star"
+    # are GONE (reactive_nav_node deleted); we silently upgrade them to
+    # "astar" so legacy launches keep working.
+    if nav_backend == "reactive":
+        nav_backend = "default"
+    elif nav_backend in ("rrt_star", "far_rrt_star"):
+        nav_backend = "astar"
 
     scan_topic = _get(context, "scan_topic") or f"/{robot_ns}/scan_3d"
     odom_topic = _get(context, "odom_topic") or f"/{robot_ns}/odom/nav"
@@ -144,62 +152,8 @@ def _setup(context):
         # topic so CFPA2 can fast-blacklist unreachable goals regardless
         # of which planner is active.
         actions.append(_far_status_adapter_node(robot_ns, use_sim_time, odom_topic, waypoint_suffix))
-    elif nav_backend == "far_rrt_star":
-        # FAR as global planner + RRT* as local planner.
-        # FAR terrain + far_planner produce /{ns}/way_point (intermediate
-        # route waypoints).  RRT* subscribes to those instead of raw CFPA2
-        # frontiers, giving it reachable local goals within its 4m grid.
-        actions.extend(
-            _build_far_global_only(
-                robot_ns=robot_ns,
-                use_sim_time=use_sim_time,
-                map_frame=map_frame,
-                odom_topic=odom_topic,
-                registered_scan_topic=registered_scan_topic,
-                waypoint_suffix=waypoint_suffix,
-                tf_remaps=tf_remaps,
-                robot_id=far_robot_id,
-            )
-        )
-        # Adapter also runs for the FAR-global-only path — FAR still publishes
-        # the same reach/way_point topics. RRT* (the local planner) will
-        # publish its own nav_status/v1 on the same topic. CFPA2 uses the
-        # UNION — either leg can declare the goal unreachable.
-        actions.append(_far_status_adapter_node(robot_ns, use_sim_time, odom_topic, waypoint_suffix))
-        # RRT* receives way_point from FAR (not raw CFPA2 frontier)
-        nav_remappings = [
-            ("/way_point", f"/{robot_ns}/way_point"),
-            ("/odom/ground_truth", odom_topic),
-            ("/scan", scan_topic),
-            ("/cmd_vel_stamped", f"/{robot_ns}/cmd_vel_stamped"),
-            ("/nav_status", f"/{robot_ns}/nav_status"),
-            ("/planned_path", f"/{robot_ns}/planned_path"),
-            ("/robot_trajectory", f"/{robot_ns}/robot_trajectory"),
-            ("/final_goal_marker", f"/{robot_ns}/final_goal_marker"),
-            ("/robot_pose_marker", f"/{robot_ns}/robot_pose_marker"),
-        ]
-        nav_extra = {
-            "frontier_replan_topic": f"/{robot_ns}/frontier_replan",
-            "stop_topic": f"/{robot_ns}/stop",
-            "map_frame": map_frame,
-            "map_topic": f"/{robot_ns}/map",
-        }
-        if max_linear_speed_str:
-            nav_extra["max_linear_speed"] = float(max_linear_speed_str)
-        actions.append(
-            Node(
-                package="go2w_nav",
-                executable="reactive_nav_node",
-                namespace=robot_ns,
-                name="reactive_nav",
-                parameters=[nav_config, {"use_sim_time": use_sim_time}, nav_extra],
-                remappings=nav_remappings + (tf_remaps if remap_tf else []),
-                ros_arguments=log_info,
-                output="screen",
-            )
-        )
     else:
-        # Shared remappings for both default_nav and reactive_nav (rrt_star)
+        # Shared remappings for astar_nav_node and default_nav.py
         nav_remappings = [
             ("/way_point", f"/{robot_ns}{waypoint_suffix}"),
             ("/odom/ground_truth", odom_topic),
@@ -217,8 +171,8 @@ def _setup(context):
             "stop_topic": f"/{robot_ns}/stop",
         }
 
-        if nav_backend in ("reactive", "rrt_star"):
-            # RRT*-based reactive navigation (with integrated global A*)
+        if nav_backend == "astar":
+            # C++ A* + pure-pursuit + oriented footprint validation.
             if max_linear_speed_str:
                 nav_extra["max_linear_speed"] = float(max_linear_speed_str)
             nav_extra["map_frame"] = map_frame
@@ -227,9 +181,9 @@ def _setup(context):
             actions.append(
                 Node(
                     package="go2w_nav",
-                    executable="reactive_nav_node",
+                    executable="astar_nav_node",
                     namespace=robot_ns,
-                    name="reactive_nav",
+                    name="astar_nav",
                     parameters=[nav_config, {"use_sim_time": use_sim_time}, nav_extra],
                     remappings=nav_remappings + (tf_remaps if remap_tf else []),
                     ros_arguments=log_info,
@@ -237,7 +191,7 @@ def _setup(context):
                 )
             )
         else:
-            # Default: default_nav (A* grid planner)
+            # default_nav — Python A*/D* Lite with recovery (legacy stable).
             if max_linear_speed_str:
                 nav_extra["max_linear_speed"] = float(max_linear_speed_str)
             if require_settle_str:
@@ -288,120 +242,6 @@ def _far_status_adapter_node(robot_ns: str, use_sim_time: bool, odom_topic: str,
         ],
         output="screen",
     )
-
-
-def _build_far_global_only(
-    *,
-    robot_ns: str,
-    use_sim_time: bool,
-    map_frame: str,
-    odom_topic: str,
-    registered_scan_topic: str,
-    waypoint_suffix: str,
-    tf_remaps: list,
-    robot_id: int,
-) -> list:
-    """Build FAR as a global-only planner (no localPlanner/pathFollower).
-
-    Launches terrain analysis + far_planner.  FAR receives goal_point from
-    CFPA2 and publishes intermediate way_point for a separate local planner
-    (e.g. RRT*) to follow.
-    """
-    ns = robot_ns
-    far_pkg = get_package_share_directory("far_planner")
-
-    nodes = []
-
-    # ── Terrain analysis pipeline (same as full FAR stack) ──
-    nodes.append(
-        Node(
-            package="sensor_scan_generation",
-            executable="sensorScanGeneration",
-            namespace=ns,
-            name="sensor_scan_generation",
-            parameters=[{"use_sim_time": use_sim_time}],
-            remappings=[
-                ("/state_estimation", odom_topic),
-                ("/registered_scan", registered_scan_topic),
-                ("/state_estimation_at_scan", f"/{ns}/state_estimation_at_scan"),
-                ("/sensor_scan", f"/{ns}/sensor_scan"),
-            ] + tf_remaps,
-            output="screen",
-        )
-    )
-    nodes.append(
-        Node(
-            package="terrain_analysis",
-            executable="terrainAnalysis",
-            namespace=ns,
-            name="terrain_analysis",
-            parameters=[{"use_sim_time": use_sim_time, "maxRelZ": 0.8}],
-            remappings=[
-                ("/state_estimation", odom_topic),
-                ("/registered_scan", registered_scan_topic),
-                ("/joy", f"/{ns}/joy"),
-                ("/map_clearing", f"/{ns}/map_clearing"),
-                ("/terrain_map", f"/{ns}/terrain_map"),
-            ],
-            output="screen",
-        )
-    )
-    nodes.append(
-        Node(
-            package="terrain_analysis_ext",
-            executable="terrainAnalysisExt",
-            namespace=ns,
-            name="terrain_analysis_ext",
-            parameters=[{"use_sim_time": use_sim_time, "maxRelZ": 0.8}],
-            remappings=[
-                ("/state_estimation", odom_topic),
-                ("/registered_scan", registered_scan_topic),
-                ("/joy", f"/{ns}/joy"),
-                ("/cloud_clearing", f"/{ns}/cloud_clearing"),
-                ("/terrain_map", f"/{ns}/terrain_map"),
-                ("/terrain_map_ext", f"/{ns}/terrain_map_ext"),
-            ],
-            output="screen",
-        )
-    )
-
-    # ── FAR planner (global route only — no localPlanner/pathFollower) ──
-    nodes.append(
-        Node(
-            package="far_planner",
-            executable="far_planner",
-            namespace=ns,
-            name="far_planner",
-            parameters=[
-                _load_yaml_params(os.path.join(far_pkg, "config", "default.yaml")),
-                {
-                    "use_sim_time": use_sim_time,
-                    "world_frame": map_frame,
-                    "graph_msger/robot_id": robot_id,
-                    "g_planner/converge_distance": 0.5,
-                    "util/terrain_free_Z": 0.45,
-                    "util/obs_inflate_size": 1,
-                },
-            ],
-            remappings=[
-                ("/odom_world", odom_topic),
-                ("/terrain_cloud", f"/{ns}/terrain_map_ext"),
-                ("/scan_cloud", f"/{ns}/terrain_map"),
-                ("/terrain_local_cloud", registered_scan_topic),
-                ("/goal_point", f"/{ns}{waypoint_suffix}"),
-                ("/way_point", f"/{ns}/way_point"),
-                ("/joy", f"/{ns}/joy"),
-                ("/navigation_boundary", f"/{ns}/navigation_boundary"),
-                ("/runtime", f"/{ns}/far_runtime"),
-                ("/planning_time", f"/{ns}/far_planning_time"),
-                ("/robot_vgraph", f"/{ns}/robot_vgraph"),
-                ("/decoded_vgraph", f"/{ns}/decoded_vgraph"),
-            ] + tf_remaps,
-            output="screen",
-        )
-    )
-
-    return nodes
 
 
 def _build_far_stack(
@@ -730,8 +570,12 @@ def generate_launch_description():
             DeclareLaunchArgument("remap_tf", default_value="true"),
             DeclareLaunchArgument(
                 "nav_backend",
-                default_value="reactive",
-                description="Local planner backend: reactive (default A* grid), rrt_star (RRT* reactive), far (CMU autonomy stack)",
+                default_value="default",
+                description="Local planner backend: default (default_nav.py — Python A* + "
+                            "D* Lite + recovery), astar (astar_nav_node — C++ A* + "
+                            "oriented footprint check), far (CMU autonomy stack). "
+                            "Legacy aliases 'reactive' → 'default', 'rrt_star' → 'astar', "
+                            "'far_rrt_star' → 'astar' (the reactive RRT* planner is gone).",
             ),
             DeclareLaunchArgument("scan_topic", default_value=""),
             DeclareLaunchArgument("odom_topic", default_value=""),

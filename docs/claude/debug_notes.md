@@ -16,6 +16,24 @@ sleep 4  # wait for sockets to release
 
 Both benchmark scripts do this automatically between trials.
 
+## `hybrid_cmd_router` wheel topic under mixed launch: absolute, not relative
+
+**Symptom:** Robot A (Go2W on A* backend) picks up CFPA2 goals, astar plans valid paths (`valid=1 fp_ok=1`), hybrid_cmd_router switches modes between `legged` and `wheel` at the expected times, but the robot physically sits still for long stretches. Tiny movements only during the short legged windows.
+
+**Cause:** `go2w_hybrid_cmd_router.py` defaults `wheel_command_topic` to the relative string `"wheel_velocity_controller/commands"`. Under `namespace=robot_a` that resolves to `/robot_a/wheel_velocity_controller/commands`. In the *mixed* launch the ros2_control controller_manager lives at `/mujoco_sim/controller_manager`, so the wheel controller actually listens at `/mujoco_sim/robot_a_wheel_velocity_controller/commands`. Nobody subscribes to the `/{ns}/...` version → wheel commands go nowhere while the router thinks it's driving.
+
+FAR masked this bug because FAR's cmd_vel is too smooth to trigger the router's "wheel" mode for more than a blip. A*'s heading/curvature dispatch commits to wheel mode aggressively — exposing the silent wheel-topic miss.
+
+**Fix:** pass the absolute topic as a parameter, in both the A* and FAR branches of `_build_fastlio_nav_stack`:
+
+```python
+"wheel_command_topic": f"/mujoco_sim/{ns}_wheel_velocity_controller/commands",
+```
+
+The leading `/` makes the string absolute — the node's `robot_a` namespace does not prepend.
+
+Single-robot launches (`single_astar_mujoco.launch.py`) aren't affected because their CM lives at `/{ns}/controller_manager`, so the relative default happens to resolve correctly.
+
 ## QoS mismatches that fail silently
 
 **`forward_command_controller` uses BEST_EFFORT.** Default Python publisher uses RELIABLE. DDS silently drops every message; subscription count of 1 looks fine. Only `ros2 topic info -v` reveals it.

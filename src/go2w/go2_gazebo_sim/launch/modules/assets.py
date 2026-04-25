@@ -186,6 +186,7 @@ def build_dual_robot_stack(
     pose_guard_hold_sec=8.5,
     activate_controllers_on_spawn=True,
     stand_up_joint_preset="go2",
+    stand_up_joint_prefix="",
     cmd_vel_input_topic="cmd_vel",
     wheel_controller_name=None,
     wheel_spawner_delay_sec=None,
@@ -435,6 +436,7 @@ def build_dual_robot_stack(
             {"knee_bend_ratio": 0.80},
             {"joint_controller_topic": effort_topic},
             {"joint_name_preset": stand_up_joint_preset},
+            {"joint_name_prefix": stand_up_joint_prefix},
         ],
         output="screen",
     )

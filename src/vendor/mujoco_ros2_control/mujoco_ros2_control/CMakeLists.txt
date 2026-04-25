@@ -49,10 +49,18 @@ endforeach()
 set(EIGEN3_FOUND TRUE)
 set(EIGEN3_INCLUDE_DIRS ${EIGEN3_INCLUDE_DIR})
 
-# Use locally-installed MuJoCo (pip package provides C headers + shared lib)
-set(MUJOCO_PIP_DIR "$ENV{HOME}/.local/lib/python3.10/site-packages/mujoco")
-if(NOT EXISTS "${MUJOCO_PIP_DIR}/include/mujoco/mujoco.h")
-  message(FATAL_ERROR "MuJoCo not found at ${MUJOCO_PIP_DIR}. Install via: pip install mujoco")
+# Use locally-installed MuJoCo (pip package provides C headers + shared lib).
+# Auto-discover via the Python3 interpreter colcon/cmake is configured with
+# (so cmu_env, ~/.local, /usr/lib, etc. are all supported without hardcoding).
+execute_process(
+  COMMAND "${Python3_EXECUTABLE}" -c "import mujoco, os; print(os.path.dirname(mujoco.__file__))"
+  OUTPUT_VARIABLE MUJOCO_PIP_DIR
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+  RESULT_VARIABLE _mujoco_import_rc
+)
+if(NOT _mujoco_import_rc EQUAL 0 OR NOT EXISTS "${MUJOCO_PIP_DIR}/include/mujoco/mujoco.h")
+  message(FATAL_ERROR "MuJoCo not found via ${Python3_EXECUTABLE} "
+    "(got: '${MUJOCO_PIP_DIR}'). Install via: pip install mujoco")
 endif()
 
 # Create imported target mujoco::mujoco

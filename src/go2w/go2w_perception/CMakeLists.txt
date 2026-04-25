@@ -6,6 +6,25 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 find_package(ament_cmake REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(tf2_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
+
+# C++ executables
+add_executable(multi_tf_relay src/multi_tf_relay.cpp)
+ament_target_dependencies(multi_tf_relay rclcpp tf2_msgs)
+install(TARGETS multi_tf_relay
+  DESTINATION lib/${PROJECT_NAME})
+
+# robot_self_filter — strip LiDAR returns hitting peer-robot bodies before
+# they reach octomap. Runs on the cloud hot path (10 Hz × 24 k pts), so
+# C++ is a hard requirement; Python with numpy adds enough rclpy
+# serialisation overhead to make octomap input rate stutter.
+add_executable(robot_self_filter src/robot_self_filter.cpp)
+ament_target_dependencies(robot_self_filter rclcpp sensor_msgs nav_msgs)
+install(TARGETS robot_self_filter
+  DESTINATION lib/${PROJECT_NAME})
 
 # Install Python scripts
 install(PROGRAMS

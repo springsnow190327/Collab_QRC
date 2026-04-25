@@ -34,7 +34,7 @@ find_package(Eigen3 REQUIRED)
   ${catkin_INCLUDE_DIRS}
   ${PCL_INCLUDE_DIRS}
   include
-  or-tools/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/or-tools/include
   ${EIGEN3_INCLUDE_DIR}
   /opt/ros/humble/include
   # /usr/local/include

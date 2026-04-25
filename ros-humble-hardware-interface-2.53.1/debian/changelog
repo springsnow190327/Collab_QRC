@@ -1,0 +1,714 @@
+ros-humble-hardware-interface (2.53.1-1jammy) jammy; urgency=high
+
+  * Fixed issue with mock_components being linked even when not needed (#2925 <https://github.com/ros-controls/ros2_control/issues/2925>)
+  * Contributors: Ewoodss
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Tue, 03 Feb 2026 07:00:00 -0000
+
+ros-humble-hardware-interface (2.53.0-1jammy) jammy; urgency=high
+
+
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Mon, 01 Dec 2025 07:00:00 -0000
+
+ros-humble-hardware-interface (2.52.2-1jammy) jammy; urgency=high
+
+
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Mon, 27 Oct 2025 06:00:00 -0000
+
+ros-humble-hardware-interface (2.52.1-1jammy) jammy; urgency=high
+
+
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Fri, 17 Oct 2025 06:00:00 -0000
+
+ros-humble-hardware-interface (2.52.0-1jammy) jammy; urgency=high
+
+  * Fix CMake install so overriding works (backport #926 <https://github.com/ros-controls/ros2_control/issues/926>) (#2480 <https://github.com/ros-controls/ros2_control/issues/2480>)
+  * Contributors: mergify[bot]
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Fri, 12 Sep 2025 06:00:00 -0000
+
+ros-humble-hardware-interface (2.51.0-1jammy) jammy; urgency=high
+
+
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Fri, 06 Jun 2025 06:00:00 -0000
+
+ros-humble-hardware-interface (2.50.0-1jammy) jammy; urgency=high
+
+  * Bump version of pre-commit hooks (backport #2156 <https://github.com/ros-controls/ros2_control/issues/2156>) (#2157 <https://github.com/ros-controls/ros2_control/issues/2157>)
+  * [RM] Add error handling for missing plugin tags in URDF parsing (backport #2138 <https://github.com/ros-controls/ros2_control/issues/2138>) (#2145 <https://github.com/ros-controls/ros2_control/issues/2145>)
+  * Contributors: mergify[bot]
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Thu, 10 Apr 2025 06:00:00 -0000
+
+ros-humble-hardware-interface (2.49.0-1jammy) jammy; urgency=high
+
+  * Improve API/lifecycle docs (#2081 <https://github.com/ros-controls/ros2_control/issues/2081>) (#2085 <https://github.com/ros-controls/ros2_control/issues/2085>)
+  * Contributors: mergify[bot]
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Tue, 18 Mar 2025 06:00:00 -0000
+
+ros-humble-hardware-interface (2.48.0-1jammy) jammy; urgency=high
+
+  * Handle SIGINT properly in the controller manager (backport #2014 <https://github.com/ros-controls/ros2_control/issues/2014>) (#2040 <https://github.com/ros-controls/ros2_control/issues/2040>)
+  * [Doc] Fix broken link (backport #2034 <https://github.com/ros-controls/ros2_control/issues/2034>) (#2035 <https://github.com/ros-controls/ros2_control/issues/2035>)
+  * Contributors: mergify[bot]
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Fri, 07 Feb 2025 07:00:00 -0000
+
+ros-humble-hardware-interface (2.47.0-1jammy) jammy; urgency=high
+
+  * Fix the lock_guard placement (#1960 <https://github.com/ros-controls/ros2_control/issues/1960>)
+  * Update initial_value parameters of generic_system tests (#1943 <https://github.com/ros-controls/ros2_control/issues/1943>)
+  * Contributors: Sai Kishor Kothakota, Sanjeev
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Tue, 31 Dec 2024 07:00:00 -0000
+
+ros-humble-hardware-interface (2.46.0-1jammy) jammy; urgency=high
+
+  * generate version.h file per package using the ament_generate_version_header  (backport #1449 <https://github.com/ros-controls/ros2_control/issues/1449>) (#1938 <https://github.com/ros-controls/ros2_control/issues/1938>)
+  * [CI] Add clang job, setup concurrency, use rt_tools humble branch (backport #1910 <https://github.com/ros-controls/ros2_control/issues/1910>) (#1924 <https://github.com/ros-controls/ros2_control/issues/1924>)
+  * [Spawner] Accept parsing multiple --param-file arguments to spawner  (backport #1805 <https://github.com/ros-controls/ros2_control/issues/1805>) (#1894 <https://github.com/ros-controls/ros2_control/issues/1894>)
+  * Contributors: mergify[bot]
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Mon, 16 Dec 2024 07:00:00 -0000
+
+ros-humble-hardware-interface (2.45.0-1jammy) jammy; urgency=high
+
+
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Tue, 03 Dec 2024 07:00:00 -0000
+
+ros-humble-hardware-interface (2.44.0-1jammy) jammy; urgency=high
+
+  * Add few warning compiler options to error (backport #1181 <https://github.com/ros-controls/ros2_control/issues/1181>) (#1816 <https://github.com/ros-controls/ros2_control/issues/1816>)
+  * Add -Wconversion flag to protect future developments (#1053 <https://github.com/ros-controls/ros2_control/issues/1053>) (#1815 <https://github.com/ros-controls/ros2_control/issues/1815>)
+  * Add resources_lock_ lock_guards to avoid race condition when loading robot_description through topic (backport #1451 <https://github.com/ros-controls/ros2_control/issues/1451>) (#1599 <https://github.com/ros-controls/ros2_control/issues/1599>)
+  * Contributors: mergify[bot]
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Sat, 09 Nov 2024 07:00:00 -0000
+
+ros-humble-hardware-interface (2.43.1-1jammy) jammy; urgency=high
+
+
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Wed, 11 Sep 2024 06:00:00 -0000
+
+ros-humble-hardware-interface (2.43.0-1jammy) jammy; urgency=high
+
+
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Thu, 22 Aug 2024 06:00:00 -0000
+
+ros-humble-hardware-interface (2.42.0-1jammy) jammy; urgency=high
+
+  * Small improvements to the error output in component parser to make debugging easier. (backport #1580 <https://github.com/ros-controls/ros2_control/issues/1580>) (#1581 <https://github.com/ros-controls/ros2_control/issues/1581>)
+  * Update joints_userdoc.rst (#1604 <https://github.com/ros-controls/ros2_control/issues/1604>)
+  * Fix link to gazebosim.org (#1563 <https://github.com/ros-controls/ros2_control/issues/1563>) (#1564 <https://github.com/ros-controls/ros2_control/issues/1564>)
+  * Add doc page about joint kinematics (#1497 <https://github.com/ros-controls/ros2_control/issues/1497>) (#1559 <https://github.com/ros-controls/ros2_control/issues/1559>)
+  * Bump version of pre-commit hooks (backport #1556 <https://github.com/ros-controls/ros2_control/issues/1556>) (#1557 <https://github.com/ros-controls/ros2_control/issues/1557>)
+  * Contributors: Christoph Fröhlich, mergify[bot]
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Tue, 23 Jul 2024 06:00:00 -0000
+
+ros-humble-hardware-interface (2.41.0-1jammy) jammy; urgency=high
+
+  * Add missing calculate_dynamics (#1498 <https://github.com/ros-controls/ros2_control/issues/1498>) (#1511 <https://github.com/ros-controls/ros2_control/issues/1511>)
+  * [Doc] Add documentation about initial_value regarding mock_hw (#1352 <https://github.com/ros-controls/ros2_control/issues/1352>) (#1513 <https://github.com/ros-controls/ros2_control/issues/1513>)
+  * Move migration notes (#1481 <https://github.com/ros-controls/ros2_control/issues/1481>) (#1515 <https://github.com/ros-controls/ros2_control/issues/1515>)
+  * Bump version of pre-commit hooks (backport #1430 <https://github.com/ros-controls/ros2_control/issues/1430>) (#1434 <https://github.com/ros-controls/ros2_control/issues/1434>)
+  * Contributors: mergify[bot]
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Tue, 30 Apr 2024 06:00:00 -0000
+
+ros-humble-hardware-interface (2.40.0-1jammy) jammy; urgency=high
+
+  * [CI] Code coverage + pre-commit (backport #1413 <https://github.com/ros-controls/ros2_control/issues/1413>) (#1414 <https://github.com/ros-controls/ros2_control/issues/1414>)
+  * Move hardware interface README content to sphinx documentation (#1342 <https://github.com/ros-controls/ros2_control/issues/1342>) (#1380 <https://github.com/ros-controls/ros2_control/issues/1380>)
+  * Contributors: mergify[bot]
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Sat, 02 Mar 2024 07:00:00 -0000
+
+ros-humble-hardware-interface (2.39.1-1jammy) jammy; urgency=high
+
+  * readd activate_all_components method to not break API (#1392 <https://github.com/ros-controls/ros2_control/issues/1392>)
+  * Contributors: Sai Kishor Kothakota
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Wed, 14 Feb 2024 07:00:00 -0000
+
+ros-humble-hardware-interface (2.39.0-1jammy) jammy; urgency=high
+
+  * Move test_components to own package (backport #1325 <https://github.com/ros-controls/ros2_control/issues/1325>) (#1340 <https://github.com/ros-controls/ros2_control/issues/1340>)
+  * Contributors: mergify[bot]
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Mon, 12 Feb 2024 07:00:00 -0000
+
+ros-humble-hardware-interface (2.38.0-1jammy) jammy; urgency=high
+
+  * [CM] Fix controller parameter loading issue in different cases (#1293 <https://github.com/ros-controls/ros2_control/issues/1293>) (#1332 <https://github.com/ros-controls/ros2_control/issues/1332>)
+  * Enable setting of initial state in HW components (backport #1046 <https://github.com/ros-controls/ros2_control/issues/1046>) (#1064 <https://github.com/ros-controls/ros2_control/issues/1064>)
+  * Contributors: Sai Kishor Kothakota, mergify[bot]
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Thu, 25 Jan 2024 07:00:00 -0000
+
+ros-humble-hardware-interface (2.37.0-1jammy) jammy; urgency=high
+
+  * [RM] Fix crash for missing urdf in resource manager (#1301 <https://github.com/ros-controls/ros2_control/issues/1301>) (#1316 <https://github.com/ros-controls/ros2_control/issues/1316>)
+  * Add additional checks for non existing and not available interfaces. (backport #1218 <https://github.com/ros-controls/ros2_control/issues/1218>) (#1291 <https://github.com/ros-controls/ros2_control/issues/1291>)
+  * Fix return of ERROR and calls of cleanup when system is unconfigured of finalized (#1279 <https://github.com/ros-controls/ros2_control/issues/1279>) (#1286 <https://github.com/ros-controls/ros2_control/issues/1286>)
+  * fix the multiple definitions of lexical casts methods (#1281 <https://github.com/ros-controls/ros2_control/issues/1281>) (#1282 <https://github.com/ros-controls/ros2_control/issues/1282>)
+  * Contributors: Sai Kishor Kothakota, mergify[bot]
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Sat, 20 Jan 2024 07:00:00 -0000
+
+ros-humble-hardware-interface (2.36.1-1jammy) jammy; urgency=high
+
+  * [ResourceManager] adds test for uninitialized hardware (#1243 <https://github.com/ros-controls/ros2_control/issues/1243>) (#1274 <https://github.com/ros-controls/ros2_control/issues/1274>)
+  * Use portable version for string-to-double conversion (backport #1257 <https://github.com/ros-controls/ros2_control/issues/1257>) (#1268 <https://github.com/ros-controls/ros2_control/issues/1268>)
+  * Fix typo in docs (#1219 <https://github.com/ros-controls/ros2_control/issues/1219>) (#1221 <https://github.com/ros-controls/ros2_control/issues/1221>)
+  * Contributors: Christoph Fröhlich, mergify[bot]
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Mon, 08 Jan 2024 07:00:00 -0000
+
+ros-humble-hardware-interface (2.36.0-1jammy) jammy; urgency=high
+
+  * Cleanup Resource Manager a bit to increase clarity. (backport #816 <https://github.com/ros-controls/ros2_control/issues/816>) (#1191 <https://github.com/ros-controls/ros2_control/issues/1191>)
+  * Handle hardware errors in Resource Manager (#805 <https://github.com/ros-controls/ros2_control/issues/805>) (#837 <https://github.com/ros-controls/ros2_control/issues/837>) #ABI-breaking
+  * Contributors: mergify[bot]
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Tue, 12 Dec 2023 07:00:00 -0000
+
+ros-humble-hardware-interface (2.35.1-1jammy) jammy; urgency=high
+
+  * [MockHardware] Fix the issues where hardware with multiple interfaces can not be started because of a logical bug added when adding dynamics calculation functionality. (#1151 <https://github.com/ros-controls/ros2_control/issues/1151>) (#1178 <https://github.com/ros-controls/ros2_control/issues/1178>)
+  * Contributors: Dr Denis
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Mon, 27 Nov 2023 07:00:00 -0000
+
+ros-humble-hardware-interface (2.35.0-1jammy) jammy; urgency=high
+
+  * [CM] Use robot_description topic instead of parameter and don't crash on empty URDF 🦿 (backport #940 <https://github.com/ros-controls/ros2_control/issues/940>) (#1052 <https://github.com/ros-controls/ros2_control/issues/1052>)
+  * Contributors: mergify[bot]
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Tue, 14 Nov 2023 07:00:00 -0000
+
+ros-humble-hardware-interface (2.34.0-1jammy) jammy; urgency=high
+
+
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Wed, 08 Nov 2023 07:00:00 -0000
+
+ros-humble-hardware-interface (2.33.0-1jammy) jammy; urgency=high
+
+  * [MockHardware] Added dynamic simulation functionality. (#1028 <https://github.com/ros-controls/ros2_control/issues/1028>) (#1125 <https://github.com/ros-controls/ros2_control/issues/1125>)
+  * Contributors: mergify[bot]
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Wed, 11 Oct 2023 06:00:00 -0000
+
+ros-humble-hardware-interface (2.32.0-1jammy) jammy; urgency=high
+
+  * Add GPIO tag description to docs (#1109 <https://github.com/ros-controls/ros2_control/issues/1109>) (#1120 <https://github.com/ros-controls/ros2_control/issues/1120>)
+  * Contributors: Christoph Froehlich
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Tue, 03 Oct 2023 06:00:00 -0000
+
+ros-humble-hardware-interface (2.31.0-1jammy) jammy; urgency=high
+
+
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Mon, 11 Sep 2023 06:00:00 -0000
+
+ros-humble-hardware-interface (2.30.0-1jammy) jammy; urgency=high
+
+  * Add checks if hardware is initialized. (backport #1054 <https://github.com/ros-controls/ros2_control/issues/1054>) (#1081 <https://github.com/ros-controls/ros2_control/issues/1081>)
+  * Contributors: Denis Stogl
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Mon, 14 Aug 2023 06:00:00 -0000
+
+ros-humble-hardware-interface (2.29.0-1jammy) jammy; urgency=high
+
+
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Sun, 09 Jul 2023 06:00:00 -0000
+
+ros-humble-hardware-interface (2.28.0-1jammy) jammy; urgency=high
+
+  * Ensure instantiation of hardware classes work for python bindings (#1058 <https://github.com/ros-controls/ros2_control/issues/1058>) (#1062 <https://github.com/ros-controls/ros2_control/issues/1062>)
+  * Contributors: Olivier Stasse
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Fri, 23 Jun 2023 06:00:00 -0000
+
+ros-humble-hardware-interface (2.27.0-1jammy) jammy; urgency=high
+
+  * [MockHardware] Enable disabling of command to simulate HW failures. (backport #1027 <https://github.com/ros-controls/ros2_control/issues/1027>) (#1050 <https://github.com/ros-controls/ros2_control/issues/1050>)
+  * Empty urdf tag humble (backport of #1017 <https://github.com/ros-controls/ros2_control/issues/1017>) (#1036 <https://github.com/ros-controls/ros2_control/issues/1036>)
+  * [Humble] enable ReflowComments to also use ColumnLimit on comments (#1038 <https://github.com/ros-controls/ros2_control/issues/1038>)
+  * Issue 339: Implement parse_bool and refactor a few (backport #1014 <https://github.com/ros-controls/ros2_control/issues/1014>) (#1018 <https://github.com/ros-controls/ros2_control/issues/1018>)
+  * Contributors: Felix Exner (fexner), Sai Kishor Kothakota, Christoph Fröhlich, Bence Magyar, Alejandro Bordallo
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Wed, 14 Jun 2023 06:00:00 -0000
+
+ros-humble-hardware-interface (2.26.0-1jammy) jammy; urgency=high
+
+  * docs: Fix link to hardware_components (#1009 <https://github.com/ros-controls/ros2_control/issues/1009>) (#1011 <https://github.com/ros-controls/ros2_control/issues/1011>)
+  * Contributors: Christoph Fröhlich
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Sat, 20 May 2023 06:00:00 -0000
+
+ros-humble-hardware-interface (2.25.3-1jammy) jammy; urgency=high
+
+
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Sat, 29 Apr 2023 06:00:00 -0000
+
+ros-humble-hardware-interface (2.25.2-1jammy) jammy; urgency=high
+
+  * Also initialize non-joint components (backport #822 <https://github.com/ros-controls/ros2_control/issues/822>) (#991 <https://github.com/ros-controls/ros2_control/issues/991>)
+  * Contributors: Felix Exner, Denis Štogl
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Thu, 20 Apr 2023 06:00:00 -0000
+
+ros-humble-hardware-interface (2.25.1-1jammy) jammy; urgency=high
+
+
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Fri, 14 Apr 2023 06:00:00 -0000
+
+ros-humble-hardware-interface (2.25.0-1jammy) jammy; urgency=high
+
+  * Check for missing hardware interfaces that use the gpio tag. (#953 <https://github.com/ros-controls/ros2_control/issues/953>)
+  * Split transmission interfaces (backport #938 <https://github.com/ros-controls/ros2_control/issues/938>) (#968 <https://github.com/ros-controls/ros2_control/issues/968>)
+  * Contributors: Ryan Sandzimier, Noel Jiménez García, Bence Magyar
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Sun, 02 Apr 2023 06:00:00 -0000
+
+ros-humble-hardware-interface (2.24.1-1jammy) jammy; urgency=high
+
+  * Revert "Make double parsing locale independent (#921 <https://github.com/ros-controls/ros2_control/issues/921>)" (#966 <https://github.com/ros-controls/ros2_control/issues/966>)
+  * Contributors: Bence Magyar
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Thu, 09 Mar 2023 07:00:00 -0000
+
+ros-humble-hardware-interface (2.24.0-1jammy) jammy; urgency=high
+
+
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Tue, 28 Feb 2023 07:00:00 -0000
+
+ros-humble-hardware-interface (2.23.0-1jammy) jammy; urgency=high
+
+
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Mon, 20 Feb 2023 07:00:00 -0000
+
+ros-humble-hardware-interface (2.22.0-1jammy) jammy; urgency=high
+
+  * Make double parsing locale independent (#921 <https://github.com/ros-controls/ros2_control/issues/921>) (#924 <https://github.com/ros-controls/ros2_control/issues/924>)
+  * Contributors: Henning Kayser
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Tue, 31 Jan 2023 07:00:00 -0000
+
+ros-humble-hardware-interface (2.21.0-1jammy) jammy; urgency=high
+
+
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Tue, 24 Jan 2023 07:00:00 -0000
+
+ros-humble-hardware-interface (2.20.0-1jammy) jammy; urgency=high
+
+  * 🔧 Fixes and updated on pre-commit hooks and their action (backport #890 <https://github.com/ros-controls/ros2_control/issues/890>) (#895 <https://github.com/ros-controls/ros2_control/issues/895>)
+  * Contributors: Denis Štogl
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Thu, 12 Jan 2023 07:00:00 -0000
+
+ros-humble-hardware-interface (2.19.0-1jammy) jammy; urgency=high
+
+  * ResourceManager doesn't always log an error on shutdown anymore (#867 <https://github.com/ros-controls/ros2_control/issues/867>) (#871 <https://github.com/ros-controls/ros2_control/issues/871>)
+  * Contributors: Christopher Wecht
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Fri, 06 Jan 2023 07:00:00 -0000
+
+ros-humble-hardware-interface (2.18.0-1jammy) jammy; urgency=high
+
+
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Sat, 03 Dec 2022 07:00:00 -0000
+
+ros-humble-hardware-interface (2.17.0-1jammy) jammy; urgency=high
+
+
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Sun, 27 Nov 2022 07:00:00 -0000
+
+ros-humble-hardware-interface (2.16.0-1jammy) jammy; urgency=high
+
+  * fix broken links (issue #831 <https://github.com/ros-controls/ros2_control/issues/831>) (#833 <https://github.com/ros-controls/ros2_control/issues/833>) (#845 <https://github.com/ros-controls/ros2_control/issues/845>)
+  * Contributors: Manuel Muth
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Mon, 17 Oct 2022 06:00:00 -0000
+
+ros-humble-hardware-interface (2.15.0-1jammy) jammy; urgency=high
+
+
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Mon, 19 Sep 2022 06:00:00 -0000
+
+ros-humble-hardware-interface (2.14.0-1jammy) jammy; urgency=high
+
+  * Add doxygen comments (#777 <https://github.com/ros-controls/ros2_control/issues/777>)
+  * Contributors: Bence Magyar, Denis Štogl
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Sun, 04 Sep 2022 06:00:00 -0000
+
+ros-humble-hardware-interface (2.13.0-1jammy) jammy; urgency=high
+
+
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Wed, 03 Aug 2022 06:00:00 -0000
+
+ros-humble-hardware-interface (2.12.1-1jammy) jammy; urgency=high
+
+  * Fix fake components deprecation and add test for it (#771 <https://github.com/ros-controls/ros2_control/issues/771>)
+  * Contributors: Bence Magyar
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Thu, 14 Jul 2022 06:00:00 -0000
+
+ros-humble-hardware-interface (2.12.0-1jammy) jammy; urgency=high
+
+  * Hardware interface specific update rate and best practices about it (#716 <https://github.com/ros-controls/ros2_control/issues/716>)
+  * Deprecate fake components, long live mock components (#762 <https://github.com/ros-controls/ros2_control/issues/762>)
+  * Contributors: Bence Magyar, Lovro Ivanov
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Sat, 09 Jul 2022 06:00:00 -0000
+
+ros-humble-hardware-interface (2.11.0-1jammy) jammy; urgency=high
+
+  * [Interfaces] Improved ```get_name()``` method of hardware interfaces #api-breaking (#737 <https://github.com/ros-controls/ros2_control/issues/737>)
+  * Update maintainers of packages (#753 <https://github.com/ros-controls/ros2_control/issues/753>)
+  * Remove ament autolint (#749 <https://github.com/ros-controls/ros2_control/issues/749>)
+  * Full functionality of chainable controllers in controller manager (#667 <https://github.com/ros-controls/ros2_control/issues/667>)
+    * auto-switching of chained mode in controllers
+    * interface-matching approach for managing chaining controllers
+  * Contributors: Bence Magyar, Denis Štogl, Lucas Schulze
+
+ -- Bence Magyar <bence.magyar.robotics@gmail.com>  Sun, 03 Jul 2022 06:00:00 -0000
+
+ros-humble-hardware-interface (2.10.0-1jammy) jammy; urgency=high
+
+  * Make RHEL CI happy! (#730 <https://github.com/ros-controls/ros2_control/issues/730>)
+  * CMakeLists cleanup (#733 <https://github.com/ros-controls/ros2_control/issues/733>)
+  * Refactored error handling when hardware name is duplicated (#724 <https://github.com/ros-controls/ros2_control/issues/724>)
+  * Update to clang format 12 (#731 <https://github.com/ros-controls/ros2_control/issues/731>)
+  * Contributors: Andy Zelenak, Bence Magyar, Kvk Praneeth, Márk Szitanics
+
+ -- Karsten Knese <karsten@osrfoundation.org>  Sat, 18 Jun 2022 06:00:00 -0000
+
+ros-humble-hardware-interface (2.9.0-1jammy) jammy; urgency=high
+
+  * Resource Manager extension to support management of reference interfaces from chained controllers. (#664 <https://github.com/ros-controls/ros2_control/issues/664>)
+    * Extend resource manager to manage reference interfaces from controllers.
+    * Adjust interface between CM and RM for managing controllers' reference interfaces.
+  * Contributors: Denis Štogl
+
+ -- Karsten Knese <karsten@osrfoundation.org>  Thu, 19 May 2022 06:00:00 -0000
+
+ros-humble-hardware-interface (2.8.0-1jammy) jammy; urgency=high
+
+  * Pass time and period to read() and write() (#715 <https://github.com/ros-controls/ros2_control/issues/715>)
+  * Contributors: Bence Magyar
+
+ -- Karsten Knese <karsten@osrfoundation.org>  Fri, 13 May 2022 06:00:00 -0000
+
+ros-humble-hardware-interface (2.7.0-1jammy) jammy; urgency=high
+
+  * Make URDF available to HW components on initialize (#709 <https://github.com/ros-controls/ros2_control/issues/709>)
+  * Contributors: Bence Magyar
+
+ -- Karsten Knese <karsten@osrfoundation.org>  Fri, 29 Apr 2022 06:00:00 -0000
+
+ros-humble-hardware-interface (2.6.0-1jammy) jammy; urgency=high
+
+  * Error if a hardware name is duplicated (#672 <https://github.com/ros-controls/ros2_control/issues/672>)
+  * Port four bar linkage and differential transmission loaders from ROS1 (#656 <https://github.com/ros-controls/ros2_control/issues/656>)
+  * Contributors: Andy Zelenak, Márk Szitanics
+
+ -- Karsten Knese <karsten@osrfoundation.org>  Wed, 20 Apr 2022 06:00:00 -0000
+
+ros-humble-hardware-interface (2.5.0-1jammy) jammy; urgency=high
+
+  * Require lifecycle-msgs in hardware_interface package (#675 <https://github.com/ros-controls/ros2_control/issues/675>) (#678 <https://github.com/ros-controls/ros2_control/issues/678>)
+  * Using should be inside namespace and not global scope. (#673 <https://github.com/ros-controls/ros2_control/issues/673>)
+  * Modernize C++: Use for-each loops in Resource Manager. (#659 <https://github.com/ros-controls/ros2_control/issues/659>)
+  * Enable controller manager services to control hardware lifecycle #abi-breaking (#637 <https://github.com/ros-controls/ros2_control/issues/637>)
+    * Implement CM services for hardware lifecycle management.
+    * Added default behavior to activate all controller and added description of CM parameters.
+  * Contributors: Denis Štogl
+
+ -- Karsten Knese <karsten@osrfoundation.org>  Fri, 25 Mar 2022 06:00:00 -0000
+
+ros-humble-hardware-interface (2.4.0-1jammy) jammy; urgency=high
+
+  * Fix transmission loader tests (#642 <https://github.com/ros-controls/ros2_control/issues/642>)
+  * Contributors: Bence Magyar, Denis Štogl
+
+ -- Karsten Knese <karsten@osrfoundation.org>  Wed, 23 Feb 2022 07:00:00 -0000
+
+ros-humble-hardware-interface (2.3.0-1jammy) jammy; urgency=high
+
+  * Add a warning if an initial_value is not found for any interface (#623 <https://github.com/ros-controls/ros2_control/issues/623>)
+  * Contributors: AndyZe
+
+ -- Karsten Knese <karsten@osrfoundation.org>  Fri, 18 Feb 2022 07:00:00 -0000
+
+ros-humble-hardware-interface (2.2.0-1jammy) jammy; urgency=high
+
+  * Resource Manager API changes for hardware lifecycle #api-breaking #abi-breaking (#589 <https://github.com/ros-controls/ros2_control/issues/589>)
+    * Towards selective starting and stoping of hardware components. Cleaning and renaming.
+    * Move Lifecycle of hardware component to the bottom for better overview.
+    * Use the same nomenclature as for controllers. 'start' -> 'activate'; 'stop' -> 'deactivate'
+    * Add selective starting and stopping of hardware resources.
+    Add HardwareComponentInfo structure in resource manager.
+    Use constants for HW parameters in tests of resource_manager.
+    Add list hardware components in CM to get details about them and check their status.
+    Use clear name for 'guard' and move release cmd itfs for better readability.
+    RM: Add lock for accesing maps with stored interfaces.
+    Separate hardware components-related services after controllers-related services.
+    Add service for activate/deactive hardware components.
+    Add activation and deactivation through ResourceStorage. This helps to manage available command interfaces.
+    * Use lifecycle_msgs/State in ListHardwareCompoents for state representation.
+    * Simplify repeatable code in methods.
+    * Add HW shutdown structure into ResouceManager.
+    * Fill out service callback in CM and add parameter for auto-configure.
+    * Move claimed_command_itf_map to ResourceStorage from ResourceManager.
+    * Do not automatically configure hardware in RM.
+    * Lifecycle and claiming in Resource Manager is working.
+    * Extend controller manager to support HW lifecycle.
+    * Add also available and claimed status into list components service output.
+    * Add SetHardwareComponentState service.
+    * Make all output in services debug-output.
+    * Remove specific services for hardware lifecycle management and leave only 'set_hardware_component_state' service.
+    * Make init_resource_manager less stateful.
+    * Keep old api to start/activate all components per default.
+    * Remove 'moving'/'non-moving' interface-handling.
+    * Remove obsolete 'import_components' methods without hardware info and fix post_initialization test.
+    Co-authored-by: Bence Magyar <mailto:bence.magyar.robotics@gmail.com>
+  * Doc 📓: Add detailed explanation about writing new hardware interface.  (#615 <https://github.com/ros-controls/ros2_control/issues/615>)
+  * Contributors: Denis Štogl
+
+ -- Karsten Knese <karsten@osrfoundation.org>  Mon, 24 Jan 2022 07:00:00 -0000
+
+ros-humble-hardware-interface (2.1.0-1jammy) jammy; urgency=high
+
+  * Removing 'auto' from function definition to support pre c++ 20 (#608 <https://github.com/ros-controls/ros2_control/issues/608>)
+  * Support of "initial_value" for the 'FakeSystem' (#598 <https://github.com/ros-controls/ros2_control/issues/598>)
+  * Contributors: bailaC, Denis Štogl
+
+ -- Karsten Knese <karsten@osrfoundation.org>  Tue, 11 Jan 2022 07:00:00 -0000
+
+ros-humble-hardware-interface (2.0.0-1jammy) jammy; urgency=high
+
+  * Adding support for 'initial_value' parameter. (#593 <https://github.com/ros-controls/ros2_control/issues/593>)
+  * fix copy paste error in documentation (#594 <https://github.com/ros-controls/ros2_control/issues/594>)
+  * Use lambda functions in ros2_control generic_system for repetitive tasks (#579 <https://github.com/ros-controls/ros2_control/issues/579>)
+    Co-authored-by: Denis Štogl <mailto:destogl@users.noreply.github.com>
+  * Extend FakeHardware to support <gpio>-tag (#574 <https://github.com/ros-controls/ros2_control/issues/574>)
+  * Contributors: Michael, bailaC, Denis Štogl
+
+ -- Karsten Knese <karsten@osrfoundation.org>  Wed, 29 Dec 2021 07:00:00 -0000
+
+ros-humble-hardware-interface (1.2.0-1jammy) jammy; urgency=high
+
+  * Import and Initialize components (#566 <https://github.com/ros-controls/ros2_control/issues/566>)
+  * Contributors: Alejandro Hernández Cordero
+
+ -- Karsten Knese <karsten@osrfoundation.org>  Fri, 05 Nov 2021 06:00:00 -0000
+
+ros-humble-hardware-interface (1.1.0-1jammy) jammy; urgency=high
+
+  * Handle errors of hardware that happen on read and write. (#546 <https://github.com/ros-controls/ros2_control/issues/546>)
+  * Contributors: Denis Štogl, Mathias Aarbo
+
+ -- Karsten Knese <karsten@osrfoundation.org>  Mon, 25 Oct 2021 06:00:00 -0000
+
+ros-humble-hardware-interface (1.0.0-1jammy) jammy; urgency=high
+
+  * Hardware components extension for lifecycle support (#503 <https://github.com/ros-controls/ros2_control/issues/503>)
+  * add M_PI macro for windows in test_component_parser.cpp (#502 <https://github.com/ros-controls/ros2_control/issues/502>)
+  * Extend GenericSystem by adding mapping of position with offset to custom interface. (#469 <https://github.com/ros-controls/ros2_control/issues/469>)
+  * Remove BOOST compiler definitions for pluginlib from CMakeLists (#514 <https://github.com/ros-controls/ros2_control/issues/514>)
+  * Do not manually set C++ version to 14 (#516 <https://github.com/ros-controls/ros2_control/issues/516>)
+  * Contributors: Bence Magyar, Denis Štogl, dzyGIT
+
+ -- Karsten Knese <karsten@osrfoundation.org>  Wed, 29 Sep 2021 06:00:00 -0000
+
+ros-humble-hardware-interface (0.8.0-1jammy) jammy; urgency=high
+
+  * Use clang format as code formatter (#491 <https://github.com/ros-controls/ros2_control/issues/491>)
+  * Fixup doc typo (#492 <https://github.com/ros-controls/ros2_control/issues/492>)
+  * Add docs for fake components (#466 <https://github.com/ros-controls/ros2_control/issues/466>)
+  * sort interfaces in resource manager (#483 <https://github.com/ros-controls/ros2_control/issues/483>)
+  * fix format (#484 <https://github.com/ros-controls/ros2_control/issues/484>)
+  * Transmission parsing v2 (#471 <https://github.com/ros-controls/ros2_control/issues/471>)
+    * move parsing responsibility to hardware_interface
+    * parse transmission type
+    * Cleanup unused parser
+  * Add pre-commit setup. (#473 <https://github.com/ros-controls/ros2_control/issues/473>)
+  * Extended GenericSystem with state offset options for testing some special control cases. (#350 <https://github.com/ros-controls/ros2_control/issues/350>)
+    * Extended GenericSystem with state offset options for testing some special control cases.
+    * Better parameter name
+    * Apply offset only to position interfaces.
+  * Added GPIO parsing and test (#436 <https://github.com/ros-controls/ros2_control/issues/436>)
+  * Fixes for windows (#443 <https://github.com/ros-controls/ros2_control/issues/443>)
+    * Fix building on windows
+    * Fix MSVC linker error when building tests
+    * Fix hang when loading controller on windows
+    * Use better log for configuring controller
+    * Be consistent with visibility control
+    * Use try_lock throw exception on failure
+  * Contributors: Akash, Bence Magyar, Denis Štogl, Karsten Knese, Mathias Arbo, Jafar Abdi
+
+ -- Karsten Knese <karsten@osrfoundation.org>  Sat, 28 Aug 2021 06:00:00 -0000
+
+ros-humble-hardware-interface (0.7.1-1jammy) jammy; urgency=high
+
+  * [FakeSystem] Set default command interface to NaN (#424 <https://github.com/ros-controls/ros2_control/issues/424>)
+  * Contributors: Denis Štogl, Bence Magyar
+
+ -- Karsten Knese <karsten@osrfoundation.org>  Tue, 15 Jun 2021 06:00:00 -0000
+
+ros-humble-hardware-interface (0.7.0-1jammy) jammy; urgency=high
+
+  * Add FTS as first semantic components to simplify controllers. (#370 <https://github.com/ros-controls/ros2_control/issues/370>)
+  * Contributors: bailaC, Denis Štogl, Jordan Palacios
+
+ -- Karsten Knese <karsten@osrfoundation.org>  Sun, 06 Jun 2021 06:00:00 -0000
+
+ros-humble-hardware-interface (0.6.1-1jammy) jammy; urgency=high
+
+
+
+ -- Karsten Knese <karsten@osrfoundation.org>  Mon, 31 May 2021 06:00:00 -0000
+
+ros-humble-hardware-interface (0.6.0-1jammy) jammy; urgency=high
+
+  * Remove the with_value_ptr and class templatization for ReadOnlyHandle (#379 <https://github.com/ros-controls/ros2_control/issues/379>)
+  * fake_components: Add mimic joint to generic system (#409 <https://github.com/ros-controls/ros2_control/issues/409>)
+  * List controller claimed interfaces (#407 <https://github.com/ros-controls/ros2_control/issues/407>)
+  * Contributors: El Jawad Alaa, Jafar Abdi, Jordan Palacios, Bence Magyar
+
+ -- Karsten Knese <karsten@osrfoundation.org>  Sun, 23 May 2021 06:00:00 -0000
+
+ros-humble-hardware-interface (0.5.0-1jammy) jammy; urgency=high
+
+  * Make hardware interface types as const char array rather than const char pointer (#408 <https://github.com/ros-controls/ros2_control/issues/408>)
+  * use auto instead of uint (#398 <https://github.com/ros-controls/ros2_control/issues/398>)
+  * hardware_interface mode switching using prepareSwitch doSwitch approach (#348 <https://github.com/ros-controls/ros2_control/issues/348>)
+  * avoid deprecations (#393 <https://github.com/ros-controls/ros2_control/issues/393>)
+  * move deprecation note before function definition instead of inside (#381 <https://github.com/ros-controls/ros2_control/issues/381>)
+  * Replace standard interfaces' hard-coded strings by constants (#376 <https://github.com/ros-controls/ros2_control/issues/376>)
+  * add deprecation note for with_value_ptr (#378 <https://github.com/ros-controls/ros2_control/issues/378>)
+  * Contributors: El Jawad Alaa, Jafar Abdi, Karsten Knese, Mateus Amarante, Mathias Hauan Arbo, Bence Magyar
+
+ -- Karsten Knese <karsten@osrfoundation.org>  Mon, 03 May 2021 06:00:00 -0000
+
+ros-humble-hardware-interface (0.4.0-1jammy) jammy; urgency=high
+
+  * [ros2_control_test_assets] Fix typo (#371 <https://github.com/ros-controls/ros2_control/issues/371>)
+  * uint -> size_t, 0u and auto (#346 <https://github.com/ros-controls/ros2_control/issues/346>)
+  * Contributors: Karsten Knese, Yutaka Kondo
+
+ -- Karsten Knese <karsten@osrfoundation.org>  Wed, 07 Apr 2021 06:00:00 -0000
+
+ros-humble-hardware-interface (0.3.0-1jammy) jammy; urgency=high
+
+  * Capatalized error message and put the controllers name and resource name inside quote (#338 <https://github.com/ros-controls/ros2_control/issues/338>)
+  * Parse True and true in fakesystem, touch up variable name
+  * Contributors: Denis Štogl, suab321321
+
+ -- Karsten Knese <karsten@osrfoundation.org>  Sun, 21 Mar 2021 06:00:00 -0000
+
+ros-humble-hardware-interface (0.2.1-1jammy) jammy; urgency=high
+
+  * Remove unused include (#336 <https://github.com/ros-controls/ros2_control/issues/336>)
+  * Contributors: Bence Magyar
+
+ -- Karsten Knese <karsten@osrfoundation.org>  Tue, 02 Mar 2021 07:00:00 -0000
+
+ros-humble-hardware-interface (0.2.0-1jammy) jammy; urgency=high
+
+  * Add "Fake" components for simple integration of framework (#323 <https://github.com/ros-controls/ros2_control/issues/323>)
+  * Contributors: Denis Štogl
+
+ -- Karsten Knese <karsten@osrfoundation.org>  Fri, 26 Feb 2021 07:00:00 -0000
+
+ros-humble-hardware-interface (0.1.6-1jammy) jammy; urgency=high
+
+  * correct hardware interface validation in resource manager. (#317 <https://github.com/ros-controls/ros2_control/issues/317>)
+  * Contributors: Karsten Knese
+
+ -- Karsten Knese <karsten@osrfoundation.org>  Fri, 05 Feb 2021 07:00:00 -0000
+
+ros-humble-hardware-interface (0.1.5-1jammy) jammy; urgency=high
+
+
+
+ -- Karsten Knese <karsten@osrfoundation.org>  Thu, 04 Feb 2021 07:00:00 -0000
+
+ros-humble-hardware-interface (0.1.4-1jammy) jammy; urgency=high
+
+  * Add test assets package (#289 <https://github.com/ros-controls/ros2_control/issues/289>)
+  * update doxygen style according to ros2 core standard (#300 <https://github.com/ros-controls/ros2_control/issues/300>)
+  * Move test_components from test_robot_hardware to hardware_interface package (#288 <https://github.com/ros-controls/ros2_control/issues/288>)
+  * Contributors: Denis Štogl, João Victor Torres Borges
+
+ -- Karsten Knese <karsten@osrfoundation.org>  Wed, 03 Feb 2021 07:00:00 -0000
+
+ros-humble-hardware-interface (0.1.3-1jammy) jammy; urgency=high
+
+
+
+ -- Karsten Knese <karsten@osrfoundation.org>  Thu, 21 Jan 2021 07:00:00 -0000
+
+ros-humble-hardware-interface (0.1.2-1jammy) jammy; urgency=high
+
+
+
+ -- Karsten Knese <karsten@osrfoundation.org>  Wed, 06 Jan 2021 07:00:00 -0000
+
+ros-humble-hardware-interface (0.1.1-1jammy) jammy; urgency=high
+
+
+
+ -- Karsten Knese <karsten@osrfoundation.org>  Wed, 23 Dec 2020 07:00:00 -0000
+
+ros-humble-hardware-interface (0.1.0-1jammy) jammy; urgency=high
+
+  * Added starting of resources into CM and RM (#240 <https://github.com/ros-controls/ros2_control/issues/240>)
+  * Use resource manager (#236 <https://github.com/ros-controls/ros2_control/issues/236>)
+  * Use constants instead of strings in tests (#241 <https://github.com/ros-controls/ros2_control/issues/241>)
+  * resource loaning (#224 <https://github.com/ros-controls/ros2_control/issues/224>)
+  * Allocate memory for components and handles (#207 <https://github.com/ros-controls/ros2_control/issues/207>)
+  * rename command/state handles to command/state interfaces (#223 <https://github.com/ros-controls/ros2_control/issues/223>)
+  * Remodel component interfaces (#203 <https://github.com/ros-controls/ros2_control/issues/203>)
+  * adapt component parser to new xml schema (#209 <https://github.com/ros-controls/ros2_control/issues/209>)
+  * remove logical components, move hardware resources (#201 <https://github.com/ros-controls/ros2_control/issues/201>)
+  * Replace rclcpp by rcutils logging tools in hardware_interface pkg (#205 <https://github.com/ros-controls/ros2_control/issues/205>)
+  * Add a struct for Interface information, update the test URDF (#167 <https://github.com/ros-controls/ros2_control/issues/167>)
+  * Add virtual modifier to the functions of Joint and Sensor component (#178 <https://github.com/ros-controls/ros2_control/issues/178>)
+  * Hide component parser api (#157 <https://github.com/ros-controls/ros2_control/issues/157>)
+  * Remove old joint state and joint command handles (#134 <https://github.com/ros-controls/ros2_control/issues/134>)
+  * New version of component parser (#127 <https://github.com/ros-controls/ros2_control/issues/127>)
+  * Dynamic joint handles (#125 <https://github.com/ros-controls/ros2_control/issues/125>)
+  * Hardware component interfaces (#121 <https://github.com/ros-controls/ros2_control/issues/121>)
+  * Add ActuatorHandle and Implement string-based interface handle-handling using DynamicJointState message (#112 <https://github.com/ros-controls/ros2_control/issues/112>)
+  * Change Hardware return type to enum class (#114 <https://github.com/ros-controls/ros2_control/issues/114>)
+  * Replace RCUTILS_ with RCLCPP_ for logging (#62 <https://github.com/ros-controls/ros2_control/issues/62>)
+  * import hardware_interface
+  * Contributors: Andreas Klintberg, Andy Zelenak, Bence Magyar, Colin MacKenzie, Denis Štogl, Jafar Abdi, Jordan Palacios, Karsten Knese, Mateus Amarante, Matthew Reynolds, Victor Lopez, Yutaka Kondo
+
+ -- Karsten Knese <karsten@osrfoundation.org>  Tue, 22 Dec 2020 07:00:00 -0000
+
+

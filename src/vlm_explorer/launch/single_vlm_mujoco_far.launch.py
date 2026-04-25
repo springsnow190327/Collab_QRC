@@ -74,7 +74,7 @@ def _launch_setup(context):
     octomap_bridge_max_cloud_age_sec = float(_get(context, "octomap_bridge_max_cloud_age_sec"))
     octomap_sensor_max_range = float(_get(context, "octomap_sensor_max_range"))
     slam_source = _get(context, "slam_source").strip().lower() or "cartographer"
-    nav_execution_backend = _get(context, "nav_execution_backend").strip().lower() or "rrt_star"
+    nav_execution_backend = _get(context, "nav_execution_backend").strip().lower() or "far"
     frontier_backend = _get(context, "frontier_backend").strip().lower() or "cfpa2"
     map_backend = _get(context, "map_backend").strip().lower() or "carto_2d"
     gui = _get(context, "gui")
@@ -94,10 +94,16 @@ def _launch_setup(context):
         raise ValueError(
             f"Unsupported slam_source '{slam_source}' (expected cartographer, fast_lio or ground_truth)"
         )
-    if nav_execution_backend not in {"far", "reactive", "rrt_star", "far_rrt_star", "mppi"}:
+    # Back-compat aliases: the reactive/RRT*/MPPI planners were removed
+    # on 2026-04-24. Silently upgrade old names to their replacements.
+    if nav_execution_backend == "reactive":
+        nav_execution_backend = "default"
+    elif nav_execution_backend in {"rrt_star", "far_rrt_star", "mppi"}:
+        nav_execution_backend = "astar"
+    if nav_execution_backend not in {"far", "astar", "default"}:
         raise ValueError(
             "Unsupported nav_execution_backend "
-            f"'{nav_execution_backend}' (expected far, reactive, rrt_star, far_rrt_star or mppi)"
+            f"'{nav_execution_backend}' (expected far, astar or default)"
         )
     if frontier_backend not in {"cfpa2", "simple_frontier"}:
         raise ValueError(
@@ -119,10 +125,12 @@ def _launch_setup(context):
     #    ground_truth mode: base launch runs gt_odom_relay directly from p3d GT.
     single_launch = os.path.join(go2_gazebo_pkg, "launch", "single_go2w_mujoco_cfpa2.launch.py")
     go2w_config_pkg = get_package_share_directory("go2w_config")
-    if nav_execution_backend in {"reactive", "rrt_star", "far_rrt_star"}:
-        nav_config_path = os.path.join(go2w_config_pkg, "config", "nav", "reactive_nav_vlm.yaml")
-    else:
-        nav_config_path = os.path.join(go2w_config_pkg, "config", "nav", "default_nav_vlm_far.yaml")
+    # After the reactive/MPPI cleanup there are only two VLM nav configs:
+    #   default / astar → default_nav_vlm_far.yaml (shared — params like
+    #     max_linear_speed, scan thresholds apply to both C++ and Python
+    #     A* planners via the same keys)
+    #   far → same yaml (FAR reads only a subset; extras are ignored)
+    nav_config_path = os.path.join(go2w_config_pkg, "config", "nav", "default_nav_vlm_far.yaml")
 
     # FAR terrain analysis needs map-frame 3D cloud.
     # - Fast-LIO: registered_scan_reliable is already in map frame.
@@ -165,8 +173,8 @@ def _launch_setup(context):
         "cfpa2_w_c": _get(context, "cfpa2_w_c"),
         "cfpa2_w_momentum": _get(context, "cfpa2_w_momentum"),
         "cfpa2_min_utility": _get(context, "cfpa2_min_utility"),
-        # FAR planner backend
-        "nav_backend": nav_execution_backend if nav_execution_backend in {"far", "rrt_star", "far_rrt_star"} else "reactive",
+        # nav backend pass-through (already normalised above)
+        "nav_backend": nav_execution_backend,
         "registered_scan_topic": far_scan_topic,
         "far_max_speed": "0.5",
         "far_robot_id": "0",
@@ -384,7 +392,7 @@ def _launch_setup(context):
 
         # pointcloud_frame_bridge: transform registered_scan from livox_mid360 to map
         # frame for FAR terrain analysis (terrainAnalysis/localPlanner assume map-frame input).
-        if nav_execution_backend in {"far", "far_rrt_star"}:
+        if nav_execution_backend == "far":
             carto_nodes.append(
                 Node(
                     package="go2w_perception",
@@ -793,8 +801,10 @@ def generate_launch_description():
             DeclareLaunchArgument("vlm_goal_timeout_sec", default_value="2.0"),
             DeclareLaunchArgument(
                 "nav_execution_backend",
-                default_value="rrt_star",
-                description="Navigation execution backend: rrt_star, far, reactive, far_rrt_star or mppi",
+                default_value="far",
+                description="Navigation execution backend: far | astar | default. "
+                            "Legacy aliases reactive/rrt_star/far_rrt_star/mppi are "
+                            "silently upgraded for back-compat.",
             ),
             DeclareLaunchArgument(
                 "frontier_backend",

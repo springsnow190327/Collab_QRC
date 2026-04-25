@@ -4,9 +4,10 @@ Multi-robot autonomy with Unitree Go2W wheeled-legged quadrupeds on ROS 2 Humble
 
 For Phase 1 (single-robot VLM exploration) background and Phase 2 FSM-era archive, see [CLAUDE1.md](CLAUDE1.md).
 
-## Active state (2026-04-21)
+## Active state (2026-04-24)
 
-- **Door task** — Phase 3 VLM controller + Phase 0 refactor shipped. Analytical door-lock barrier verified end-to-end 2026-04-14. Button-gated collaborative protocol working. Next: re-capture 5-trial benchmark with full fix stack. → [docs/claude/door_task.md](docs/claude/door_task.md)
+- **Nav planner cleanup + A\* planner shipped (2026-04-24)** — deleted `reactive_nav_node` (RRT\*) and `mppi_nav_node` after A* matched their capability on demo3. Three nav backends remain: **`astar`** (new C++ A* + pure-pursuit + Stanley + curvature speed shaping + Option B oriented footprint validation), `default` (Python A*/D* Lite, real-robot + door task baseline), `far` (CMU stack). Door task migrated reactive_nav_door.yaml → astar_nav_door.yaml. Heterogeneous dual launch now supports `nav_backend_a:=astar nav_backend_b:=far` — hybrid_cmd_router's `wheel_command_topic` is absolute `/mujoco_sim/{ns}_wheel_velocity_controller/commands` (latent mixed-launch bug: relative path under `/{ns}` never reached the controller under `/mujoco_sim/controller_manager` — FAR masked it because cmd_vel was too smooth to trigger wheel mode; A* exposed it). Back-compat aliases in every launch: `reactive→default`, `rrt_star/far_rrt_star/mppi→astar`. → [docs/claude/nav_benchmarks.md](docs/claude/nav_benchmarks.md#a-star-planner-2026-04-24) | [docs/claude/door_task.md](docs/claude/door_task.md)
+- **Door task** — Phase 3 VLM controller + Phase 0 refactor shipped. Analytical door-lock barrier verified end-to-end 2026-04-14. Button-gated collaborative protocol working. Next: re-capture 5-trial benchmark with full fix stack (now on astar backend). → [docs/claude/door_task.md](docs/claude/door_task.md)
 - **Nav benchmarking** — Config A = 7/10 FULL PASS on demo1 (12×8 m). Fast-LIO2 + SC-PGO integrated, fixes scan-odom temporal lag; contact margins now the bottleneck. Next: stuck detector for corner-wedge 1/10 failure mode. → [docs/claude/nav_benchmarks.md](docs/claude/nav_benchmarks.md)
 - **Go2 (non-W) integration** — **shipped** under CHAMP on `demo1_go2_real.xml` / `demo3_go2_real.xml` (Menagerie body). Exploration planner swapped from CFPA2 → **real CMU TARE** (vendored from `caochao39/tare_planner` humble-jazzy at `src/vendor/tare_planner/`). TARE feeds `localPlanner` **directly, bypassing FAR** — FAR's V-graph can't route to exploration frontiers; CMU's own TARE pipeline also skips FAR. Sensor-derived **waypoint watchdog** (2026-04-21) publishes to `/{ns}/nogo_boundary` as a persistent blacklist whenever TARE picks a goal the stack can't reach (4 fault modes: terrain-cluster, occgrid-occupied, out-of-grid, progress-stall); also republishes RViz markers the FAR-branch rviz expects. **Real-robot port shipped** as [`real_single_tare_real.launch.py`](src/go2w/go2w_real_bringup/launch/real_single_tare_real.launch.py) (`nav=tare_real`), plus `obstacle_avoidance:=false` gotcha: default `true` routes Move to `/api/obstacles_avoid/request` which requires pre-arming; `oa=false` routes to `/api/sport/request` (api_id=1008), no manual mode switch needed. **10-trial × 10-min demo3 bench** (2026-04-21): 10/10 completed, 10/10 zero contacts, 71 % avg coverage (σ = 5.4 %), 0/10 passed the 90 % bar — stack is robust; 10 min is a tight budget for 384 m² given CHAMP's 0.3 m/s cap × MuJoCo RTF ≈ 0.5. → [docs/claude/go2_integration.md](docs/claude/go2_integration.md)
 - **Real-robot Fast-LIO path — shipped after 10-layer bug hunt (2026-04-17)**. Livox Mid-360 auto-detect at `192.168.123.20`, `livox_ros_driver2` + `Livox-SDK2` vendored (workspace-local install, no `/usr/local` pollution). Red TRIANGLE_LIST robot-pose marker, dual RViz (2D top-down + 3D voxel orbit), supervisor-panic any-button override, dry-run mode. Map **expands correctly on flat and ramped terrain**; `/robot/map` via octomap_server RANSAC ground filter, 3D voxel grid via `/robot/octomap_point_cloud_centers`. Mid-360 mount tilt (measured +15.1° pitch / -2.1° roll) compensated via two static TFs; gravity-aligned map frame. → [docs/claude/real_robot.md](docs/claude/real_robot.md#bug-chain-2026-04-17-map-doesnt-expand)
@@ -18,6 +19,7 @@ For Phase 1 (single-robot VLM exploration) background and Phase 2 FSM-era archiv
 | Door task current architecture (scene, packages, VLM, perception, barrier) | [docs/claude/door_task.md](docs/claude/door_task.md) |
 | Door task evolution, lessons, 5-bug chain | [docs/claude/door_task_history.md](docs/claude/door_task_history.md) |
 | Nav stack benchmarking (Phase 5), config A, iteration logs | [docs/claude/nav_benchmarks.md](docs/claude/nav_benchmarks.md) |
+| **A\* planner (astar_nav_node): Option B footprint, Plan B legged gating, deletion of reactive/MPPI** | [docs/claude/nav_benchmarks.md#a-star-planner-2026-04-24](docs/claude/nav_benchmarks.md#a-star-planner-2026-04-24) |
 | Fast-LIO2 / Cartographer A/B, LiDAR options, demo scenes | [docs/claude/slam_and_scenes.md](docs/claude/slam_and_scenes.md) |
 | Cross-cutting debugging gotchas (QoS, zombies, MuJoCo quirks) | [docs/claude/debug_notes.md](docs/claude/debug_notes.md) |
 | **Gazebo vs MuJoCo — why stack works in Gazebo, MuJoCo matches real life** | [docs/claude/sim_comparison.md](docs/claude/sim_comparison.md) |
@@ -57,8 +59,19 @@ NUM_TRIALS=10 DURATION_SEC=120 OUT_DIR=/tmp/cfgA_10 ./scripts/bench/benchmark_fa
 ./scripts/launch/nav_test_demo2.sh gui:=false
 ./scripts/launch/nav_test_lrc_maze.sh
 
-# VLM exploration demo (Phase 1)
+# VLM exploration demo (Phase 1) — defaults to nav_execution_backend:=far;
+# pass nav_execution_backend:=astar to swap in the C++ A* planner.
 ./scripts/launch/vlm_demo_mujoco.sh
+
+# Single-robot A* smoke test (MuJoCo + CHAMP + astar_nav_node + Option B)
+./scripts/launch/single_astar.sh                                 # headless, demo3 default
+./scripts/launch/single_astar.sh robot:=go2w scene:=demo3 gui:=true rviz:=true
+./scripts/launch/single_astar.sh session_duration_sec:=120       # bounded run + JSON report
+
+# Heterogeneous dual (Go2W + Go2 share demo3_mixed + CFPA2 coord; both default A*)
+./scripts/launch/nav_test_demo3_mixed.sh gui:=true rviz:=true
+./scripts/launch/nav_test_demo3_mixed.sh nav_backend_a:=far nav_backend_b:=far  # both FAR
+./scripts/launch/nav_test_demo3_mixed.sh nav_backend_b:=far                     # mixed: A=astar, B=FAR
 
 # Go2 (non-W) sim — CHAMP locomotion, demo1 12×8 m / demo3 24×16 m
 ./scripts/launch/nav_test_go2.sh gui:=true rviz:=true          # walk + FAR smoke
@@ -116,7 +129,7 @@ src/
   go2w/                             Go2W platform packages
     go2_gazebo_sim/                   MJCF/world + launch files
     mujoco_sensor_bridge/             MuJoCo sensor nodes
-    go2w_control/ go2w_nav/           Locomotion + nav (reactive RRT*, A*)
+    go2w_control/ go2w_nav/           Locomotion + nav (C++ astar_nav + Python default_nav)
     go2w_perception/ go2w_config/     QoS bridge, configs, sub-launches
     unitree_go2w_ros2/                Unitree ROS 2 integration
   exploration/
@@ -141,10 +154,11 @@ Switchable via `nav_backend:=` / `nav_execution_backend:=` at launch time.
 
 | Backend | Planner | Note |
 |---|---|---|
-| `rrt_star` / `reactive` | `reactive_nav_node` | Default; RRT* sampling + fast replan |
-| `default` | `default_nav.py` | A* global + scan-based local avoidance |
+| `astar` | `astar_nav_node` | C++ A* + pure-pursuit + Stanley + curvature speed shaping + oriented footprint validation (Option B) |
+| `default` | `default_nav.py` | Python A* grid + D* Lite + recovery; legacy stable for real robot + door task |
 | `far` | CMU autonomy stack | Terrain analysis + FAR V-graph + path follower (see nav_benchmarks.md) |
-| `far_rrt_star` | FAR global + RRT* local | FAR waypoints fed to RRT* |
+
+Legacy aliases silently upgrade: `reactive` → `default`, `rrt_star` / `far_rrt_star` / `mppi` → `astar`. The reactive RRT* planner (`reactive_nav_node`) and MPPI (`mppi_nav_node`) were deleted 2026-04-24 once A* had matched their capabilities. Door task uses `astar` with `astar_nav_door.yaml` (aggressive obstacle thresholds for bumper contact).
 
 ## Golden rules (must-follow across all work)
 

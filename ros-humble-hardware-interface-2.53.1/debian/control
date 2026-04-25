@@ -1,0 +1,12 @@
+Source: ros-humble-hardware-interface
+Section: misc
+Priority: optional
+Maintainer: Bence Magyar <bence.magyar.robotics@gmail.com>
+Build-Depends: debhelper (>= 9.0.0), ros-humble-ament-cmake, ros-humble-ament-cmake-gen-version-h, ros-humble-ament-cmake-gmock <!nocheck>, ros-humble-control-msgs, ros-humble-lifecycle-msgs, ros-humble-pluginlib, ros-humble-rclcpp-lifecycle, ros-humble-rcpputils, ros-humble-rcutils, ros-humble-ros2-control-test-assets <!nocheck>, ros-humble-tinyxml2-vendor, ros-humble-ros-workspace
+Homepage: 
+Standards-Version: 3.9.2
+
+Package: ros-humble-hardware-interface
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, ros-humble-control-msgs, ros-humble-lifecycle-msgs, ros-humble-pluginlib, ros-humble-rclcpp-lifecycle, ros-humble-rcpputils, ros-humble-rcutils, ros-humble-tinyxml2-vendor, ros-humble-ros-workspace
+Description: ros2_control hardware interface

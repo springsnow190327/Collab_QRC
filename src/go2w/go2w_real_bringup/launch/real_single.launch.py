@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Single-robot real Unitree runtime (Go2W or Go2).
 
-Composes: SLAM → core bringup → navigation (CFPA2|FAR|reactive) → safety → observability.
+Composes: SLAM → core bringup → navigation (CFPA2|FAR|default|astar) → safety → observability.
 
 robot_model:=go2w  (default) uses go2w_config/nav tuning.
 robot_model:=go2           uses go2w_real_bringup/config/nav tuning
@@ -39,7 +39,12 @@ def _launch_setup(context):
     robot_model = _get(context, "robot_model").strip().lower() or "go2w"
     slam = _get(context, "slam").strip().lower() or "carto_l1"
     carto_mode = _get(context, "carto_mode").strip().lower() or "2d"
-    nav_backend = _get(context, "nav_backend").strip().lower() or "reactive"
+    nav_backend = _get(context, "nav_backend").strip().lower() or "default"
+    # Back-compat aliases — reactive/mppi/RRT* planners were deleted 2026-04-24.
+    if nav_backend == "reactive":
+        nav_backend = "default"
+    elif nav_backend in ("rrt_star", "far_rrt_star", "mppi"):
+        nav_backend = "astar"
     map_backend = _get(context, "map_backend").strip().lower() or "carto_2d"
     obstacle_avoidance = _get(context, "obstacle_avoidance")
     enable_manual_fallback = _get(context, "enable_manual_fallback")
@@ -113,7 +118,7 @@ def _launch_setup(context):
                 "joy_dev": _get(context, "joy_dev"),
             }.items(),
         ),
-        # ── Planner (reactive | default | far | far_rrt_star) + CFPA2 frontier picker ──
+        # ── Planner (default | astar | far) + CFPA2 frontier picker ──
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(nav_launch),
             launch_arguments={
@@ -414,8 +419,9 @@ def generate_launch_description() -> LaunchDescription:
                                    description="carto_l1 or fastlio_mid360"),
             DeclareLaunchArgument("carto_mode", default_value="2d",
                                    description="Cartographer 2d (default) or 3d (ignored for Fast-LIO). Auto-forced to 2d when map_backend=carto_2d."),
-            DeclareLaunchArgument("nav_backend", default_value="reactive",
-                                   description="reactive | default | far | far_rrt_star"),
+            DeclareLaunchArgument("nav_backend", default_value="default",
+                                   description="default | astar | far (legacy aliases "
+                                               "reactive → default, rrt_star/far_rrt_star/mppi → astar)"),
             DeclareLaunchArgument("map_backend", default_value="carto_2d",
                                    description="carto_2d (default — Cartographer 2D grid + binarizer) | carto_binary (carto 3D→2D grid + binarizer) | scan (simple_scan_mapper, no free-space carving, no decay)"),
             DeclareLaunchArgument("obstacle_avoidance", default_value="true"),

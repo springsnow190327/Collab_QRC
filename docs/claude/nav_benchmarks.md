@@ -2,6 +2,8 @@
 
 Rigorous headless benchmarking of the CMU autonomy stack on the `demo1` scene (12 m × 8 m inner room = **96 m² GT**). Goal: real-robot-safe configuration with zero wall contacts and ≥90% coverage in 120-second bounded sessions.
 
+> **2026-04-24 update:** `reactive_nav_node` (RRT*) and `mppi_nav_node` deleted. The sim nav tree is now `astar_nav_node` (new, this doc's "A* planner" section), `default_nav.py` (Python A* + D* Lite + recovery — unchanged, still the default for real robot and the door task), and the CMU FAR stack (this doc's Config-A work). Every launch silently up-aliases `reactive→default` and `rrt_star/far_rrt_star/mppi→astar`, so old invocations keep working.
+
 ## Stack under test
 
 **CMU autonomy stack** (FAR V-graph global planner + CFPA2 frontier exploration + Cartographer 2D SLAM + CHAMP locomotion).
@@ -235,3 +237,97 @@ NUM_TRIALS=10 DURATION_SEC=120 OUT_DIR=/tmp/far_bench/cfgA_10 ./scripts/benchmar
 # Inspect a trial
 jq . /tmp/far_bench/<dir>/trial_1.json | less
 ```
+
+## A* planner (2026-04-24)
+
+New C++ planner `astar_nav_node` at [src/go2w/go2w_nav/src/astar_nav_node.cpp](../../src/go2w/go2w_nav/src/astar_nav_node.cpp). Drop-in I/O contract with the deleted `reactive_nav_node`/`mppi_nav_node` — same topics, same status schema (`nav_status/v1`), same downstream `twist_bridge → hybrid_cmd_router → CHAMP + wheel controller`.
+
+### Architecture
+
+```
+/{ns}/map (octomap or Cartographer)
+        │
+        ▼
+┌──────────────────────────────────────────────────────────────┐
+│  A* on coarse grid (downsample=3, inflation=0.20 m)          │
+│    ↳ morphological closing to recover thin-wall gaps         │
+│    ↳ unknown-cells treated as blocked (no dilation)          │
+│    ↳ optional nogo-disk injection (Option B retry)           │
+└──────────────────────────────────────────────────────────────┘
+        │ waypoints at 0.40 m spacing
+        ▼
+  arc-length resample @ 0.10 m
+        │
+        ▼
+┌──────────────────────────────────────────────────────────────┐
+│  Oriented footprint validation (Option B)                    │
+│    for each resampled pose → oriented rectangle (L×W)        │
+│    if any cell clipped → inject nogo disk, retry A*          │
+│    up to footprint_max_retries; disks persist 15 s           │
+└──────────────────────────────────────────────────────────────┘
+        │
+        ▼
+  pure-pursuit + Stanley cross-track blend
+        │
+        ▼
+  curvature-aware speed shaping (slow in corners, ramp to goal)
+        │
+        ▼
+  wheel ↔ legged dispatch  (heading-error based)
+        │
+        ▼
+  /cmd_vel_stamped
+```
+
+### Key design choices
+
+1. **A\* on a coarsened grid** — 0.05 m octomap ÷ downsample=3 = 0.15 m coarse cells. Morphological closing (1-step dilate + erode) re-connects 1–2 cell gaps in thin-wall octomap projections (e.g. demo1 divider); heavier closing was too aggressive (collapsed south corridor). Unknown cells are added to the coarse grid as plain "blocked" (no dilation) so A* doesn't plan through unexplored territory but frontiers at the explored edge stay reachable.
+
+2. **Option B — oriented footprint validation.** Standard A* is a *point* planner: the robot rectangle (Go2W is 0.65 m × 0.45 m) can sweep into walls during turns that the centre line cleared. After every A* run, each resampled pose on the candidate path gets its rectangle at the path-tangent orientation rasterised against the **raw** (uninflated) map. First pose that clips → inject a `footprint_retry_disk_radius_m: 0.30` nogo disk at that (x,y), rerun A*. Up to `footprint_max_retries: 4`. Disks persist across ticks (`footprint_nogo_ttl_sec: 15.0`) so the planner remembers recent footprint failures; also visualised on `/{ns}/astar_nogo_disks` as red SPHERE_LIST markers. A dynamic-replan tick also runs this check on the committed path's next 2 m. First verified run: 22 m travelled on demo3, **0 wall contacts**, 10+ footprint clips detected and rerouted.
+
+3. **Plan B — legged walk-while-turn, pivot-gated.** The hybrid_cmd_router dispatches between wheels and legs based on cmd_vel magnitude. When the planner decides it's in legged mode (heading-error > 10° OR curvature > 0.9 m⁻¹), the original "walk at 0.15 m/s while turning" worked fine for small headings but drove the robot straight into the wall opposite the goal when heading-error was near 180° (CHAMP walks in body-X). Shipped gate: `|ψ_err| ≤ legs_pivot_above_deg (30°)` → walk @ `legs_mode_v_cap (0.15 m/s)`; above that → `v = 0, pure pivot`. Also force `w_target = sign(heading_err) · max(|w_target|, wheel_ang_thresh+0.05)` so pure-pursuit's `sin(α)/Ld` can't flip sign near α = ±π (where `sin(α) ≈ 0` and the geometric term is numerically useless).
+
+4. **Dynamic replan.** Every control tick (20 Hz), the next 20 resampled points (≈ 2 m) are checked against the latest occupancy map. Any point now occupied or newly-unknown → replan. Every 4th point also runs oriented-footprint check for freshly-revealed walls that clip the rectangle but not the centre line.
+
+5. **Full trajectory history.** `/{ns}/robot_trajectory` appends whenever the robot has moved `trajectory_min_step_m: 0.02` since the last sample, capped at `trajectory_max_points: 50000` (≈ 1 km at 2 cm step). Full trip since boot shows in RViz — no truncation.
+
+### Config files
+
+| File | Purpose |
+|---|---|
+| [src/go2w/go2w_config/config/nav/astar_nav_go2w.yaml](../../src/go2w/go2w_config/config/nav/astar_nav_go2w.yaml) | Generic Go2W exploration tuning (v_max 0.4 m/s, inflation 0.20 m, IG-heavy) |
+| [src/go2w/go2w_config/config/nav/astar_nav_door.yaml](../../src/go2w/go2w_config/config/nav/astar_nav_door.yaml) | Door task aggressive contact (obstacle_stop 0.05 m, inflation 0.05 m, startup_delay 0 s, footprint_buffer 0) |
+
+### Launch integration
+
+| Launch file | Backend | Notes |
+|---|---|---|
+| [single_astar_mujoco.launch.py](../../src/go2w/go2_gazebo_sim/launch/single_astar_mujoco.launch.py) | astar only | Includes `session_reporter` + `far_wall_checker` plumbing; demo3 default scene. Wrapper [scripts/launch/single_astar.sh](../../scripts/launch/single_astar.sh). |
+| [nav_test_mujoco.launch.py](../../src/go2w/go2_gazebo_sim/launch/nav_test_mujoco.launch.py) | `astar` (default) \| `far` | Cartographer + octomap + map_merger → /{ns}/map_merged |
+| [nav_test_mujoco_fastlio.launch.py](../../src/go2w/go2_gazebo_sim/launch/nav_test_mujoco_fastlio.launch.py) | `far` (default) \| `astar` | Fast-LIO2 variant |
+| [nav_test_mujoco_fastlio_mixed.launch.py](../../src/go2w/go2_gazebo_sim/launch/nav_test_mujoco_fastlio_mixed.launch.py) | per-robot: `nav_backend_a` \| `nav_backend_b` | Heterogeneous dual: Go2W A can run A* while Go2 B runs FAR. |
+| [navigation.launch.py](../../src/go2w/go2w_config/launch/navigation.launch.py) | `default` \| `astar` \| `far` | Shared sub-launch (real robot + sim include); up-aliases legacy names. |
+| [dual_go2w_mujoco_door.launch.py](../../src/go2w/go2_gazebo_sim/launch/dual_go2w_mujoco_door.launch.py) | `astar` (hardcoded since migration) | Door task — uses `astar_nav_door.yaml` for aggressive thresholds. |
+
+### Heterogeneous dual launch (mixed): Go2W + Go2
+
+[`scripts/launch/nav_test_demo3_mixed.sh`](../../scripts/launch/nav_test_demo3_mixed.sh) defaults `nav_backend_a:=astar nav_backend_b:=far`. Rationale: A* has Option B footprint validation (value on Go2W where the 0.65 m body clips narrow cornered turns), FAR carries the proven CMU-stack local planner for Go2's walking gait which has been benchmarked through Config A above. Either can be overridden on the CLI.
+
+**Latent wheel-topic bug surfaced in mixed launch** (fixed 2026-04-24, see [debug_notes.md](debug_notes.md#hybrid_cmd_router-wheel-topic-under-mixed-launch-absolute-not-relative)). The hybrid_cmd_router's default `wheel_command_topic` is relative (`wheel_velocity_controller/commands`); under `namespace=robot_a` it resolves to `/robot_a/wheel_velocity_controller/commands`, but the mixed launch's controller_manager lives at `/mujoco_sim/controller_manager` so the controller actually listens at `/mujoco_sim/robot_a_wheel_velocity_controller/commands`. FAR's cmd_vel is smooth → router rarely commits to "wheel" mode → bug masked. A* switches modes aggressively → in "wheel" mode, cmd never reaches the wheels → robot sat still for 50+ s. Fix: pass absolute topic via the `wheel_command_topic` param in both the A* and FAR branches of `_build_fastlio_nav_stack`.
+
+### Deleted planners (2026-04-24)
+
+| Removed | Replacement | Rationale |
+|---|---|---|
+| `reactive_nav_node` (C++ RRT*) | `astar_nav_node` | RRT* sampling expensive, no footprint check; A* does the same job in ~1300 lines vs 1600, deterministic, and integrates Option B cleanly. Door task migrated to `astar_nav_door.yaml`. |
+| `mppi_nav_node` (C++ MPPI) | `astar_nav_node` | Only user was `single_mppi_mujoco.launch.py` + `vlm_demo_mujoco.sh`; no one's running it. |
+| `reactive_nav_*.yaml` / `mppi_nav_*.yaml` | `astar_nav_*.yaml` | Ported door-task thresholds to `astar_nav_door.yaml`. |
+| `single_mppi_mujoco.launch.py` / `single_mppi.sh` | `single_astar_mujoco.launch.py` / `single_astar.sh` | Direct 1:1 swap; same sensor bridges, SLAM, CFPA2. |
+
+**Kept:** `default_nav.py` + `default_nav_core/` (Python A* grid + D* Lite + recovery). It's the live real-robot and door-task baseline — has 6 months of bug-hardening that `astar_nav_node` doesn't. Plan: retire `default_nav` after `astar_nav_node` has recovery logic and has passed ≥ 5 real-robot trials zero-contact.
+
+### Known next work
+
+- Port stuck-detector / recovery logic from `default_nav/recovery.py` into `astar_nav_node` so it can survive the corner-wedge failure mode from Config A iter-7 without a supervisor node.
+- Extend Option B to run oriented footprint on the *lookahead* point the pure-pursuit is steering to, not just the resampled path — catches cases where the robot is cutting the corner and the executor drift makes it clip even though the path was valid.
+- A/B benchmark A* vs FAR on demo1 10-trial so we have quantitative coverage/contact numbers side-by-side. Expected: A* faster to first coverage (less terrain_analysis overhead), worse in the corner-wedge mode until recovery lands.

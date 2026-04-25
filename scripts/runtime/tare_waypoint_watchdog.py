@@ -67,8 +67,8 @@ class TareWaypointWatchdog(Node):
         self.declare_parameter("marker_frame", "map")
         # Robot pose marker — existing RViz configs (real autonomy.rviz)
         # have a "RobotPoseTriangle" display on /{ns}/robot_pose_marker
-        # that's normally driven by reactive_nav_node. Our nav_backend=far
-        # path doesn't run reactive_nav, so the topic has zero publishers
+        # that's normally driven by astar_nav_node. Our nav_backend=far /
+        # tare_real path doesn't run astar, so the topic has zero publishers
         # and the display stays blank. Republish the pose as a triangle
         # marker here so the display works regardless of planner.
         self.declare_parameter("robot_marker_topic", "robot_pose_marker")

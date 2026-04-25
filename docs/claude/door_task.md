@@ -125,7 +125,7 @@ Before the analytical barrier landed (2026-04-14): 3/5 trials reached `button_ev
 |---|---|
 | `src/go2w/go2_gazebo_sim/mujoco/two_rooms_door_scene.xml` | MJCF scene (door + barrier + button + robots) |
 | `src/go2w/go2_gazebo_sim/launch/dual_go2w_mujoco_door.launch.py` | Dual-robot door launch |
-| `src/go2w/go2w_config/config/nav/reactive_nav_door.yaml` | Legacy aggressive nav for door approach (may be unused in VLM path) |
+| `src/go2w/go2w_config/config/nav/astar_nav_door.yaml` | Aggressive A* nav for door approach — `obstacle_stop_dist=0.05 m`, `inflation=0.05 m`, `startup_delay=0`, `footprint_buffer=0`. Ported 2026-04-24 from the now-deleted `reactive_nav_door.yaml` (RRT\*). VLM path normally skips the nav sub-launch; this config is loaded by the FSM path and by any external `/{ns}/way_point` publisher. |
 | `src/go2w/go2w_config/ros_control_dual_mujoco_door.yaml` | ros2_control controllers (incl. `door_assist_controller`) |
 | `scripts/launch/door_demo_mujoco.sh` | Launch entry point |
 

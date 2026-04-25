@@ -41,6 +41,7 @@ from launch.event_handlers import OnProcessExit
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
+from modules import _find_mujoco_plugin_dir
 from modules.assets import build_dual_robot_stack, build_namespaced_robot_description
 from modules.dual_urdf import build_robot_b_urdf
 from modules.dual_urdf_nav import build_dual_nav_urdf
@@ -298,12 +299,19 @@ def _build_fastlio_nav_stack(
             namespace=ns,
             name="slam_node",
             parameters=[slam_config, {"use_sim_time": use_sim_time}],
+            # Fast-LIO hard-codes a `camera_init -> body` TF
+            # (laserMapping.cpp:654). Letting it hit /{ns}/tf gives `body`
+            # two parents (ours: base_link, Fast-LIO's: camera_init) and
+            # breaks `body -> map` lookup. Route Fast-LIO's /tf to a sink;
+            # nobody consumes it. /tf_static is still shared normally.
             remappings=[
                 ("/velodyne_points", f"/{ns}/velodyne_points"),
                 ("/imu/data", f"/{ns}/imu/data"),
                 ("/Odometry", f"/{ns}/Odometry"),
                 ("/cloud_registered_body", f"/{ns}/cloud_registered_body"),
-            ] + tf_remaps,
+                ("/tf", f"/{ns}/fastlio_tf_sink"),
+                ("/tf_static", f"/{ns}/tf_static"),
+            ],
             output="screen",
         ),
         # slam_odom_relay: renames Fast-LIO's Odometry topic for nav consumption
@@ -374,7 +382,10 @@ def _build_fastlio_nav_stack(
             "point_cloud_max_z": 1.10,
             "occupancy_min_z": 0.20,
             "occupancy_max_z": 1.00,
-            "filter_ground_plane": True,
+            # filter_ground_plane would need min_z <= 0 to see ground; our
+            # min_z=0.20 already excludes the floor, so leave ground-filter
+            # off (it spams "No ground plane found in scan" at 10 Hz otherwise).
+            "filter_ground_plane": False,
             "filter_speckles": False,
             "compress_map": True,
             "latch": True,
@@ -688,10 +699,7 @@ def _launch_setup(context):
     far_default_yaml = os.path.join(far_pkg, "config", "default.yaml")
     local_planner_paths_dir = os.path.join(local_planner_pkg, "paths")
 
-    mujoco_plugin_dir = os.path.join(
-        os.path.expanduser("~"), ".local", "lib", "python3.10",
-        "site-packages", "mujoco", "plugin",
-    )
+    mujoco_plugin_dir = _find_mujoco_plugin_dir()
     sim_ns = "mujoco_sim"
 
     actions = [LogInfo(msg="[nav_test_mujoco_fastlio_dual] starting dual-robot nav")]
@@ -786,6 +794,9 @@ def _launch_setup(context):
         ekf_footprint_to_odom=ekf_odom,
         activate_controllers_on_spawn=True,
         stand_up_joint_preset="go2",
+        # See fastlio_mixed.launch — robot_b joints are b_-prefixed, so
+        # stand_up_slowly must prepend "b_" or its trajectory is rejected.
+        stand_up_joint_prefix="b_",
         cmd_vel_input_topic="cmd_vel_legged",
         wheel_controller_name="robot_b_wheel_velocity_controller",
         use_mujoco=True,

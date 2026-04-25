@@ -43,19 +43,19 @@ from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 
+# Shared contact classification + canonical tilt math. Same module powers
+# scripts/runtime/dual_robot_collision_monitor.py — single source of truth
+# so a "did the robot scuff anything?" verdict means the same thing in
+# both the live debug stream and the per-trial JSON.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "runtime"))
+from contact_classify import (  # noqa: E402
+    classify, tilt_from_quat_deg, roll_pitch_yaw_from_quat,
+    TIP_THRESHOLD_DEG, TIP_HOLD_SEC,
+    TILT_DEGRADED_DEG, TILT_DEGRADED_HOLD_SEC,
+    WALL_PREFIXES,  # re-exported for backwards-compatible callers
+)
 
-WALL_PREFIXES = ("wall_", "divider_")
-ALLOWED_NON_WALL_GEOMS = {
-    "ground",
-    "green_marker_1", "green_marker_2", "green_marker_3",
-    "box_obstacle_1", "box_obstacle_2",
-}
 STATUS_INTERVAL_SEC = 10.0
-TIPPED_OVER_RAD = math.radians(45.0)
-
-
-def _is_wall_geom(name: str) -> bool:
-    return name.startswith(WALL_PREFIXES)
 
 
 def _wrap_pi(a: float) -> float:
@@ -66,16 +66,9 @@ def _wrap_pi(a: float) -> float:
     return a
 
 
-def _roll_pitch_yaw_from_quat(q) -> tuple[float, float, float]:
-    sinr_cosp = 2.0 * (q.w * q.x + q.y * q.z)
-    cosr_cosp = 1.0 - 2.0 * (q.x * q.x + q.y * q.y)
-    roll = math.atan2(sinr_cosp, cosr_cosp)
-    sinp = max(-1.0, min(1.0, 2.0 * (q.w * q.y - q.z * q.x)))
-    pitch = math.asin(sinp)
-    siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
-    cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
-    yaw = math.atan2(siny_cosp, cosy_cosp)
-    return roll, pitch, yaw
+# Local aliases to keep call sites unchanged during the refactor.
+_roll_pitch_yaw_from_quat = roll_pitch_yaw_from_quat
+_tilt_from_quat_deg = tilt_from_quat_deg
 
 
 @dataclass
@@ -119,14 +112,44 @@ class SessionMetrics:
     peak_speed_mps: float = 0.0
     peak_roll_deg: float = 0.0
     peak_pitch_deg: float = 0.0
-    tipped_over: bool = False
+    peak_tilt_deg: float = 0.0           # body-Z vs world-up; canonical
+                                          # tip metric (gimbal-lock-free).
+    tipped_over: bool = False             # latched when peak_tilt_deg
+                                          # holds > TIP_THRESHOLD_DEG for
+                                          # ≥ TIP_HOLD_SEC.
+    _tilt_above_since: float | None = None  # internal hold-time tracker
+    first_tip_t_sec: float | None = None
+    # Degraded posture (sub-tip "leaned past gait-normal but stuck"):
+    # latched after TILT_DEGRADED_HOLD_SEC sustained tilt above
+    # TILT_DEGRADED_DEG; clears symmetrically. Distinct from tipped_over
+    # so a benchmark can score "robot ended in non-recoverable posture
+    # without literally flipping" — the FL_wheel-on-wall_north stuck
+    # state from 2026-04-25 demo3_mixed (peak_tilt 59° propped against a
+    # wall, never crossed 70°, was visually flipped on its side in GUI).
+    degraded_tilt: bool = False
+    degraded_tilt_count: int = 0
+    first_degraded_t_sec: float | None = None
+    _tilt_degraded_above_since: float | None = None
+    _tilt_degraded_below_since: float | None = None
 
     # Safety
     contact_msg_count: int = 0
+    # Existing field name preserved for benchmark-script compatibility:
+    # `wall_contact_events` is now scoped to OUTER walls only (wall_*,
+    # divider_*). Interior obstacles get their own list below.
     wall_contact_events: list[ContactEvent] = field(default_factory=list)
+    obstacle_contact_events: list[ContactEvent] = field(default_factory=list)
     unique_geom_pairs_hit: set[tuple[str, str]] = field(default_factory=set)
     hit_wall_count_by_name: dict[str, int] = field(default_factory=dict)
+    hit_obstacle_count_by_name: dict[str, int] = field(default_factory=dict)
     hit_robot_count_by_name: dict[str, int] = field(default_factory=dict)
+    # Single-bit "did the robot scuff ANYTHING during this trial?" —
+    # latched True on first wall OR obstacle contact. The simple binary
+    # answer benchmark pass/fail checklists usually want.
+    ever_touched_anything: bool = False
+    first_touch_t_sec: float | None = None
+    first_touch_kind: str | None = None
+    first_touch_geom: str | None = None
 
     # SLAM quality vs MuJoCo ground truth (relative drift — each stream is
     # normalized to its own start pose, so map-frame vs world-frame offsets
@@ -233,14 +256,54 @@ class SessionReporter(Node):
         if speed > self._m.peak_speed_mps:
             self._m.peak_speed_mps = speed
 
-        roll, pitch, yaw = _roll_pitch_yaw_from_quat(msg.pose.pose.orientation)
+        q = msg.pose.pose.orientation
+        roll, pitch, yaw = _roll_pitch_yaw_from_quat(q)
         rd, pd = math.degrees(roll), math.degrees(pitch)
         if abs(rd) > abs(self._m.peak_roll_deg):
             self._m.peak_roll_deg = rd
         if abs(pd) > abs(self._m.peak_pitch_deg):
             self._m.peak_pitch_deg = pd
-        if abs(roll) > TIPPED_OVER_RAD or abs(pitch) > TIPPED_OVER_RAD:
-            self._m.tipped_over = True
+
+        # Canonical tip detection: body-Z vs world-up, hold-time-gated.
+        # See contact_classify.tilt_from_quat_deg for rationale.
+        # The previous "|roll|>45° OR |pitch|>45° instant trip" rule was
+        # gimbal-lock-prone (loses sign at pitch=±90°) and false-fired on
+        # the demo3 ramps; the canonical metric works at any orientation
+        # and requires the tilt to PERSIST so a 1-tick contact transient
+        # doesn't latch.
+        tilt_deg = _tilt_from_quat_deg(q)
+        if tilt_deg > self._m.peak_tilt_deg:
+            self._m.peak_tilt_deg = tilt_deg
+        t_now = time.monotonic() - self._wall_start
+        if tilt_deg > TIP_THRESHOLD_DEG:
+            if self._m._tilt_above_since is None:
+                self._m._tilt_above_since = t_now
+            elif (t_now - self._m._tilt_above_since) >= TIP_HOLD_SEC \
+                    and not self._m.tipped_over:
+                self._m.tipped_over = True
+                self._m.first_tip_t_sec = t_now
+        else:
+            self._m._tilt_above_since = None
+
+        # Degraded-posture latch (sub-tip). Same hold-time pattern with
+        # symmetric clearing — see contact_classify.py for rationale.
+        if tilt_deg > TILT_DEGRADED_DEG:
+            self._m._tilt_degraded_below_since = None
+            if self._m._tilt_degraded_above_since is None:
+                self._m._tilt_degraded_above_since = t_now
+            elif (t_now - self._m._tilt_degraded_above_since) >= TILT_DEGRADED_HOLD_SEC \
+                    and not self._m.degraded_tilt:
+                self._m.degraded_tilt = True
+                self._m.degraded_tilt_count += 1
+                if self._m.first_degraded_t_sec is None:
+                    self._m.first_degraded_t_sec = t_now
+        else:
+            self._m._tilt_degraded_above_since = None
+            if self._m.degraded_tilt:
+                if self._m._tilt_degraded_below_since is None:
+                    self._m._tilt_degraded_below_since = t_now
+                elif (t_now - self._m._tilt_degraded_below_since) >= TILT_DEGRADED_HOLD_SEC:
+                    self._m.degraded_tilt = False
 
         # Pose-error vs ground truth (relative drift).
         if self._slam_anchor is None:
@@ -312,6 +375,18 @@ class SessionReporter(Node):
                 self._m.explored_area_m2 / self._m.scene_area_m2
 
     def _on_contacts(self, msg: String) -> None:
+        # Shared contact classifier (`contact_classify.classify`) buckets
+        # geom names into {A, B, wall, obstacle, ground}. Single-robot
+        # session_reporter only cares about its own namespace, but on dual
+        # launches both A-side and B-side bare-geom contacts arrive here;
+        # we classify either side as "robot" without distinguishing for
+        # this scope. The previous WALL_PREFIXES-only filter dropped
+        # every interior obstacle (sw_*, ne_*, cross_*, zigzag_*,
+        # nw_pillar_*, box_obstacle_*) — see contact_classify.py
+        # docstring for the history. New: outer walls and interior
+        # obstacles BOTH count as scuffs (kept in separate lists for
+        # benchmark-script back-compat), and `ever_touched_anything`
+        # latches on first contact of either kind.
         self._m.contact_msg_count += 1
         t_rel = time.monotonic() - self._wall_start
         for ln in msg.data.split("\n"):
@@ -321,30 +396,43 @@ class SessionReporter(Node):
             if len(parts) < 3:
                 continue
             n1, n2, pos_str = parts[0], parts[1], parts[2]
-            w1 = _is_wall_geom(n1)
-            w2 = _is_wall_geom(n2)
-            if not (w1 or w2):
-                continue
-            other = n2 if w1 else n1
-            wall = n1 if w1 else n2
-            if other in ALLOWED_NON_WALL_GEOMS or _is_wall_geom(other):
+            c1, c2 = classify(n1), classify(n2)
+
+            # We only care when ONE side is a robot self-geom and the
+            # OTHER is a wall or obstacle. Robot-vs-robot (rare in single-
+            # robot launches, but possible on b_*) and ground/harmless
+            # contacts are dropped.
+            if c1 in ("A", "B") and c2 in ("wall", "obstacle"):
+                robot_label, other_geom, kind = n1, n2, c2
+            elif c2 in ("A", "B") and c1 in ("wall", "obstacle"):
+                robot_label, other_geom, kind = n2, n1, c1
+            else:
                 continue
 
-            robot_label = other if other and other != "_" else "<unnamed_robot_geom>"
             try:
                 pos = tuple(float(x) for x in pos_str.split(","))
             except ValueError:
                 pos = (0.0, 0.0, 0.0)
             ev = ContactEvent(
-                t_sec=t_rel, robot_geom=robot_label, wall_geom=wall,
+                t_sec=t_rel, robot_geom=robot_label, wall_geom=other_geom,
                 pos=(pos[0], pos[1], pos[2]) if len(pos) == 3 else (0.0, 0.0, 0.0),
             )
-            self._m.wall_contact_events.append(ev)
-            self._m.unique_geom_pairs_hit.add((robot_label, wall))
-            self._m.hit_wall_count_by_name[wall] = \
-                self._m.hit_wall_count_by_name.get(wall, 0) + 1
+            if kind == "wall":
+                self._m.wall_contact_events.append(ev)
+                self._m.hit_wall_count_by_name[other_geom] = \
+                    self._m.hit_wall_count_by_name.get(other_geom, 0) + 1
+            else:  # "obstacle"
+                self._m.obstacle_contact_events.append(ev)
+                self._m.hit_obstacle_count_by_name[other_geom] = \
+                    self._m.hit_obstacle_count_by_name.get(other_geom, 0) + 1
+            self._m.unique_geom_pairs_hit.add((robot_label, other_geom))
             self._m.hit_robot_count_by_name[robot_label] = \
                 self._m.hit_robot_count_by_name.get(robot_label, 0) + 1
+            if not self._m.ever_touched_anything:
+                self._m.ever_touched_anything = True
+                self._m.first_touch_t_sec = t_rel
+                self._m.first_touch_kind = kind
+                self._m.first_touch_geom = other_geom
 
     # ── Timer ─────────────────────────────────────────────────────────
     def _tick(self) -> None:
@@ -377,7 +465,7 @@ class SessionReporter(Node):
             f"explored={self._m.explored_area_m2:6.2f} m² "
             f"({cov_str}) "
             f"dist={self._m.distance_travelled_m:5.2f} m "
-            f"contacts={len(self._m.wall_contact_events):3d} "
+            f"contacts={len(self._m.wall_contact_events)+len(self._m.obstacle_contact_events):3d} "
             f"{drift_str}"
             f"pose=({fx[0]:+.2f},{fx[1]:+.2f})",
             flush=True,
@@ -418,7 +506,25 @@ class SessionReporter(Node):
                 "peak_speed_mps": round(m.peak_speed_mps, 3),
                 "peak_roll_deg": round(m.peak_roll_deg, 2),
                 "peak_pitch_deg": round(m.peak_pitch_deg, 2),
+                # Canonical tilt metric (body-Z vs world-up). `tipped_over`
+                # now latches when peak_tilt_deg > TIP_THRESHOLD_DEG for
+                # ≥ TIP_HOLD_SEC, NOT on instantaneous |roll|>45° as
+                # before. peak_roll/peak_pitch retained for human reading.
+                "peak_tilt_deg": round(m.peak_tilt_deg, 2),
+                "tilt_threshold_deg": TIP_THRESHOLD_DEG,
+                "tilt_hold_sec": TIP_HOLD_SEC,
                 "tipped_over": m.tipped_over,
+                "first_tip_t_sec": m.first_tip_t_sec,
+                # Sub-tip degraded posture — robot leaned past 30° for
+                # ≥ 5 s, observability for "stuck propped against
+                # something but not literally flipped" runs.
+                "degraded_tilt": {
+                    "currently_degraded": m.degraded_tilt,
+                    "first_t_sec": m.first_degraded_t_sec,
+                    "entry_count": m.degraded_tilt_count,
+                    "tilt_threshold_deg": TILT_DEGRADED_DEG,
+                    "tilt_hold_sec": TILT_DEGRADED_HOLD_SEC,
+                },
             },
             "slam": {
                 "slam_received": m.slam_received,
@@ -436,28 +542,50 @@ class SessionReporter(Node):
                 "yaw_error_final_deg": round(m.yaw_error_final_deg, 3),
             },
             "safety": {
+                # ── Single-bit "did the robot scuff anything?" — latched
+                # True on first wall OR obstacle contact. Most pass/fail
+                # checklists want THIS, not the per-stream counts.
+                "ever_touched": m.ever_touched_anything,
+                "first_touch_t_sec": m.first_touch_t_sec,
+                "first_touch_kind": m.first_touch_kind,
+                "first_touch_geom": m.first_touch_geom,
+                # ── Outer scene walls (wall_*, divider_*) — preserved
+                # field name for benchmark-script compat.
                 "wall_contact_count": len(m.wall_contact_events),
+                "hit_walls": dict(sorted(m.hit_wall_count_by_name.items(),
+                                         key=lambda x: -x[1])),
+                # ── Interior obstacles (sw_*, ne_*, cross_*, zigzag_*,
+                # nw_pillar_*, box_obstacle_*, …). Pre-2026-04-25 these
+                # were silently dropped — see contact_classify.py for
+                # the bug history.
+                "obstacle_contact_count": len(m.obstacle_contact_events),
+                "hit_obstacles": dict(sorted(m.hit_obstacle_count_by_name.items(),
+                                             key=lambda x: -x[1])),
                 "unique_geom_pairs_hit": sorted(
                     [list(p) for p in m.unique_geom_pairs_hit]
                 ),
-                "hit_walls": dict(sorted(m.hit_wall_count_by_name.items(),
-                                         key=lambda x: -x[1])),
                 "hit_robot_parts": dict(sorted(m.hit_robot_count_by_name.items(),
                                                key=lambda x: -x[1])),
                 "first_contact_sec": (
                     m.wall_contact_events[0].t_sec
-                    if m.wall_contact_events else None
+                    if m.wall_contact_events else
+                    (m.obstacle_contact_events[0].t_sec
+                     if m.obstacle_contact_events else None)
                 ),
-                "events": [
-                    {
-                        "t_sec": round(ev.t_sec, 3),
-                        "robot": ev.robot_geom,
-                        "wall": ev.wall_geom,
-                        "pos": [round(x, 3) for x in ev.pos],
-                    }
+                "wall_events": [
+                    {"t_sec": round(ev.t_sec, 3), "robot": ev.robot_geom,
+                     "wall": ev.wall_geom,
+                     "pos": [round(x, 3) for x in ev.pos]}
                     for ev in m.wall_contact_events[:50]
                 ],
-                "events_truncated": len(m.wall_contact_events) > 50,
+                "obstacle_events": [
+                    {"t_sec": round(ev.t_sec, 3), "robot": ev.robot_geom,
+                     "obstacle": ev.wall_geom,
+                     "pos": [round(x, 3) for x in ev.pos]}
+                    for ev in m.obstacle_contact_events[:50]
+                ],
+                "events_truncated": (len(m.wall_contact_events) > 50
+                                     or len(m.obstacle_contact_events) > 50),
                 "contact_msgs_received": m.contact_msg_count,
             },
         }
@@ -504,13 +632,18 @@ class SessionReporter(Node):
                 )
             elif not slam.get("gt_received"):
                 print("  slam drift: <no ground-truth odom received>", flush=True)
-            print(f"  contacts  : {payload['safety']['wall_contact_count']} "
+            wc = payload['safety']['wall_contact_count']
+            oc = payload['safety']['obstacle_contact_count']
+            print(f"  contacts  : walls={wc} obstacles={oc} "
+                  f"ever_touched={payload['safety']['ever_touched']} "
                   f"(unique pairs: {len(payload['safety']['unique_geom_pairs_hit'])})",
                   flush=True)
             if payload["safety"]["hit_walls"]:
-                print(f"  walls hit : {payload['safety']['hit_walls']}", flush=True)
+                print(f"  walls hit    : {payload['safety']['hit_walls']}", flush=True)
+            if payload["safety"]["hit_obstacles"]:
+                print(f"  obstacles hit: {payload['safety']['hit_obstacles']}", flush=True)
             if payload["safety"]["hit_robot_parts"]:
-                print(f"  robot hit : {payload['safety']['hit_robot_parts']}",
+                print(f"  robot parts  : {payload['safety']['hit_robot_parts']}",
                       flush=True)
             print(f"  json      : {self._output}", flush=True)
             print("=" * 70, flush=True)

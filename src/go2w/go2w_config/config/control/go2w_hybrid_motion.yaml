@@ -12,8 +12,20 @@
     wheel_angular_threshold: 0.30
     wheel_curvature_threshold: 0.45
 
-    wheel_mode_hold_sec: 1.2
+    # Reduced 1.2 → 0.5 so the router switches out of wheel mode faster
+    # when astar commands a sharp turn. Previously a cruising robot that
+    # got a new goal behind it spent 1.2 s in wheel mode executing a wide
+    # skid-steer U-turn before finally switching to legged pivot — often
+    # crashing into a wall first.
+    wheel_mode_hold_sec: 0.5
     legged_mode_hold_sec: 0.8
+
+    # Emergency-bypass curvature: if astar requests legged with κ=|ω|/|v|
+    # ≥ this, skip the wheel hold and switch immediately. 1.0 /m = 1 m
+    # radius, well above any normal wheel cruise curve but well below a
+    # pivot-in-place command (κ >> 5 /m). Covers the U-turn case without
+    # flapping during gentle arcs.
+    legged_override_curvature: 1.0
 
     wheel_radius_m: 0.09
     wheel_track_m: 0.40

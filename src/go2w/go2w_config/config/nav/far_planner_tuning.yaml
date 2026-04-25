@@ -1,37 +1,58 @@
 # FAR planner tuning params — edit this file for rapid testing.
-# Loaded by nav_test_mujoco_fastlio.launch.py (and nav_test_mujoco.launch.py
-# when updated to use it). Changes take effect on next launch, no rebuild needed.
+# Loaded by nav_test_mujoco_fastlio*.launch.py via _load_yaml_params() so the
+# overrides apply regardless of node namespace.
 #
 # Usage: edit values here, re-launch. See CLAUDE.md Phase 5 "Tuning iterations"
 # for what each param does and what values have been tried.
 
 far_planner:
   ros__parameters:
-    # Graph convergence
-    g_planner/converge_distance: 0.5    # m — FAR publishes next waypoint at this distance
-    g_planner/path_momentum_thred: 25   # cycles to stick with current path (iter 7: was 10)
-    graph/connect_votes_size: 5         # cycles before edge accepted into graph
+    # ── Footprint / inflation ──────────────────────────────────────────
+    # 2026-04-23: reduced total inflation to unblock V-graph goal
+    # connection in demo3_mixed (narrow doorways orphaning the goal node).
+    # 2026-04-24: **obs_inflate_size 0 → 2** and **terrain_free_Z 0.45 → 0.15**
+    # after live mixed-sim run confirmed FAR was planning paths DIRECTLY
+    # across walls. Root cause was NOT inflation — it was wall invisibility.
+    # Mechanics:
+    #   - terrain_analysis outputs intensity = point.z − local_ground_z
+    #   - FAR classifies `intensity >= terrain_free_Z` as obstacle
+    #   - 0.45 was OK for demo1 (close walls, LiDAR rays hit upper wall
+    #     at high elevation angles → intensity 0.5-0.9)
+    #   - demo3_mixed is 24×16 m. Walls at 12-20 m distance → LiDAR rays
+    #     hit walls near grazing angle. A ray at 5° elevation 15 m out
+    #     hits wall at z = 0.12 + 15·tan(5°) ≈ 1.43 m — fine. But most
+    #     wall-clipping rays hit the LOWER wall (0.2-0.4 m) where
+    #     intensity is also 0.2-0.4. Those points get classified as FREE
+    #     → entire walls invisible to V-graph → FAR plans through them.
+    # 0.15 captures grazing wall hits. Config-A demo1's 0.45 noted false
+    # contour blocking at mean_intensity=0.32; 0.15 is well under that,
+    # but ground noise in demo3_mixed is low (MuJoCo flat plane ground)
+    # so we accept the risk.
+    robot_dim: 0.45                     # m — per-side polygon inflation
+    voxel_dim: 0.1                      # m — grid cell size (finer = less buffer)
+    util/obs_inflate_size: 2            # cells — 2×voxel_dim = 0.2 m margin
+    util/terrain_free_Z: 0.15           # m — intensity >= this = obstacle
+    # Bumped 3 → 10 s. With 3 s the V-graph dropped obstacle evidence
+    # whenever the wall left the LiDAR cone (turn away for 3 s → wall
+    # points decay → V-graph re-connects an edge through the gap → next
+    # tick FAR publishes a path that slices the wall even though the
+    # wall is right in front of the robot). 10 s is long enough that a
+    # normal ~90° turn doesn't age out the previous obstacle cluster.
+    util/dynamic_obs_dacay_time: 10.0
+    util/new_points_decay_time: 10.0
 
-    # Grid resolution — one cell = voxel_dim metres. Default 0.2 m.
-    # obs_inflate_size inflates by this many cells PER SIDE.
-    # inflate=2 at voxel_dim=0.2 → 0.4 m buffer per side → 0.8 m total added width.
-    voxel_dim: 0.2                      # m per grid cell (FAR internal, NOT occupancy grid)
+    # ── Graph convergence ──────────────────────────────────────────────
+    g_planner/converge_distance: 0.5    # m — waypoint advance distance
+    g_planner/path_momentum_thred: 25   # cycles to stick with current path
+    graph/connect_votes_size: 5         # cycles before edge accepted
 
-    # Obstacle handling
-    util/terrain_free_Z: 0.45           # m — points below this height = traversable
-    util/obs_inflate_size: 1            # cells — 2 × 0.2m = 0.4m buffer per side
-    util/dynamic_obs_dacay_time: 3.0    # s — how long obstacle evidence persists (iter 8: was 0.5)
-    util/new_points_decay_time: 3.0     # s — how long new scan points persist (iter 8: was 0.5)
-
-    # Range limits
-    sensor_range: 6.0                   # m — how far FAR looks for obstacles
+    # ── Range limits ───────────────────────────────────────────────────
+    sensor_range: 6.0                   # m
     terrain_range: 4.5                  # m
     local_planner_range: 2.0            # m
-    map_handler/map_grid_max_length: 30.0  # m — max graph grid size
+    map_handler/map_grid_max_length: 30.0
 
-    # Debug
+    # ── Debug / frame ──────────────────────────────────────────────────
     is_debug_output: false
     is_opencv_visual: false
-
-    # World frame (must match TF tree)
     world_frame: "map"

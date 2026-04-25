@@ -5,8 +5,7 @@ MuJoCo sim + Cartographer 2D SLAM + CFPA2 frontier exploration.
 No VLM stack — pure autonomous frontier-driven exploration.
 
 Nav backends (nav_backend:=):
-  rrt_star  — RRT*-based reactive local planner (default)
-  mppi      — MPPI local planner (experimental)
+  astar     — C++ A* + pure-pursuit + oriented footprint check (default)
   far       — CMU autonomy stack: terrain_analysis + far_planner + localPlanner + pathFollower
 
 Usage:
@@ -63,7 +62,11 @@ def _launch_setup(context):
     gui = _get(context, "gui")
     rviz = _as_bool(_get(context, "rviz"))
     explore = _as_bool(_get(context, "explore"))
-    nav_backend = _get(context, "nav_backend").strip().lower()
+    nav_backend = _get(context, "nav_backend").strip().lower() or "astar"
+    # Back-compat: reactive_nav_node and mppi_nav_node were deleted 2026-04-24.
+    # Silently upgrade old invocations.
+    if nav_backend in ("rrt_star", "reactive", "far_rrt_star", "mppi"):
+        nav_backend = "astar"
     mujoco_model_path = _get(context, "mujoco_model_path").strip()
 
     go2_gazebo_pkg = get_package_share_directory("go2_gazebo_sim")
@@ -461,15 +464,10 @@ def _launch_setup(context):
         actions.append(TimerAction(period=nav_delay, actions=far_nodes))
 
     else:
-        # RRT* or MPPI local planner
-        if nav_backend == "mppi":
-            nav_config_path = os.path.join(go2w_config_pkg, "config", "nav", "mppi_nav_vlm.yaml")
-            nav_executable = "mppi_nav_node"
-            nav_node_name = "mppi_nav"
-        else:
-            nav_config_path = os.path.join(go2w_config_pkg, "config", "nav", "reactive_nav_vlm.yaml")
-            nav_executable = "reactive_nav_node"
-            nav_node_name = "reactive_nav"
+        # A* local planner (only remaining non-FAR backend)
+        nav_config_path = os.path.join(go2w_config_pkg, "config", "nav", "astar_nav_go2w.yaml")
+        nav_executable = "astar_nav_node"
+        nav_node_name = "astar_nav"
 
         nav_remappings = [
             ("/way_point", f"/{robot_ns}/way_point_coord"),
@@ -560,8 +558,8 @@ def generate_launch_description():
         DeclareLaunchArgument("rviz", default_value="true"),
         DeclareLaunchArgument("explore", default_value="true",
                               description="Enable CFPA2 autonomous frontier exploration"),
-        DeclareLaunchArgument("nav_backend", default_value="rrt_star",
-                              description="Local planner: rrt_star (default), mppi, or far (CMU autonomy stack)"),
+        DeclareLaunchArgument("nav_backend", default_value="astar",
+                              description="Local planner: astar (default) or far (CMU autonomy stack)"),
         DeclareLaunchArgument("mujoco_model_path", default_value=default_scene),
         DeclareLaunchArgument("spawn_x", default_value="1.0"),
         DeclareLaunchArgument("spawn_y", default_value="0.0"),

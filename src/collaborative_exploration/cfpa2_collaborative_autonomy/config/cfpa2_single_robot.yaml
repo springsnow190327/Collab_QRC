@@ -40,12 +40,21 @@
     cfpa2_space_time_assumed_speed_mps: 0.25
     cfpa2_space_time_max_speed_mps: 0.60
     cfpa2_frontier_min_cluster_area_m2: 0.08
-    cfpa2_frontier_obstacle_clearance_m: 0.15
+    # Frontier must sit at least this far from the nearest occupied cell.
+    # Go2W body half-width is ~0.25 m; below that, a picked frontier can
+    # wedge the robot against a wall. 0.35 = half-width + small margin.
+    cfpa2_frontier_obstacle_clearance_m: 0.35
     communication_timeout_sec: 0.0
     prediction_horizon_sec: 0.0
     pursuit_weight: 0.0
     pursuit_switch_margin: 0.10
-    exploration_gain_radius_cells: 12
+    # IG box = (2r+1)² cells. At octomap res 0.05 m, r=40 → 4.0 × 4.0 m
+    # sampling box. Old r=12 (1.2 m) saturated for both tiny pockets and
+    # huge unexplored rooms, making cost dominate → CFPA2 picked the
+    # nearest small frontier instead of the 20 m² unknown region behind
+    # the robot. r=40 resolves big regions while staying O(n²) cheap
+    # (C++ batch_info_gain caps this fine).
+    exploration_gain_radius_cells: 40
     meeting_min_distance: 0.0
     teammate_stale_ttl_sec: 0.0
     perf_enable: true
@@ -58,5 +67,8 @@
     adaptive_restore_utilization: 0.45
     adaptive_max_frontier_stride: 8
     adaptive_min_max_targets: 80
-    adaptive_min_exploration_gain_radius_cells: 6
+    # Adaptive IG shed floor: CFPA2 downshifts when CPU/p95 over budget.
+    # Raised from 6 → 20 so that even under load IG stays at a 2 m box,
+    # avoiding regression to "small-nearby beats huge-far".
+    adaptive_min_exploration_gain_radius_cells: 20
     adaptive_max_skip_ticks: 3

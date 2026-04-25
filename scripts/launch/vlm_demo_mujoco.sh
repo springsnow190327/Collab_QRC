@@ -2,8 +2,14 @@
 # VLM-in-the-loop single-robot exploration demo (MuJoCo backend).
 #
 # Usage:
-#   ./vlm_demo_mujoco.sh                                # defaults (xAI/Grok, RRT* nav, carto_2d)
-#   ./vlm_demo_mujoco.sh nav_execution_backend:=reactive # override nav backend
+#   ./vlm_demo_mujoco.sh                                  # defaults (xAI/Grok, FAR nav, carto_2d)
+#   ./vlm_demo_mujoco.sh nav_execution_backend:=astar     # switch to A* planner
+#   ./vlm_demo_mujoco.sh nav_execution_backend:=default   # switch to default_nav
+#
+# Nav backends since reactive_nav / mppi_nav were removed (2026-04-24):
+#   far     — CMU autonomy stack (default for VLM demo)
+#   astar   — C++ A* + oriented footprint check (recommended for tight scenes)
+#   default — Python A* + D* Lite + recovery (legacy stable)
 #
 # VLM history logs are saved to ~/.ros/log/vlm_history/<run_timestamp>/
 # A live debug viewer starts automatically at http://localhost:8501
@@ -197,7 +203,7 @@ fi
 VLM_PROVIDER="${VLM_PROVIDER:-xai}"
 ARTIFACT_DETECTION_MODE="${ARTIFACT_DETECTION_MODE:-placeholder}"
 SLAM_SOURCE="cartographer"
-NAV_EXECUTION_BACKEND="${NAV_EXECUTION_BACKEND:-rrt_star}"
+NAV_EXECUTION_BACKEND="${NAV_EXECUTION_BACKEND:-far}"
 MAP_BACKEND="carto_2d"
 FLORENCE2_ENABLED="${FLORENCE2_ENABLED:-false}"
 MISSION_PROMPT="${MISSION_PROMPT:-find any small unusual objects on the floor}"
@@ -216,10 +222,15 @@ for arg in "$@"; do
 done
 
 NAV_EXECUTION_BACKEND="${NAV_EXECUTION_BACKEND,,}"
+# Back-compat aliases — old callers still pass the removed planners' names.
 case "${NAV_EXECUTION_BACKEND}" in
-  reactive|rrt_star|far_rrt_star|far) ;;
+  reactive)           NAV_EXECUTION_BACKEND="default" ;;
+  rrt_star|far_rrt_star) NAV_EXECUTION_BACKEND="astar" ;;
+esac
+case "${NAV_EXECUTION_BACKEND}" in
+  far|astar|default) ;;
   *)
-    echo "ERROR: unsupported NAV_EXECUTION_BACKEND='${NAV_EXECUTION_BACKEND}' (expected reactive|rrt_star|far_rrt_star|far)" >&2
+    echo "ERROR: unsupported NAV_EXECUTION_BACKEND='${NAV_EXECUTION_BACKEND}' (expected far|astar|default)" >&2
     exit 2
     ;;
 esac

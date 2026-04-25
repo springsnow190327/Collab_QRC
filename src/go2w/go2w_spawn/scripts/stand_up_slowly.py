@@ -36,7 +36,13 @@ class StandUpSlowly(Node):
         self.declare_parameter('check_period_sec', 0.5)
         self.declare_parameter('joint_controller_topic', '/joint_group_effort_controller/joint_trajectory')
         self.declare_parameter('joint_name_preset', 'go2')
-        
+        # Prefix prepended to every preset joint name. Used by
+        # heterogeneous dual-robot launches where robot_b's joints are
+        # `b_FL_hip_joint`, `b_FL_thigh_joint`, etc. (different URDF
+        # roots under one MuJoCo plugin). Default '' keeps single-robot
+        # behaviour untouched.
+        self.declare_parameter('joint_name_prefix', '')
+
         # Publisher to the controller
         self.controller_topic = str(self.get_parameter('joint_controller_topic').value)
         self.publisher_ = self.create_publisher(
@@ -44,14 +50,19 @@ class StandUpSlowly(Node):
             self.controller_topic,
             10
         )
-        
+
         preset = str(self.get_parameter('joint_name_preset').value).strip().lower() or 'go2'
         if preset not in JOINT_PRESETS:
             self.get_logger().warn(
                 f"Unknown joint_name_preset '{preset}', falling back to 'go2'."
             )
             preset = 'go2'
-        self.joint_names = list(JOINT_PRESETS[preset])
+        joint_prefix = str(self.get_parameter('joint_name_prefix').value)
+        self.joint_names = [joint_prefix + n for n in JOINT_PRESETS[preset]]
+        if joint_prefix:
+            self.get_logger().info(
+                f"Applying joint_name_prefix='{joint_prefix}' to {preset} preset"
+            )
         
         # Target standing positions (hip, thigh, calf)
         self.target_positions = [

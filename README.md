@@ -132,11 +132,12 @@ Switchable via `nav_backend:=` / `nav_execution_backend:=` at launch time.
 
 | Backend | Planner | Note |
 | --- | --- | --- |
-| `rrt_star` / `reactive` | `reactive_nav_node` | RRT\* sampling + fast replan |
-| `default` | `default_nav.py` | A\* global + scan-based local avoidance |
+| `astar` | `astar_nav_node` | C++ A\* + pure-pursuit + Stanley + oriented footprint validation (Option B) |
+| `default` | `default_nav.py` | Python A\* grid + D\* Lite + recovery (legacy stable) |
 | `far` | CMU autonomy stack | Terrain analysis + FAR V-graph + pathFollower |
-| `far_rrt_star` | FAR global + RRT\* local | FAR waypoints fed to RRT\* |
 | `tare_real` | Real CMU TARE → localPlanner direct (Go2 only, FAR unwired) | Used in `nav_test_go2_tare_real.launch.py` and `real_single_tare_real.launch.py` |
+
+Legacy aliases silently upgrade: `reactive` → `default`, `rrt_star` / `far_rrt_star` / `mppi` → `astar`. The reactive RRT\* planner (`reactive_nav_node`) and MPPI (`mppi_nav_node`) were deleted 2026-04-24.
 
 **Why TARE bypasses FAR:** FAR's V-graph is built over *observed traversable* space; TARE's frontier goals sit at the *boundary* of observed space. Stacking them runs two global planners with conflicting scopes. CMU's reference pipeline pairs TARE → localPlanner directly.
 

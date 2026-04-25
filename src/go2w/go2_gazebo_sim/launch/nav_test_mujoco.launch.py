@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Minimal MuJoCo nav test: Cartographer SLAM + CFPA2 + RRT*/FAR + RViz waypoint.
+"""Minimal MuJoCo nav test: Cartographer SLAM + CFPA2 + A*/FAR + RViz waypoint.
 
 No VLM stack — just sim + SLAM + navigation for debugging.
 
 Nav backends (nav_backend:=):
-  rrt_star — go2w_nav reactive_nav_node (default)
-  far      — CMU autonomy stack: terrain_analysis + far_planner + localPlanner + pathFollower
+  astar — go2w_nav astar_nav_node (default)
+  far   — CMU autonomy stack: terrain_analysis + far_planner + localPlanner + pathFollower
 
 Modes:
   - Default: CFPA2 frontier exploration drives the robot autonomously.
@@ -95,9 +95,12 @@ def _launch_setup(context):
     tf_remaps = [("/tf", f"/{robot_ns}/tf"), ("/tf_static", f"/{robot_ns}/tf_static")]
     carto_cfg_dir = os.path.join(vlm_pkg, "config")
     carto_cfg_basename = "cartographer_sim_2d.lua"
-    nav_backend = _get(context, "nav_backend").strip().lower()
-    if nav_backend not in {"rrt_star", "far"}:
-        raise ValueError(f"nav_backend must be 'rrt_star' or 'far', got '{nav_backend}'")
+    nav_backend = _get(context, "nav_backend").strip().lower() or "astar"
+    # Back-compat alias — rrt_star points to astar now (reactive_nav deleted).
+    if nav_backend == "rrt_star":
+        nav_backend = "astar"
+    if nav_backend not in {"astar", "far"}:
+        raise ValueError(f"nav_backend must be 'astar' or 'far', got '{nav_backend}'")
     cfpa2_config_path = os.path.join(cfpa2_pkg, "config", "cfpa2_single_robot.yaml")
 
     actions = []
@@ -257,8 +260,8 @@ def _launch_setup(context):
         )
 
     # ── 4. Navigation backend ──
-    if nav_backend == "rrt_star":
-        nav_config_path = os.path.join(go2w_config_pkg, "config", "nav", "reactive_nav_vlm.yaml")
+    if nav_backend == "astar":
+        nav_config_path = os.path.join(go2w_config_pkg, "config", "nav", "astar_nav_go2w.yaml")
         nav_remappings = [
             ("/way_point", f"/{robot_ns}/way_point_coord"),
             ("/odom/ground_truth", f"/{robot_ns}/odom/nav"),
@@ -271,11 +274,10 @@ def _launch_setup(context):
             ("/robot_pose_marker", f"/{robot_ns}/robot_pose_marker"),
         ]
 
-        # octomap_server: build a 3D voxel grid from the reliable registered
-        # scan and publish a 2D projection. Used as a secondary obstacle
-        # source for reactive_nav_node via the map_merger below. Gives thin
-        # obstacles (cylinders, crates) a fast detection path that bypasses
-        # Cartographer's slow probability accumulation.
+        # octomap_server: 3D voxel grid from the reliable registered scan
+        # projected to 2D, merged with Cartographer's /robot/map so astar
+        # sees thin obstacles (cylinders, crates, dividers) as fast as
+        # Cartographer sees walls.
         octomap_node = Node(
             package="octomap_server",
             executable="octomap_server_node",
@@ -287,24 +289,16 @@ def _launch_setup(context):
                 "frame_id": "map",
                 "base_frame_id": "base_link",
                 "sensor_model.max_range": 6.0,
-                # Slightly stronger hit / weaker miss so thin divider
-                # detections promote to occupied faster and are harder
-                # to clear by glancing rays.
                 "sensor_model.hit": 0.8,
                 "sensor_model.miss": 0.35,
                 "sensor_model.min": 0.12,
                 "sensor_model.max": 0.97,
-                # Voxel grid z bounds: wide enough to capture the top of
-                # interior dividers (they extend to z=1.0).
                 "point_cloud_min_z": 0.05,
                 "point_cloud_max_z": 1.10,
-                # 2D projection z band — wider catches more of each wall
-                # column so thin obstacles get more column-vote evidence.
                 "occupancy_min_z": 0.05,
                 "occupancy_max_z": 1.00,
                 "filter_ground_plane": False,
                 "incremental_2D_projection": False,
-                # Fix: was erasing thin dividers as "speckle noise".
                 "filter_speckles": False,
                 "compress_map": True,
                 "latch": False,
@@ -318,9 +312,7 @@ def _launch_setup(context):
         )
 
         # map_merger: union Cartographer's /robot/map with octomap's
-        # projected map and publish /robot/map_merged with the QoS that
-        # reactive_nav_node expects. Reactive_nav's map_topic below is
-        # remapped to this merged output.
+        # projected map and publish /robot/map_merged for the A* planner.
         map_merger_node = Node(
             package="go2w_perception",
             executable="map_merger.py",
@@ -337,11 +329,11 @@ def _launch_setup(context):
             output="screen",
         )
 
-        reactive_nav_node = Node(
+        astar_nav_node = Node(
             package="go2w_nav",
-            executable="reactive_nav_node",
+            executable="astar_nav_node",
             namespace=robot_ns,
-            name="reactive_nav",
+            name="astar_nav",
             parameters=[
                 nav_config_path,
                 {"use_sim_time": use_sim_time},
@@ -360,7 +352,7 @@ def _launch_setup(context):
         actions.append(
             TimerAction(
                 period=nav_delay,
-                actions=[octomap_node, map_merger_node, reactive_nav_node],
+                actions=[octomap_node, map_merger_node, astar_nav_node],
             )
         )
     else:  # nav_backend == "far"
@@ -657,8 +649,8 @@ def _launch_setup(context):
         # ── 4b. Velocity-aware safety supervisor (optional) ──
         # Caps commanded velocity by live scan-based nearest-obstacle
         # clearance. Only wired into the FAR path because pathFollower is
-        # the cmd_vel source there; rrt_star branch would need a separate
-        # hookup on reactive_nav_node's output.
+        # the cmd_vel source there; astar branch would need a separate
+        # hookup on astar_nav_node's output.
         if enable_velocity_supervisor:
             supervisor_script = os.path.expanduser(
                 "~/Collab_QRC/scripts/runtime/velocity_safety_supervisor.py"
@@ -836,8 +828,8 @@ def generate_launch_description():
         DeclareLaunchArgument("rviz", default_value="true"),
         DeclareLaunchArgument("explore", default_value="true",
                               description="Enable CFPA2 autonomous frontier exploration"),
-        DeclareLaunchArgument("nav_backend", default_value="rrt_star",
-                              description="Nav backend: rrt_star (default) or far"),
+        DeclareLaunchArgument("nav_backend", default_value="astar",
+                              description="Nav backend: astar (default) or far"),
         DeclareLaunchArgument("mujoco_model_path", default_value=default_scene),
         DeclareLaunchArgument("spawn_x", default_value="4.0"),
         DeclareLaunchArgument("spawn_y", default_value="0.0"),

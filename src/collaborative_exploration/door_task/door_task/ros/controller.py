@@ -186,8 +186,8 @@ class VLMControllerNode(Node):
         self.create_timer(self._ctrl_tick_period, self._control_tick)
         self.create_timer(self._vlm_tick_period, self._vlm_tick_cb)
         self.create_timer(self._planner_tick_period, self._planner_tick_cb)
-        self.create_timer(2.0, self._mute_reactive_nav)
-        self._mute_reactive_nav()
+        self.create_timer(2.0, self._mute_nav)
+        self._mute_nav()
 
         self.get_logger().info(
             f"VLMController up | exec={self._provider}/{self._model} | "
@@ -227,9 +227,10 @@ class VLMControllerNode(Node):
             return self._world_dict_json
 
     # ── Fast control loop ─────────────────────────────────────────────────
-    def _mute_reactive_nav(self):
-        """Latch /stop=1 so any lingering reactive_nav ignores planner output.
-        The door launch already skips reactive_nav; this is belt-and-suspenders."""
+    def _mute_nav(self):
+        """Latch /stop=1 so any lingering nav planner ignores planner output.
+        The door launch already skips the nav sub-launch when the LLM
+        controller owns cmd_vel; this is belt-and-suspenders."""
         msg = Int8(data=1)
         for pub in self._stop_pubs.values():
             pub.publish(msg)

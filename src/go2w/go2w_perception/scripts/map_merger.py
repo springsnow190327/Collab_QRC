@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Merge two OccupancyGrid topics via a cell-wise union.
 
-Used to give reactive_nav_node obstacle evidence from BOTH Cartographer's
+Used to give astar_nav_node obstacle evidence from BOTH Cartographer's
 binarized map (stable walls, slow to update) AND octomap_server's
-projected_map (fast thin-obstacle detection). Because reactive_nav_node
+projected_map (fast thin-obstacle detection). Because the planner
 subscribes to exactly one map topic, we compute the union upstream and
 publish it with the QoS that the planner expects.
 
@@ -16,7 +16,7 @@ Coordinate handling:
 
 Graceful degradation:
     - Before either topic has been seen, publish nothing.
-    - Once primary has been seen, publish primary-as-is (so reactive_nav
+    - Once primary has been seen, publish primary-as-is (so the planner
       always has a map the moment Cartographer comes up, even if octomap
       is still warming up).
     - Once both have been seen, publish the union on every primary update.
@@ -51,7 +51,7 @@ def _secondary_qos() -> QoSProfile:
 
 
 def _output_qos() -> QoSProfile:
-    """QoS matching what reactive_nav_node expects (see reactive_nav_node.cpp:774-776)."""
+    """QoS matching what astar_nav_node expects (TRANSIENT_LOCAL for map)."""
     return QoSProfile(
         history=HistoryPolicy.KEEP_LAST,
         depth=1,

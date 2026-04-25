@@ -41,6 +41,15 @@ class Go2WHybridCmdRouter(Node):
         self.declare_parameter("wheel_curvature_threshold", 0.45)
         self.declare_parameter("wheel_mode_hold_sec", 0.6)
         self.declare_parameter("legged_mode_hold_sec", 0.6)
+        # Curvature override: when requested mode is legged AND the commanded
+        # κ=|ω|/|v| exceeds this, bypass mode hold and switch immediately.
+        # Fixes the "wheel mode U-turn" failure: robot was cruising east in
+        # wheel mode; astar replanned to a goal ~180° behind; it commanded
+        # (v≈0.05, ω≈0.35) → κ=7/m, clearly legged; but wheel_mode_hold_sec
+        # (0.6–1.2 s) held wheel mode → wheels drew a wide skid-steer U-turn
+        # and hit the wall. With this override, any κ above `wheel_curvature_threshold × 2`
+        # forces immediate legged mode so CHAMP pivots in place.
+        self.declare_parameter("legged_override_curvature", 1.0)
         # NOTE (iter 7): wheel_pivot / wheel_curve modes were removed.
         # Rationale: CHAMP's leg joints remain compliant under the impedance
         # controller even when cmd_vel_legged=0, so any lateral scrub force
@@ -74,6 +83,9 @@ class Go2WHybridCmdRouter(Node):
             "wheel": max(0.0, float(self.get_parameter("wheel_mode_hold_sec").value)),
             "legged": max(0.0, float(self.get_parameter("legged_mode_hold_sec").value)),
         }
+        self.legged_override_curvature = max(
+            0.0, float(self.get_parameter("legged_override_curvature").value)
+        )
         self.wheel_radius_m = max(1e-4, float(self.get_parameter("wheel_radius_m").value))
         self.wheel_track_m = max(1e-4, float(self.get_parameter("wheel_track_m").value))
         self.wheel_max_angular_speed = max(
@@ -118,9 +130,11 @@ class Go2WHybridCmdRouter(Node):
             and abs(float(cmd.angular.z)) < self.thresholds.idle_angular
         )
 
-    def _requested_mode(self, cmd: Twist, now_sec: float) -> str:
+    def _requested_mode(self, cmd: Twist, now_sec: float) -> tuple[str, float]:
+        """Return (mode, curvature) — curvature surfaced so the selector can
+        bypass mode hold for emergency U-turns (high κ legged demands)."""
         if not self._is_recent(now_sec) or self._is_idle(cmd):
-            return "idle"
+            return ("idle", 0.0)
 
         raw_linear_x = float(cmd.linear.x)
         linear_x = abs(raw_linear_x)
@@ -141,12 +155,26 @@ class Go2WHybridCmdRouter(Node):
             and angular_z <= self.thresholds.wheel_angular
             and curvature <= self.thresholds.wheel_curvature
         ):
-            return "wheel"
+            return ("wheel", curvature)
 
-        return "legged"
+        return ("legged", curvature)
 
-    def _select_mode(self, requested_mode: str, now_sec: float) -> str:
+    def _select_mode(self, requested_mode: str, curvature: float,
+                     now_sec: float) -> str:
         if requested_mode == self._active_mode:
+            return requested_mode
+
+        # Emergency bypass: if astar is demanding legged with high curvature
+        # (e.g. U-turn, pivot-in-place for 180° heading flip), skip mode hold.
+        # Without this, a robot cruising in wheel mode east that gets a new
+        # goal behind it would execute a wide wheel skid-steer U-turn for
+        # the full hold window and crash into walls before switching to the
+        # pivot-in-place CHAMP gait that astar actually wants.
+        if (
+            requested_mode == "legged"
+            and self._active_mode == "wheel"
+            and curvature >= self.legged_override_curvature
+        ):
             return requested_mode
 
         if self._active_mode in self.mode_hold_sec and self._last_mode_change_sec is not None:
@@ -176,8 +204,8 @@ class Go2WHybridCmdRouter(Node):
 
     def _tick(self) -> None:
         now_sec = self._now_sec()
-        requested_mode = self._requested_mode(self._last_cmd, now_sec)
-        selected_mode = self._select_mode(requested_mode, now_sec)
+        requested_mode, requested_curv = self._requested_mode(self._last_cmd, now_sec)
+        selected_mode = self._select_mode(requested_mode, requested_curv, now_sec)
 
         if selected_mode != self._active_mode:
             self._active_mode = selected_mode

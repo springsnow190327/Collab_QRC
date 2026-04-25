@@ -1,0 +1,1 @@
+['-DPython3_EXECUTABLE=/home/hanszhu/miniforge3/envs/cmu_env/bin/python3', '-DAMENT_CMAKE_SYMLINK_INSTALL=1']

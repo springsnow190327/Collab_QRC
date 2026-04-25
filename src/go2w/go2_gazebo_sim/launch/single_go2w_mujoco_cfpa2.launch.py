@@ -36,6 +36,7 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 sys.path.append(os.path.dirname(__file__))
+from modules import _find_mujoco_plugin_dir
 from modules.assets import build_dual_robot_stack, build_namespaced_robot_description
 from modules.orchestration import build_rviz_node
 from modules.slam import build_slam_odom_relay_node
@@ -202,11 +203,8 @@ def _launch_setup(context):
         "mujoco_ros2_control/MujocoSystem",
     )
 
-    # MuJoCo plugin dir (needed for STL mesh decoder etc.)
-    mujoco_plugin_dir = os.path.join(
-        os.path.expanduser("~"), ".local", "lib", "python3.10",
-        "site-packages", "mujoco", "plugin",
-    )
+    # MuJoCo plugin dir (needed for STL/OBJ mesh decoders etc.)
+    mujoco_plugin_dir = _find_mujoco_plugin_dir()
 
     joints_config = os.path.join(go2_gazebo_pkg, "config", "champ", "go2w", "joints.yaml")
     links_config = os.path.join(go2_gazebo_pkg, "config", "champ", "go2w", "links.yaml")

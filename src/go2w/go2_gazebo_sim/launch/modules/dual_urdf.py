@@ -252,6 +252,95 @@ def build_dual_mujoco_urdf(base_urdf_string: str) -> str:
     return doc.toxml()
 
 
+def build_mixed_mujoco_urdf(go2w_urdf_string: str, go2_urdf_string: str) -> str:
+    """Combined URDF for mujoco_ros2_control: Go2W (robot_a) + Go2 (robot_b, b_-prefixed).
+
+    Unlike ``build_dual_mujoco_urdf`` (which clones robot_a for robot_b), this takes
+    TWO separate URDFs — Go2W for the wheeled robot_a and Go2 for the legged-only
+    robot_b — and merges them into one URDF. The Go2 URDF contributes its own
+    ``<ros2_control>`` block (12 leg joints, no foot_joint) so mujoco_ros2_control
+    binds robot_b to the 12 MJCF leg motors only.
+    """
+    doc = minidom.parseString(go2w_urdf_string)
+    robot = doc.documentElement
+
+    # World dummy root + fixed joint world -> base_link (robot_a)
+    world_link = doc.createElement("link")
+    world_link.setAttribute("name", "world")
+    robot.appendChild(doc.createTextNode("\n  "))
+    robot.appendChild(world_link)
+
+    root_link_name = "base_link"
+    fix_a = doc.createElement("joint")
+    fix_a.setAttribute("name", "world_to_robot_a")
+    fix_a.setAttribute("type", "fixed")
+    pa = doc.createElement("parent"); pa.setAttribute("link", "world")
+    ca = doc.createElement("child");  ca.setAttribute("link", root_link_name)
+    fix_a.appendChild(pa); fix_a.appendChild(ca)
+    robot.appendChild(doc.createTextNode("\n  "))
+    robot.appendChild(fix_a)
+
+    # Rename robot_a's ros2_control block (from Go2W xacro) to robot_a_system
+    ros2_blocks = robot.getElementsByTagName("ros2_control")
+    if ros2_blocks:
+        ros2_blocks[0].setAttribute("name", "robot_a_system")
+
+    # Clone Go2 URDF's links/joints with b_ prefix into the combined doc
+    go2_doc = minidom.parseString(go2_urdf_string)
+    go2_robot = go2_doc.documentElement
+
+    go2_links = [e for e in go2_robot.childNodes
+                 if e.nodeType == e.ELEMENT_NODE and e.tagName == "link"]
+    go2_joints = [e for e in go2_robot.childNodes
+                  if e.nodeType == e.ELEMENT_NODE and e.tagName == "joint"]
+    for link in go2_links:
+        robot.appendChild(doc.createTextNode("\n  "))
+        robot.appendChild(_clone_element(link, _PREFIX))
+    for joint in go2_joints:
+        robot.appendChild(doc.createTextNode("\n  "))
+        robot.appendChild(_clone_element(joint, _PREFIX))
+
+    # Clone Go2's ros2_control block (12 leg joints, no foot_joint) as robot_b_system
+    go2_ros2_blocks = go2_robot.getElementsByTagName("ros2_control")
+    if go2_ros2_blocks:
+        robot_b_block = _prefix_ros2_control_joints(
+            go2_ros2_blocks[0], _PREFIX, "robot_b_system"
+        )
+        robot.appendChild(doc.createTextNode("\n  "))
+        robot.appendChild(robot_b_block)
+
+    # Fixed joint world -> b_base_link
+    fix_b = doc.createElement("joint")
+    fix_b.setAttribute("name", "world_to_robot_b")
+    fix_b.setAttribute("type", "fixed")
+    pb = doc.createElement("parent"); pb.setAttribute("link", "world")
+    cb = doc.createElement("child");  cb.setAttribute("link", _PREFIX + root_link_name)
+    fix_b.appendChild(pb); fix_b.appendChild(cb)
+    robot.appendChild(doc.createTextNode("\n  "))
+    robot.appendChild(fix_b)
+
+    # Swap GazeboSystem -> MujocoSystem in every <plugin> text node
+    for hw in doc.getElementsByTagName("hardware"):
+        for plugin in hw.getElementsByTagName("plugin"):
+            for child in plugin.childNodes:
+                if child.nodeType == child.TEXT_NODE and "GazeboSystem" in child.data:
+                    child.data = child.data.replace(
+                        "gazebo_ros2_control/GazeboSystem",
+                        "mujoco_ros2_control/MujocoSystem",
+                    )
+
+    # Strip Gazebo plugin blocks (they crash mujoco_ros2_control)
+    for gazebo in list(doc.getElementsByTagName("gazebo")):
+        has_gazebo_plugin = any(
+            "libgazebo" in (p.getAttribute("filename") or "")
+            for p in gazebo.getElementsByTagName("plugin")
+        )
+        if has_gazebo_plugin:
+            gazebo.parentNode.removeChild(gazebo)
+
+    return doc.toxml()
+
+
 def build_robot_b_urdf(base_urdf_string: str) -> str:
     """Return a Robot B URDF (b_-prefixed joints/links) for its robot_state_publisher.
 

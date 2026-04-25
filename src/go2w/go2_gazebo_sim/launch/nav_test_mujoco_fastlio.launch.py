@@ -6,8 +6,8 @@ the scan-odom temporal misalignment that causes wall ghosting in
 Cartographer mode. Everything else (FAR, CFPA2, etc.) is identical.
 
 Nav backends (nav_backend:=):
-  rrt_star — go2w_nav reactive_nav_node (default)
-  far      — CMU autonomy stack: terrain_analysis + far_planner + localPlanner + pathFollower
+  far   — CMU autonomy stack: terrain_analysis + far_planner + localPlanner + pathFollower (default)
+  astar — go2w_nav astar_nav_node (C++ A* + pure-pursuit + oriented footprint check)
 
 Modes:
   - Default: CFPA2 frontier exploration drives the robot autonomously.
@@ -117,9 +117,12 @@ def _launch_setup(context):
         mujoco_model_path = os.path.join(go2_gazebo_pkg, "mujoco", "demo1.xml")
 
     tf_remaps = [("/tf", f"/{robot_ns}/tf"), ("/tf_static", f"/{robot_ns}/tf_static")]
-    nav_backend = _get(context, "nav_backend").strip().lower()
-    if nav_backend not in {"rrt_star", "far"}:
-        raise ValueError(f"nav_backend must be 'rrt_star' or 'far', got '{nav_backend}'")
+    nav_backend = _get(context, "nav_backend").strip().lower() or "far"
+    # Back-compat alias — rrt_star points to astar now (reactive_nav deleted).
+    if nav_backend == "rrt_star":
+        nav_backend = "astar"
+    if nav_backend not in {"astar", "far"}:
+        raise ValueError(f"nav_backend must be 'astar' or 'far', got '{nav_backend}'")
     cfpa2_config_path = os.path.join(cfpa2_pkg, "config", "cfpa2_single_robot.yaml")
 
     actions = []
@@ -155,14 +158,14 @@ def _launch_setup(context):
 
     # ── 2. SLAM handled by base launch (Fast-LIO2) ──
     # Fast-LIO2 outputs 3D point cloud, NOT a 2D OccupancyGrid.
-    # CFPA2 + RViz + reactive_nav all need /robot/map (OccupancyGrid).
+    # CFPA2 + RViz + astar_nav all need /robot/map (OccupancyGrid).
     # Use octomap_server to build a 3D voxel grid from the registered
     # scan, project to 2D, then binarize → /robot/map.
     slam_delay = 10.0
 
     slam_delay = 10.0
 
-    # Octomap for /robot/map — runs for ALL nav backends (not just rrt_star).
+    # Octomap for /robot/map — runs for ALL nav backends (not just astar).
     # Fast-LIO has no occupancy grid; this generates one from the 3D scan.
     actions.append(
         TimerAction(
@@ -226,38 +229,60 @@ def _launch_setup(context):
     # detects the loop via scan context descriptors, runs ICP verification,
     # then optimizes the pose graph and publishes /corrected_odom.
     # slam_odom_relay already prefers /corrected_odom when available.
-    sc_pgo_config = os.path.join(
-        "/home/hz/COMP0225_LRC_stack/install/sc_pgo/share/sc_pgo/config",
-        "sc_pgo_params.yaml",
-    )
-    # Fall back to source config if install doesn't have it
-    if not os.path.exists(sc_pgo_config):
-        sc_pgo_config = "/home/hz/COMP0225_LRC_stack/src/vendor/sc_pgo/config/sc_pgo_params.yaml"
-    actions.append(
-        TimerAction(
-            period=slam_delay + 3.0,
-            actions=[
-                Node(
-                    package="sc_pgo",
-                    executable="sc_pgo_node",
-                    namespace=robot_ns,
-                    name="sc_pgo",
-                    parameters=[sc_pgo_config, {"use_sim_time": use_sim_time}],
-                    remappings=[
-                        # SC-PGO expects Fast-LIO topics
-                        ("/aft_mapped_to_init", f"/{robot_ns}/Odometry"),
-                        ("/cloud_registered", f"/{robot_ns}/cloud_registered_body"),
-                        # SC-PGO output → slam_odom_relay picks this up
-                        ("/corrected_odom", f"/{robot_ns}/corrected_odom"),
-                        ("/corrected_path", f"/{robot_ns}/corrected_path"),
-                        ("/corrected_cloud", f"/{robot_ns}/corrected_cloud"),
-                        ("/corrected_map", f"/{robot_ns}/corrected_map"),
-                    ] + tf_remaps,
-                    output="screen",
-                ),
-            ],
+    # SC-PGO config paths are hard-coded to a previous developer's home
+    # directory (/home/hz/...) and the package itself is optional — it
+    # only adds loop-closure polish on top of Fast-LIO2, not a hard
+    # dependency. If neither the package nor the config is present,
+    # silently skip SC-PGO rather than crashing the launch.
+    sc_pgo_config_candidates = [
+        os.path.join(
+            "/home/hz/COMP0225_LRC_stack/install/sc_pgo/share/sc_pgo/config",
+            "sc_pgo_params.yaml",
+        ),
+        "/home/hz/COMP0225_LRC_stack/src/vendor/sc_pgo/config/sc_pgo_params.yaml",
+        os.path.expanduser("~/COMP0225_LRC_stack/install/sc_pgo/share/sc_pgo/config/sc_pgo_params.yaml"),
+    ]
+    sc_pgo_config = next((p for p in sc_pgo_config_candidates if os.path.exists(p)), None)
+    try:
+        import ament_index_python.packages as _ament_pkg
+        _ament_pkg.get_package_share_directory("sc_pgo")
+        sc_pgo_available = True
+    except Exception:
+        sc_pgo_available = False
+
+    if sc_pgo_config and sc_pgo_available:
+        actions.append(
+            TimerAction(
+                period=slam_delay + 3.0,
+                actions=[
+                    Node(
+                        package="sc_pgo",
+                        executable="sc_pgo_node",
+                        namespace=robot_ns,
+                        name="sc_pgo",
+                        parameters=[sc_pgo_config, {"use_sim_time": use_sim_time}],
+                        remappings=[
+                            # SC-PGO expects Fast-LIO topics
+                            ("/aft_mapped_to_init", f"/{robot_ns}/Odometry"),
+                            ("/cloud_registered", f"/{robot_ns}/cloud_registered_body"),
+                            # SC-PGO output → slam_odom_relay picks this up
+                            ("/corrected_odom", f"/{robot_ns}/corrected_odom"),
+                            ("/corrected_path", f"/{robot_ns}/corrected_path"),
+                            ("/corrected_cloud", f"/{robot_ns}/corrected_cloud"),
+                            ("/corrected_map", f"/{robot_ns}/corrected_map"),
+                        ] + tf_remaps,
+                        output="screen",
+                    ),
+                ],
+            )
         )
-    )
+    else:
+        reason = "package not installed" if not sc_pgo_available else "config file not found"
+        actions.append(LogInfo(msg=(
+            f"[nav_test_mujoco_fastlio] SC-PGO loop-closure skipped ({reason}). "
+            f"Fast-LIO2 alone handles SLAM; SC-PGO is optional polish for long "
+            f"trajectories. Install SC-PGO only if you specifically need it."
+        )))
 
     # Static TFs to complete the tree. slam_odom_relay publishes odom
     # with frame_id="world", not "map". FAR + octomap need both frames.
@@ -346,8 +371,8 @@ def _launch_setup(context):
         )
 
     # ── 4. Navigation backend ──
-    if nav_backend == "rrt_star":
-        nav_config_path = os.path.join(go2w_config_pkg, "config", "nav", "reactive_nav_vlm.yaml")
+    if nav_backend == "astar":
+        nav_config_path = os.path.join(go2w_config_pkg, "config", "nav", "astar_nav_go2w.yaml")
         nav_remappings = [
             ("/way_point", f"/{robot_ns}/way_point_coord"),
             ("/odom/ground_truth", f"/{robot_ns}/odom/nav"),
@@ -360,11 +385,10 @@ def _launch_setup(context):
             ("/robot_pose_marker", f"/{robot_ns}/robot_pose_marker"),
         ]
 
-        # octomap_server: build a 3D voxel grid from the reliable registered
-        # scan and publish a 2D projection. Used as a secondary obstacle
-        # source for reactive_nav_node via the map_merger below. Gives thin
-        # obstacles (cylinders, crates) a fast detection path that bypasses
-        # Cartographer's slow probability accumulation.
+        # octomap_server: 3D voxel grid from the reliable registered scan
+        # projected to 2D. In Fast-LIO mode it IS the /{ns}/map source
+        # (no Cartographer to merge with), so the map_merger below is a
+        # pass-through and astar reads /{ns}/map directly.
         octomap_node = Node(
             package="octomap_server",
             executable="octomap_server_node",
@@ -376,45 +400,32 @@ def _launch_setup(context):
                 "frame_id": "map",
                 "base_frame_id": "base_link",
                 "sensor_model.max_range": 6.0,
-                # Slightly stronger hit / weaker miss so thin divider
-                # detections promote to occupied faster and are harder
-                # to clear by glancing rays.
                 "sensor_model.hit": 0.8,
                 "sensor_model.miss": 0.35,
                 "sensor_model.min": 0.12,
                 "sensor_model.max": 0.97,
-                # Voxel grid z bounds: wide enough to capture the top of
-                # interior dividers (they extend to z=1.0).
                 "point_cloud_min_z": 0.05,
                 "point_cloud_max_z": 1.10,
-                # 2D projection z band — wider catches more of each wall
-                # column so thin obstacles get more column-vote evidence.
                 "occupancy_min_z": 0.05,
                 "occupancy_max_z": 1.00,
                 "filter_ground_plane": False,
                 "incremental_2D_projection": False,
-                # Fix: was erasing thin dividers as "speckle noise".
                 "filter_speckles": False,
                 "compress_map": True,
-                # latch=True → publishes with TRANSIENT_LOCAL durability,
-                # matching CFPA2's subscription QoS (which expects a latched
-                # map like Cartographer provides). Without this, DDS silently
-                # drops all messages due to VOLATILE vs TRANSIENT_LOCAL mismatch.
+                # latch=True → TRANSIENT_LOCAL, matches CFPA2 map sub QoS.
                 "latch": True,
                 "publish_free_space": False,
             }],
             remappings=[
                 ("cloud_in", f"/{robot_ns}/registered_scan_reliable"),
-                # In Fast-LIO mode, publish directly as /robot/map (no
-                # Cartographer to merge with). CFPA2 + RViz + reactive_nav
-                # all read /robot/map.
+                # Publish directly as /robot/map in Fast-LIO mode.
                 ("projected_map", f"/{robot_ns}/map"),
             ] + tf_remaps,
             output="screen",
         )
 
-        # map_merger skipped in Fast-LIO mode — single map source (octomap).
-        # reactive_nav reads /robot/map directly (see map_topic override below).
+        # map_merger pass-through kept for topic-name parity with the
+        # Cartographer launch variant; same source on primary + secondary.
         map_merger_node = Node(
             package="go2w_perception",
             executable="map_merger.py",
@@ -431,17 +442,16 @@ def _launch_setup(context):
             output="screen",
         )
 
-        reactive_nav_node = Node(
+        astar_nav_node = Node(
             package="go2w_nav",
-            executable="reactive_nav_node",
+            executable="astar_nav_node",
             namespace=robot_ns,
-            name="reactive_nav",
+            name="astar_nav",
             parameters=[
                 nav_config_path,
                 {"use_sim_time": use_sim_time},
                 {
                     "map_frame": "map",
-                    # Union of Cartographer + octomap (see map_merger above).
                     "map_topic": f"/{robot_ns}/map_merged",
                     "frontier_replan_topic": f"/{robot_ns}/frontier_replan",
                     "stop_topic": f"/{robot_ns}/stop",
@@ -454,7 +464,7 @@ def _launch_setup(context):
         actions.append(
             TimerAction(
                 period=nav_delay,
-                actions=[octomap_node, map_merger_node, reactive_nav_node],
+                actions=[octomap_node, map_merger_node, astar_nav_node],
             )
         )
     else:  # nav_backend == "far"
@@ -732,8 +742,8 @@ def _launch_setup(context):
         # ── 4b. Velocity-aware safety supervisor (optional) ──
         # Caps commanded velocity by live scan-based nearest-obstacle
         # clearance. Only wired into the FAR path because pathFollower is
-        # the cmd_vel source there; rrt_star branch would need a separate
-        # hookup on reactive_nav_node's output.
+        # the cmd_vel source there; astar branch would need a separate
+        # hookup on astar_nav_node's output.
         if enable_velocity_supervisor:
             supervisor_script = os.path.expanduser(
                 "~/Collab_QRC/scripts/runtime/velocity_safety_supervisor.py"
@@ -912,7 +922,7 @@ def generate_launch_description():
         DeclareLaunchArgument("explore", default_value="true",
                               description="Enable CFPA2 autonomous frontier exploration"),
         DeclareLaunchArgument("nav_backend", default_value="far",
-                              description="Nav backend: rrt_star (default) or far"),
+                              description="Nav backend: astar or far (default)"),
         DeclareLaunchArgument("mujoco_model_path", default_value=default_scene),
         DeclareLaunchArgument("spawn_x", default_value="4.0"),
         DeclareLaunchArgument("spawn_y", default_value="0.0"),
