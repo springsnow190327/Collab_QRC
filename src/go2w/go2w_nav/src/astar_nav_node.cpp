@@ -32,6 +32,7 @@
 #include <cmath>
 #include <cstdint>
 #include <algorithm>
+#include <deque>
 #include <limits>
 #include <queue>
 #include <sstream>
@@ -221,6 +222,15 @@ static AStarResult plan_astar(
         }
     }
 
+    // Snapshot cgrid AFTER closing but BEFORE inflation. cgrid_walls
+    // identifies REAL obstacles (occupied + closing). We use this to
+    // distinguish "I cleared an inflation halo cell to give the robot
+    // room to move" from "I cleared an actual wall cell" — the latter
+    // would let A* plan straight through walls. Spawn-disk and goal
+    // relocation honour this by leaving cgrid_walls cells blocked
+    // even when their inflation neighbourhood gets disk-cleared.
+    std::vector<uint8_t> cgrid_walls = cgrid;
+
     int inflate_cells = std::max(0, static_cast<int>(std::ceil(inflation_m / cres)));
     if (inflate_cells > 0) {
         std::vector<std::pair<int,int>> obs;
@@ -314,8 +324,16 @@ static AStarResult plan_astar(
             for (int dx = -rs; dx <= rs; dx++) {
                 if (dx*dx + dy*dy > rs2) continue;
                 int nx = sx + dx, ny = sy + dy;
-                if (nx >= 0 && nx < cw && ny >= 0 && ny < ch)
-                    cgrid[ny * cw + nx] = 0;
+                if (nx < 0 || nx >= cw || ny < 0 || ny >= ch) continue;
+                // CRITICAL: only clear inflation/unknown cells, never
+                // real walls. Without this guard, A* could plan through
+                // a wall when the robot's pose puts the wall inside
+                // its inflation radius — robot follows path, drives
+                // straight into the wall. cgrid_walls captures the
+                // post-closing real-obstacle map so we know what NOT
+                // to clear.
+                if (cgrid_walls[ny * cw + nx]) continue;
+                cgrid[ny * cw + nx] = 0;
             }
         }
     }
@@ -657,6 +675,34 @@ public:
         declare_parameter("goal_slow_radius",        1.5);  // start braking when within this
         declare_parameter("goal_slow_floor",         0.15); // min v when approaching goal (m/s)
         declare_parameter("goal_reached_replan_cooldown_sec", 1.0);
+        // Post-goal-reached brake: hold zero cmd_vel for this many
+        // seconds after goal_reached fires. Bleeds off CHAMP gait
+        // residual that would otherwise drift the body 0.5-1 m
+        // toward whatever direction it was last walking.
+        declare_parameter("goal_reached_brake_sec", 1.0);
+
+        // ── pivot-unsafe recovery (3-tier state machine) ─────────────
+        // Replaces old pivot_relief lateral-strafe primitive (which
+        // open-loop sidestepped 0.5 m through clutter and walked A
+        // into cross_h_w / zigzag_1 → tip-over, demo3_mixed 2026-04-26).
+        //
+        // Tier 1 (BRAKE): publish 0 + arm brake_until = now + t1_brake_sec.
+        //   Most pivot_unsafe events are transient (peer passing through
+        //   inflation halo, scan noise). Up to t1_max_attempts retries.
+        // Tier 2 (BACKTRACK): drive low-speed toward a breadcrumb at
+        //   backtrack_dist_m back along the trajectory. The crumb was
+        //   recently occupied → footprint geometry guaranteed clear at
+        //   that pose (modulo dynamic obstacles, caught by per-tick
+        //   footprint check). Translation only, no rotation.
+        // Tier 3 (UNREACH): blocked_reason_=pivot_unsafe → state=
+        //   "unreachable" → CFPA2 fast-blacklists this goal, reassigns.
+        declare_parameter("pivot_recovery_t1_brake_sec",       1.5);
+        declare_parameter("pivot_recovery_t1_max_attempts",    2);
+        declare_parameter("pivot_recovery_backtrack_dist_m",   0.40);
+        declare_parameter("pivot_recovery_backtrack_speed",    0.10);
+        declare_parameter("pivot_recovery_trail_cap_m",        2.0);
+        declare_parameter("pivot_recovery_trail_stride_m",     0.05);
+        declare_parameter("pivot_recovery_arrive_tol_m",       0.10);
 
         // ── curvature-based shaping (the core of "slow in turns") ────
         // κ (1/m) thresholds: below `curv_full_speed_below`, full v; above
@@ -704,6 +750,12 @@ public:
         declare_parameter("astar_clearance_target_cells", 4);
         declare_parameter("astar_clearance_weight",       0.5);
 
+        // Short-path guard threshold: don't pure-pursuit-track paths
+        // shorter than this (in metres). Avoids the instability of
+        // tracking a path whose goal is behind the robot's heading.
+        // Below the threshold, robot freezes and waits for next plan.
+        declare_parameter("min_path_length_to_track_m", 0.40);
+
         // ── Go2W hybrid-router hints (bias to desired mode) ──────────
         // These SHOULD match go2w_hybrid_motion.yaml on the same stack.
         declare_parameter("wheel_linear_threshold_for_bias",  0.18);
@@ -728,6 +780,19 @@ public:
         // Prevents "walk forward while doing a 180° turn" — used to
         // drive the robot straight into the wall opposite to goal.
         declare_parameter("legs_pivot_above_deg",       30.0);
+        // Hysteresis around legs_pivot_above_deg: enter pivot at the
+        // larger threshold, exit only when heading is well below.
+        // Without the dead band, |ψ_err| oscillating around the
+        // single threshold caused stutter-step motion (5-10 mode
+        // flips/sec), CHAMP gait residual carrying body into walls.
+        // Defaults: enter 35°, exit 15° → 20° dead band.
+        declare_parameter("legs_pivot_enter_deg",        35.0);
+        declare_parameter("legs_pivot_exit_deg",         15.0);
+        // Commit window: once entered pivot or walk, hold for at
+        // least this many seconds. CHAMP step cycle is 0.5 s; mid-
+        // step mode flips don't help anyway. Suppresses fast
+        // re-evaluation that hysteresis alone might miss.
+        declare_parameter("legs_mode_commit_sec",        0.5);
         // Minimum forward velocity (m/s) used during legged pivot.
         // CHAMP's gait library treats `cmd_vel = (0, 0, ω)` as a stand
         // request — Go2 (legged-only, mixed launch) sits there spinning
@@ -804,11 +869,61 @@ public:
             "/way_point", 10,
             [this](geometry_msgs::msg::PointStamped::SharedPtr msg) {
                 double ngx = msg->point.x, ngy = msg->point.y;
-                if (std::hypot(ngx - goal_x_, ngy - goal_y_) > 0.5) {
+                // Two clear-triggers (either fires → blow away cached path):
+                //   (a) goal moved >0.3 m from previous goal — was 0.5 m,
+                //       tightened so cluster centroids that wobble between
+                //       0.3-0.5 m apart still force replan.
+                //   (b) new goal direction crosses robot heading by >90°.
+                //       Without this, a goal flip from "ahead-left" to
+                //       "behind-right" (any reverse-direction reassignment)
+                //       could leave the OLD forward path in resampled_path_;
+                //       path-follower keeps tracking it for several seconds
+                //       while plan_astar fails for the new goal — robot
+                //       walks straight into the wall the old path led to.
+                //       2026-04-25 demo3_mixed: A pulled SW for 4 m by a
+                //       SW cluster, then goal flipped NE; old SW path
+                //       persisted, A walked into zigzag_3 north face.
+                double goal_jump = std::hypot(ngx - goal_x_, ngy - goal_y_);
+                double dx = ngx - robot_x_;
+                double dy = ngy - robot_y_;
+                double yaw_to_goal = std::atan2(dy, dx);
+                double dyaw = std::fabs(yaw_to_goal - robot_yaw_);
+                while (dyaw > M_PI) dyaw -= 2.0 * M_PI;
+                dyaw = std::fabs(dyaw);
+                bool heading_cross_90 = (dyaw > M_PI / 2.0)
+                                        && (std::hypot(dx, dy) > 0.3);
+                if (goal_jump > 0.3 || heading_cross_90) {
                     global_waypoints_.clear();
                     resampled_path_.clear();
                     last_pursuit_idx_ = 0;
                     last_global_plan_time_ = -1;
+                }
+                // Goal-flip brake: arm 1.0 s brake on a NEW goal whose
+                // direction differs >90° from current heading. Without
+                // this, A is in motion (v > 0.2 m/s) when CFPA2
+                // reassigns to a backward goal — robot continues
+                // coasting forward while pure-pursuit picks up a
+                // behind-the-robot waypoint and steers hard, walking
+                // sideways into the wall ahead.
+                //
+                // CRITICAL: gate on goal_jump > 0.3 too, so that CFPA2
+                // republishing the SAME goal at 2 Hz doesn't re-arm
+                // brake every callback (otherwise brake stays
+                // permanently armed → robot frozen against whatever
+                // wall it was wedged on, can't escape via replan).
+                // demo3_mixed 2026-04-26 first goal-flip-brake run:
+                // 208 brake re-arms on the same SE goal kept A frozen
+                // in NE corner @ (11.5, 7.82) with 360+ wall contacts.
+                if (heading_cross_90 && goal_jump > 0.3
+                        && std::abs(last_v_cmd_) > 0.05) {
+                    double now_s = this->now().seconds();
+                    double new_until = now_s + 1.0;
+                    if (new_until > brake_until_sec_) brake_until_sec_ = new_until;
+                    RCLCPP_WARN(get_logger(),
+                        "A*: goal-flip detected (Δheading > 90°, "
+                        "v=%.2f m/s); arming 1.0 s brake before tracking "
+                        "new goal (%.2f, %.2f).",
+                        last_v_cmd_, ngx, ngy);
                 }
                 goal_x_ = ngx; goal_y_ = ngy; has_goal_ = true;
             });
@@ -868,6 +983,14 @@ private:
         goal_slow_r_     = get_parameter("goal_slow_radius").as_double();
         goal_slow_floor_ = get_parameter("goal_slow_floor").as_double();
         goal_cooldown_   = get_parameter("goal_reached_replan_cooldown_sec").as_double();
+        goal_reached_brake_sec_ = get_parameter("goal_reached_brake_sec").as_double();
+        pivot_recovery_t1_brake_sec_     = get_parameter("pivot_recovery_t1_brake_sec").as_double();
+        pivot_recovery_t1_max_attempts_  = get_parameter("pivot_recovery_t1_max_attempts").as_int();
+        pivot_recovery_backtrack_dist_m_ = get_parameter("pivot_recovery_backtrack_dist_m").as_double();
+        pivot_recovery_backtrack_speed_  = get_parameter("pivot_recovery_backtrack_speed").as_double();
+        pivot_recovery_trail_cap_m_      = get_parameter("pivot_recovery_trail_cap_m").as_double();
+        pivot_recovery_trail_stride_m_   = get_parameter("pivot_recovery_trail_stride_m").as_double();
+        pivot_recovery_arrive_tol_m_     = get_parameter("pivot_recovery_arrive_tol_m").as_double();
 
         curv_window_     = get_parameter("curvature_lookahead_segments").as_int();
         curv_low_        = get_parameter("curv_full_speed_below").as_double();
@@ -894,6 +1017,7 @@ private:
         astar_clr_target_cells_ = get_parameter("astar_clearance_target_cells").as_int();
         astar_clr_weight_       = static_cast<float>(
             get_parameter("astar_clearance_weight").as_double());
+        min_path_len_to_track_  = get_parameter("min_path_length_to_track_m").as_double();
 
         wheel_lin_thresh_ = get_parameter("wheel_linear_threshold_for_bias").as_double();
         wheel_ang_thresh_ = get_parameter("wheel_angular_threshold_for_bias").as_double();
@@ -905,6 +1029,11 @@ private:
         legs_mode_w_cap_  = get_parameter("legs_mode_w_cap").as_double();
         legs_pivot_above_ =
             get_parameter("legs_pivot_above_deg").as_double() * M_PI / 180.0;
+        legs_pivot_enter_ =
+            get_parameter("legs_pivot_enter_deg").as_double() * M_PI / 180.0;
+        legs_pivot_exit_ =
+            get_parameter("legs_pivot_exit_deg").as_double() * M_PI / 180.0;
+        legs_mode_commit_sec_ = get_parameter("legs_mode_commit_sec").as_double();
         legs_pivot_v_floor_ = get_parameter("legs_pivot_v_floor").as_double();
         traj_min_step_    = get_parameter("trajectory_min_step_m").as_double();
         traj_max_points_  = get_parameter("trajectory_max_points").as_int();
@@ -970,17 +1099,62 @@ private:
             (void)ex;
         }
 
-        // ── brake-hold (post-unreachable inertia bleed) ──
+        // ── breadcrumb trail (pivot_recovery T2 backtrack) ──
+        // Push (rx,ry,ryaw) every trail_stride_m of motion. Cap by count
+        // (= cap_m / stride_m). Captures even during brake_hold (no-op
+        // because stride filter rejects same-pose pushes).
+        if (!trail_init_) {
+            trail_.push_back({rx, ry, ryaw});
+            trail_last_x_ = rx;
+            trail_last_y_ = ry;
+            trail_init_ = true;
+        } else {
+            double d = std::hypot(rx - trail_last_x_, ry - trail_last_y_);
+            if (d >= pivot_recovery_trail_stride_m_) {
+                trail_.push_back({rx, ry, ryaw});
+                trail_last_x_ = rx;
+                trail_last_y_ = ry;
+                size_t cap_n = static_cast<size_t>(
+                    std::max(2.0, pivot_recovery_trail_cap_m_ /
+                                   std::max(0.01, pivot_recovery_trail_stride_m_)));
+                while (trail_.size() > cap_n) trail_.pop_front();
+            }
+        }
+
+        // ── brake-hold (HIGHEST priority — outranks even body_clip) ──
         // After any goal-relative block fires, publish_cmd extends
         // brake_until_sec_ by 1.5 s. While the deadline is in the future,
-        // tick() refuses to act on any new path: zero cmd_vel until inertia
-        // settles and CFPA2 has had time to reassign deliberately rather
-        // than reflexively. nav_status emits state="brake_hold" — neutral
-        // (not "unreachable"), so CFPA2 won't fast-blacklist on it; the
-        // assigned goal stays put for the duration.
+        // tick() refuses to act on any new path AND refuses to fire
+        // escape primitives: zero cmd_vel period.
+        //
+        // Why brake outranks body_clip: escape primitives publish
+        // non-zero v / v_y to "slide out" of inflation halos. But each
+        // small escape command moves the body a few cm; over 10 s of
+        // failed plans the cumulative escape motion (0.05-0.10 m/tick)
+        // pushes the robot 0.5-1 m in arbitrary directions. demo3_mixed
+        // 2026-04-26: A walked SE→NE ~5 m through a corridor of escape
+        // commands while plan_astar reported no_plan_repeated; ended up
+        // wedged at NE corner against wall_north + wall_east. Brake
+        // priority means the robot truly STOPS during failure cascades;
+        // CFPA2 has 1.5 s to assign a different goal that lets us
+        // escape via planning rather than reflex.
         if (now_sec < brake_until_sec_) {
             publish_cmd(0.0, 0.0, "brake_hold");
             return;
+        }
+
+        // ── body_clip escape (only when not braking) ──
+        // If the body's rectangle overlaps an occupied cell right now,
+        // no path planning will help (every plan starts from a clipping
+        // pose). An immediate lateral escape (CHAMP omni gait) is the
+        // ONLY way out — but only when we're NOT in a brake window.
+        {
+            double esc_x = 0, esc_y = 0, esc_w = 0;
+            if (try_body_clip_escape(rx, ry, ryaw, t_since_start,
+                                     esc_x, esc_y, esc_w)) {
+                publish_cmd(esc_x, esc_w, "body_clip_escape", esc_y);
+                return;
+            }
         }
 
         double dist_to_goal = std::hypot(goal_x_ - rx, goal_y_ - ry);
@@ -988,6 +1162,20 @@ private:
         // ── goal reached ──
         if (dist_to_goal < goal_tol_) {
             publish_cmd(0.0, 0.0, "goal_reached");
+            // Arm a SHORT brake: hold zero for goal_reached_brake_sec
+            // so CHAMP gait residual + body inertia bleed off before
+            // the next assigned goal pulls the robot. demo3_mixed
+            // 2026-04-25: A racked up multiple short-distance goals
+            // back-to-back; goal_reached fired each time, but CHAMP
+            // step-cycle residual moved A 0.3 m per tick of
+            // walk-to-stand-to-walk transitions — net 1 m drift south
+            // into cross_h_e, where it climbed and tipped. Holding
+            // zero for ~1 s after goal_reached lets the gait fully
+            // settle. Doesn't affect normal exploration: brake clears
+            // at next tick if cmd is non-zero, so the next far goal
+            // resumes motion immediately when it arrives.
+            double new_brake = now_sec + goal_reached_brake_sec_;
+            if (new_brake > brake_until_sec_) brake_until_sec_ = new_brake;
             if (last_replan_time_ < 0 || (now_sec - last_replan_time_) >= goal_cooldown_) {
                 replan_pub_->publish(std_msgs::msg::Empty());
                 last_replan_time_ = now_sec;
@@ -1357,6 +1545,31 @@ private:
             return;
         }
 
+        // ── short-path guard ────────────────────────────────────────
+        // Pure-pursuit on a path shorter than ~Ld (typically 0.4 m) is
+        // unstable — when the goal is just behind the robot's current
+        // heading, lookahead clamps to the path end (= goal in body
+        // frame), steering computes a 180° turn at high gain, body
+        // sweeps wide while CHAMP gait residual continues forward.
+        // Net effect: 1 m of overshoot in the WRONG direction even
+        // though the path itself was geometrically safe.
+        // 2026-04-25 demo3_mixed t=210s: A had a 0.26 m WEST path,
+        // pure-pursuit commanded 180° turn, A's east residual carried
+        // it 1 m SE, FL_wheel hit cross_h_e north face.
+        // Below the threshold, freeze and let next tick's plan or
+        // CFPA2's reassignment provide a longer / opposite-direction
+        // path that pure-pursuit can track stably.
+        double path_arc_len = 0.0;
+        for (size_t i = 1; i < resampled_path_.size(); i++) {
+            path_arc_len += std::hypot(
+                resampled_path_[i].first  - resampled_path_[i-1].first,
+                resampled_path_[i].second - resampled_path_[i-1].second);
+        }
+        if (path_arc_len < min_path_len_to_track_) {
+            publish_cmd(0.0, 0.0, "navigating:path_too_short");
+            return;
+        }
+
         // ── scan safety ──
         ScanMetrics sm;
         bool have_scan = static_cast<bool>(last_scan_);
@@ -1479,6 +1692,12 @@ private:
             relief_active_ = false;
             relief_distance_m_ = 0.0;
         }
+        if (!want_legs && pivot_recovery_tier_ != PivotRecoveryTier::NONE) {
+            // Left legged mode entirely — pivot guard no longer relevant.
+            pivot_recovery_tier_ = PivotRecoveryTier::NONE;
+            pivot_recovery_t1_attempts_ = 0;
+            backtrack_active_ = false;
+        }
         if (want_legs) {
             // LEGGED-turn speed policy (hard-gated):
             //   |ψ_err| ≤ legs_pivot_above  → walk @ legs_mode_v_cap
@@ -1491,8 +1710,52 @@ private:
             // into wall" failure mode. Above the threshold we pivot
             // in place first, then resume walking once heading is close
             // enough to the path tangent.
+            // Pivot vs walk decision with HYSTERESIS + COMMIT WINDOW.
+            // Without these, |ψ_err| oscillating around the single
+            // legs_pivot_above_ threshold caused stutter-step motion
+            // near walls: 31° → pivot (v=0, ω=0.35) one tick → ψ_err
+            // drops to 28° → walk (v=0.25) → path tangent rotates →
+            // ψ_err back to 32° → pivot. 5-10 mode flips per second,
+            // body inches forward each walk burst, gait residual carries
+            // body into wall. demo3_mixed 2026-04-26: A wedged at
+            // wall_north this way.
+            //
+            //   HYSTERESIS: enter pivot when |ψ_err| > pivot_enter (35°),
+            //               exit pivot only when |ψ_err| < pivot_exit (15°).
+            //               20° dead band kills threshold-grazing flap.
+            //
+            //   COMMIT WINDOW: once entered a mode, hold for at least
+            //               legs_mode_commit_sec_ (0.5 s) before
+            //               re-evaluating. CHAMP step cycle is 0.5 s;
+            //               a mode flip mid-step doesn't help anyway.
             double abs_he = std::abs(heading_err);
-            if (abs_he > legs_pivot_above_) {
+            double now_s = this->now().seconds();
+            bool in_pivot;
+            if (legs_mode_pivot_until_sec_ > now_s
+                || legs_mode_walk_until_sec_  > now_s) {
+                // Within commit window — keep current mode regardless.
+                in_pivot = legs_mode_in_pivot_;
+            } else {
+                // Eligible to switch — apply hysteresis.
+                if (legs_mode_in_pivot_) {
+                    in_pivot = (abs_he >= legs_pivot_exit_);
+                } else {
+                    in_pivot = (abs_he >= legs_pivot_enter_);
+                }
+                // If mode just flipped, start commit window.
+                if (in_pivot != legs_mode_in_pivot_) {
+                    if (in_pivot) {
+                        legs_mode_pivot_until_sec_ = now_s + legs_mode_commit_sec_;
+                        legs_mode_walk_until_sec_  = -1.0;
+                    } else {
+                        legs_mode_walk_until_sec_  = now_s + legs_mode_commit_sec_;
+                        legs_mode_pivot_until_sec_ = -1.0;
+                    }
+                }
+            }
+            legs_mode_in_pivot_ = in_pivot;
+
+            if (in_pivot) {
                 // Pure-pivot mode. CHAMP's gait library treats
                 // (lin.x = 0, ω ≠ 0) as a stand command and never engages
                 // the leg trot — so the angular setpoint is silently
@@ -1515,7 +1778,7 @@ private:
             else sign_w = (w_target >= 0) ? 1.0 : -1.0;
             double min_mag = wheel_ang_thresh_ + 0.05;  // just above threshold
             if (std::abs(w_target) < min_mag) w_target = sign_w * min_mag;
-            if (abs_he > legs_pivot_above_) {
+            if (in_pivot) {
                 w_target = sign_w * std::min(std::abs(w_target), legs_mode_w_cap_);
             }
             // Cap |ω| to avoid tip risk (earlier flips came from high ω).
@@ -1534,7 +1797,7 @@ private:
             // and run the same footprint_clips() against the raw map.
             // If any clip → kill the pivot (v=ω=0) and request a fresh
             // goal that doesn't demand this rotation.
-            if (abs_he > legs_pivot_above_ && last_map_) {
+            if (in_pivot && last_map_) {
                 // Sweep [ryaw, ryaw + heading_err] in N+1 samples.
                 constexpr int kPivotSweepN = 5;      // 5 samples ≈ 6° resolution at 30°
                 bool pivot_clips = false;
@@ -1553,156 +1816,162 @@ private:
                     }
                 }
                 if (pivot_clips) {
-                    // ── PIVOT-RELIEF primitive ────────────────────────
-                    // Old behavior: refuse pivot (v=ω=0), let CFPA2
-                    // reassign. But the underlying geometry doesn't
-                    // change — same robot, same nearby walls. CFPA2
-                    // keeps trying angles, none are pivot-safe at
-                    // the current pose, so the robot is stuck OR (if
-                    // the corridor was barely passable) drifts and
-                    // ends up CLIMBING something while waiting → tip.
+                    // ── PIVOT-UNSAFE 3-TIER RECOVERY ──────────────────
+                    // Replaces the open-loop lateral-strafe relief which
+                    // accumulated 0.5 m of motion in clutter and walked
+                    // A into cross_h_w/zigzag_1 → tip-over.
                     //
-                    // New behavior: the geometry is wrong only at
-                    // CURRENT pose. Search for a nearby pose where
-                    // the SAME pivot through the SAME yaw range IS
-                    // safe. If found: command translation toward it
-                    // (no rotation, hold heading), reach the
-                    // pivot-safe pose, then resume normal pivot —
-                    // sweep will pass at that pose.
+                    //   T1 BRAKE     : publish 0 + arm 1.5 s brake; retry
+                    //                  up to N times. Catches transient
+                    //                  pivot_clips (peer crossing halo,
+                    //                  scan jitter).
+                    //   T2 BACKTRACK : drive low-speed toward a recent
+                    //                  trajectory crumb (~0.4 m back).
+                    //                  Crumb is geometrically guaranteed
+                    //                  clear (we just walked there).
+                    //                  Translation only, footprint check
+                    //                  per tick — escalates to T3 if
+                    //                  next step would clip (dynamic
+                    //                  obstacle moved in).
+                    //   T3 UNREACH   : nav_status=unreachable → CFPA2
+                    //                  fast-blacklists this goal and
+                    //                  reassigns. brake auto-arms.
                     //
-                    // 8 body-frame directions at kReliefDist, in
-                    // priority order (forward = continue along the
-                    // path; lateral = sidestep into open space;
-                    // backward = retreat). Each candidate must pass
-                    // BOTH (a) translation footprint clear along the
-                    // line, AND (b) full pivot-sweep clear at the
-                    // candidate pose.
-                    constexpr double kReliefDist     = 0.30;
-                    constexpr double kReliefSpeed    = 0.10;
-                    constexpr int    kReliefNTrans   = 4;
-                    constexpr int    kReliefNPivot   = 5;
-                    struct ReliefDir { double bx, by; const char *name; };
-                    static const ReliefDir kReliefDirs[] = {
-                        { 1.0,    0.0,    "forward"},
-                        { 0.707, -0.707,  "front-right"},
-                        { 0.707,  0.707,  "front-left"},
-                        { 0.0,   -1.0,    "right"},
-                        { 0.0,    1.0,    "left"},
-                        {-0.707, -0.707,  "back-right"},
-                        {-0.707,  0.707,  "back-left"},
-                        {-1.0,    0.0,    "backward"},
-                    };
-                    const double cos_y = std::cos(ryaw);
-                    const double sin_y = std::sin(ryaw);
-                    const char  *relief_name = nullptr;
-                    double relief_bx = 0.0, relief_by = 0.0;
-                    for (const auto &dir : kReliefDirs) {
-                        // (a) translation footprint clear along the line
-                        bool t_clear = true;
-                        for (int k = 1; k <= kReliefNTrans && t_clear; ++k) {
-                            const double t = static_cast<double>(k) / kReliefNTrans;
-                            const double dx_b = dir.bx * kReliefDist * t;
-                            const double dy_b = dir.by * kReliefDist * t;
-                            const double sx = rx + cos_y * dx_b - sin_y * dy_b;
-                            const double sy = ry + sin_y * dx_b + cos_y * dy_b;
-                            if (footprint_clips(*last_map_, sx, sy, ryaw,
-                                                fp_length_, fp_width_,
-                                                map_occupied_thresh_,
-                                                false, fp_stride_m_,
-                                                fp_buffer_m_)) {
-                                t_clear = false;
-                            }
+                    // Tier escalation is monotonic within a continuous
+                    // pivot_clips streak. Resetting requires pivot_clips
+                    // to become false (handled in the else branch).
+                    double now_sec = this->now().seconds();
+                    auto run_t2_motion = [&]() {
+                        // Drive in body frame toward (backtrack_target_x_, backtrack_target_y_).
+                        // Translation-only: heading held. Footprint-check the
+                        // next 0.10 m step; clip → escalate to T3.
+                        double dwx = backtrack_target_x_ - rx;
+                        double dwy = backtrack_target_y_ - ry;
+                        double dtc = std::hypot(dwx, dwy);
+                        if (dtc < pivot_recovery_arrive_tol_m_) {
+                            // Reached crumb — reset state, let next tick
+                            // re-run pivot_safe (likely safe now).
+                            pivot_recovery_tier_ = PivotRecoveryTier::NONE;
+                            backtrack_active_ = false;
+                            pivot_recovery_t1_attempts_ = 0;
+                            v_target = v_y_target = w_target = 0.0;
+                            blocked_reason_ = "blocked:pivot_recovery_t2_arrived";
+                            RCLCPP_INFO(get_logger(),
+                                "A*: T2 arrived at crumb (%.2f, %.2f); "
+                                "retrying pivot next tick.",
+                                backtrack_target_x_, backtrack_target_y_);
+                            return;
                         }
-                        if (!t_clear) continue;
-
-                        // (b) full pivot through heading_err clear at candidate
-                        const double cand_x = rx + cos_y * dir.bx * kReliefDist
-                                                  - sin_y * dir.by * kReliefDist;
-                        const double cand_y = ry + sin_y * dir.bx * kReliefDist
-                                                  + cos_y * dir.by * kReliefDist;
-                        bool p_clear = true;
-                        for (int k = 0; k <= kReliefNPivot && p_clear; ++k) {
-                            const double t = static_cast<double>(k) / kReliefNPivot;
-                            const double th = ryaw + t * heading_err;
-                            if (footprint_clips(*last_map_, cand_x, cand_y, th,
-                                                fp_length_, fp_width_,
-                                                map_occupied_thresh_,
-                                                false, fp_stride_m_,
-                                                fp_buffer_m_)) {
-                                p_clear = false;
-                            }
-                        }
-                        if (!p_clear) continue;
-
-                        relief_bx = dir.bx;
-                        relief_by = dir.by;
-                        relief_name = dir.name;
-                        break;
-                    }
-
-                    if (relief_name) {
-                        // Cumulative-distance budget: track how far we've
-                        // moved while in relief mode. Without a cap,
-                        // 38+ consecutive 0.3 m commands wandered A
-                        // 1.3 m straight into zigzag_1 — each individual
-                        // step footprint-clear, cumulative path crossed
-                        // the wall's inflation halo. After
-                        // kReliefMaxCumulM the search is clearly leading
-                        // the robot deeper into clutter, not out of it.
-                        constexpr double kReliefMaxCumulM = 0.50;
-                        if (relief_active_) {
-                            relief_distance_m_ +=
-                                std::hypot(rx - relief_last_x_,
-                                           ry - relief_last_y_);
-                        } else {
-                            relief_distance_m_ = 0.0;
-                            relief_active_ = true;
-                        }
-                        relief_last_x_ = rx;
-                        relief_last_y_ = ry;
-
-                        if (relief_distance_m_ > kReliefMaxCumulM) {
-                            // Budget exhausted — abort relief, freeze.
-                            v_target   = 0.0;
-                            v_y_target = 0.0;
-                            w_target   = 0.0;
-                            relief_active_ = false;
-                            relief_distance_m_ = 0.0;
+                        const double cos_y = std::cos(ryaw);
+                        const double sin_y = std::sin(ryaw);
+                        double bx = ( cos_y * dwx + sin_y * dwy) / dtc;
+                        double by = (-sin_y * dwx + cos_y * dwy) / dtc;
+                        // Footprint-validate the next 0.10 m step.
+                        const double step_m = 0.10;
+                        const double sx = rx + cos_y * (bx * step_m) - sin_y * (by * step_m);
+                        const double sy = ry + sin_y * (bx * step_m) + cos_y * (by * step_m);
+                        if (footprint_clips(*last_map_, sx, sy, ryaw,
+                                            fp_length_, fp_width_,
+                                            map_occupied_thresh_,
+                                            false, fp_stride_m_,
+                                            fp_buffer_m_)) {
+                            // Backtrack path now clips (dynamic obstacle?) → T3.
+                            pivot_recovery_tier_ = PivotRecoveryTier::T3_UNREACH;
+                            backtrack_active_ = false;
+                            v_target = v_y_target = w_target = 0.0;
                             blocked_reason_ = "blocked:pivot_unsafe";
-                            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
-                                "A*: pivot relief abandoned after %.2f m of "
-                                "cumulative motion without finding a pivot-"
-                                "safe pose. Wedged in clutter; holding still.",
-                                kReliefMaxCumulM);
-                        } else {
-                            // Translate toward pivot-safe pose at low speed,
-                            // hold heading. Once we arrive, next tick's
-                            // pivot_sweep will pass and normal pivot resumes.
-                            v_target   = relief_bx * kReliefSpeed;
-                            v_y_target = relief_by * kReliefSpeed;
-                            w_target   = 0.0;
-                            blocked_reason_ = std::string("blocked:pivot_relief:") +
-                                              relief_name;
-                            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
-                                "A*: pivot would clip at Δyaw=%.1f° "
-                                "(heading_err=%.1f°) — relief: translating %s "
-                                "(v=%.2f,%.2f), cumul=%.2f m / %.2f m budget.",
-                                clip_at_deg, heading_err * 180.0 / M_PI,
-                                relief_name, v_target, v_y_target,
-                                relief_distance_m_, kReliefMaxCumulM);
+                            RCLCPP_WARN(get_logger(),
+                                "A*: T2 backtrack step clips footprint at "
+                                "(%.2f, %.2f) — escalating to T3 (unreachable).",
+                                sx, sy);
+                            return;
                         }
-                    } else {
-                        // No relief direction works — really stuck.
-                        v_target   = 0.0;
-                        v_y_target = 0.0;
+                        v_target   = bx * pivot_recovery_backtrack_speed_;
+                        v_y_target = by * pivot_recovery_backtrack_speed_;
                         w_target   = 0.0;
-                        blocked_reason_ = "blocked:pivot_unsafe";
+                        blocked_reason_ = "blocked:pivot_recovery_t2";
                         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
-                            "A*: pivot blocked at Δyaw=%.1f° AND no relief "
-                            "direction within %.2f m — robot wedged. "
-                            "Holding still.",
-                            clip_at_deg, kReliefDist);
+                            "A*: T2 BACKTRACK toward crumb (%.2f,%.2f), "
+                            "%.2f m to go (v=%.2f, vy=%.2f).",
+                            backtrack_target_x_, backtrack_target_y_,
+                            dtc, v_target, v_y_target);
+                    };
+
+                    if (pivot_recovery_tier_ == PivotRecoveryTier::T2_BACKTRACK
+                        && backtrack_active_) {
+                        // Continue T2.
+                        run_t2_motion();
+                    } else if (pivot_recovery_tier_ == PivotRecoveryTier::T3_UNREACH) {
+                        // Latched: hold zero; CFPA2 reassigns.
+                        v_target = v_y_target = w_target = 0.0;
+                        blocked_reason_ = "blocked:pivot_unsafe";
+                    } else {
+                        // T1 cycle: NONE → first attempt; T1_BRAKE → next attempt
+                        // (we got here because brake just expired and clip persists).
+                        if (pivot_recovery_tier_ == PivotRecoveryTier::NONE) {
+                            pivot_recovery_tier_ = PivotRecoveryTier::T1_BRAKE;
+                            pivot_recovery_t1_attempts_ = 1;
+                        } else {
+                            pivot_recovery_t1_attempts_++;
+                        }
+
+                        if (pivot_recovery_t1_attempts_ > pivot_recovery_t1_max_attempts_) {
+                            // Escalate to T2: find a backtrack crumb.
+                            TrailCrumb tgt{};
+                            bool found = false;
+                            for (auto it = trail_.rbegin(); it != trail_.rend(); ++it) {
+                                if (std::hypot(rx - it->x, ry - it->y)
+                                    >= pivot_recovery_backtrack_dist_m_) {
+                                    tgt = *it;
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            if (found) {
+                                pivot_recovery_tier_ = PivotRecoveryTier::T2_BACKTRACK;
+                                backtrack_active_ = true;
+                                backtrack_target_x_ = tgt.x;
+                                backtrack_target_y_ = tgt.y;
+                                RCLCPP_WARN(get_logger(),
+                                    "A*: T1 exhausted (%d attempts); escalating "
+                                    "to T2 BACKTRACK toward crumb (%.2f, %.2f).",
+                                    pivot_recovery_t1_max_attempts_,
+                                    tgt.x, tgt.y);
+                                run_t2_motion();
+                            } else {
+                                // No crumb available (just spawned, or trail wiped) → T3.
+                                pivot_recovery_tier_ = PivotRecoveryTier::T3_UNREACH;
+                                v_target = v_y_target = w_target = 0.0;
+                                blocked_reason_ = "blocked:pivot_unsafe";
+                                RCLCPP_WARN(get_logger(),
+                                    "A*: T1 exhausted and no backtrack crumb "
+                                    "≥ %.2f m available — escalating to T3 "
+                                    "(unreachable).",
+                                    pivot_recovery_backtrack_dist_m_);
+                            }
+                        } else {
+                            // Arm brake (T1).
+                            double until = now_sec + pivot_recovery_t1_brake_sec_;
+                            if (until > brake_until_sec_) brake_until_sec_ = until;
+                            v_target = v_y_target = w_target = 0.0;
+                            blocked_reason_ = "blocked:pivot_recovery_t1";
+                            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+                                "A*: pivot_unsafe @ Δyaw=%.1f° → T1 BRAKE "
+                                "(attempt %d/%d, %.1f s).",
+                                clip_at_deg, pivot_recovery_t1_attempts_,
+                                pivot_recovery_t1_max_attempts_,
+                                pivot_recovery_t1_brake_sec_);
+                        }
                     }
+                } else if (pivot_recovery_tier_ != PivotRecoveryTier::NONE) {
+                    // Pivot is safe again — recovery succeeded. Reset.
+                    RCLCPP_INFO(get_logger(),
+                        "A*: pivot now safe; resetting recovery state "
+                        "(was tier=%d).",
+                        static_cast<int>(pivot_recovery_tier_));
+                    pivot_recovery_tier_ = PivotRecoveryTier::NONE;
+                    pivot_recovery_t1_attempts_ = 0;
+                    backtrack_active_ = false;
                 }
             }
         } else if (dist_to_goal > goal_slow_r_ * 0.5) {
@@ -1981,6 +2250,135 @@ private:
         publish_pose_marker(rx, ry, ryaw);
     }
 
+    // ── body_clip escape (independent of plan_astar) ─────────────────
+    // Tests whether the robot's RECTANGLE at its current pose overlaps
+    // any occupied cell. If so, finds a body-frame direction to slide
+    // out (CHAMP omnidirectional gait) and writes the escape command.
+    // Returns true if body_clip was detected; caller should return
+    // after publishing.
+    //
+    // CRITICAL: this runs as the FIRST thing every tick, BEFORE
+    // plan_astar / brake_hold / no_plan. The reason: when a robot
+    // is wedged in inflation halo, plan_astar always fails (no path
+    // through inflation), tick early-returns at no_plan, body_clip
+    // detection in the path-tracker section never runs. Robot stays
+    // wedged forever. Hoisting body_clip to the top guarantees the
+    // escape primitive fires whenever the body is geometrically in
+    // a clip pose, regardless of whether A* could plan.
+    //
+    // demo3_mixed 2026-04-25: B drifted into the sw_v_1 east-face
+    // inflation halo at (5.36,-5.55). Spawn-disk freed the immediate
+    // cell but A* couldn't expand past the halo, so every plan
+    // returned valid=0. Tick hit no_plan branch, returned. body_clip
+    // (line 1856 below) NEVER ran. B sat for 300+ s, CFPA2 cycled
+    // through frontiers and ended in blacklisted_stop.
+    //
+    // Output is written to v_x_out, v_y_out, w_out. Caller passes
+    // these to publish_cmd. blocked_reason_ is set as a side effect.
+    bool try_body_clip_escape(double rx, double ry, double ryaw,
+                              double t_since_start,
+                              double &v_x_out, double &v_y_out,
+                              double &w_out) {
+        // Skip during the first startup_ramp_sec so an octomap not-yet-
+        // settled-around-spawn doesn't false-fire.
+        if (!last_map_ || t_since_start <= (startup_delay_ + startup_ramp_)) {
+            return false;
+        }
+        const bool clipped = footprint_clips(*last_map_, rx, ry, ryaw,
+                                             fp_length_, fp_width_,
+                                             map_occupied_thresh_,
+                                             false /*don't block on unknown*/,
+                                             fp_stride_m_, fp_buffer_m_);
+        if (!clipped) return false;
+
+        // Try 8 body-frame directions in priority order. Backward first
+        // (safest for forward-facing collision), then sideways, finally
+        // forward (likely the cause of the clip).
+        //
+        // Multi-radius search: when 0.30 m fails (corner wedge with all
+        // 8 directions clipping at short range), try 0.50 m and 0.70 m.
+        // The longer search lets us find escape directions that need to
+        // pass THROUGH a tight zone before reaching free space — e.g. A
+        // wedged at cross_h_e north face, body half-extending into the
+        // wall's inflation halo: 0.30 m sees the halo on every side, but
+        // 0.60 m back lands the body clear north of the halo.
+        constexpr double kEscDistTries[] = {0.30, 0.50, 0.70};
+        constexpr double kEscSpeed    = 0.10;
+        constexpr int    kEscNSamples = 4;
+        struct EscapeDir { double bx, by; const char *name; };
+        static const EscapeDir kEscapeDirs[] = {
+            {-1.0,    0.0,    "backward"},
+            {-0.707,  0.707,  "back-left"},
+            {-0.707, -0.707,  "back-right"},
+            { 0.0,    1.0,    "left"},
+            { 0.0,   -1.0,    "right"},
+            { 0.707,  0.707,  "front-left"},
+            { 0.707, -0.707,  "front-right"},
+            { 1.0,    0.0,    "forward"},
+        };
+        const double cy_w = std::cos(ryaw), sy_w = std::sin(ryaw);
+        const char *escape_name = nullptr;
+        double esc_bx = 0.0, esc_by = 0.0;
+        double esc_dist_used = kEscDistTries[0];
+        for (double try_dist : kEscDistTries) {
+            for (const auto &dir : kEscapeDirs) {
+                bool clear = true;
+                for (int k = 1; k <= kEscNSamples && clear; ++k) {
+                    const double t = static_cast<double>(k) / kEscNSamples;
+                    const double dx_b = dir.bx * try_dist * t;
+                    const double dy_b = dir.by * try_dist * t;
+                    const double sx = rx + cy_w * dx_b - sy_w * dy_b;
+                    const double sy = ry + sy_w * dx_b + cy_w * dy_b;
+                    if (footprint_clips(*last_map_, sx, sy, ryaw,
+                                        fp_length_, fp_width_,
+                                        map_occupied_thresh_,
+                                        false /*don't block on unknown*/,
+                                        fp_stride_m_, fp_buffer_m_)) {
+                        clear = false;
+                    }
+                }
+                if (clear) {
+                    esc_bx = dir.bx;
+                    esc_by = dir.by;
+                    escape_name = dir.name;
+                    esc_dist_used = try_dist;
+                    break;
+                }
+            }
+            if (escape_name) break;  // found at this radius, stop searching
+        }
+
+        if (escape_name) {
+            v_x_out = esc_bx * kEscSpeed;        // body-frame x → linear.x
+            v_y_out = esc_by * kEscSpeed;        // body-frame y → linear.y
+            w_out   = 0.0;                       // hold heading
+            blocked_reason_ = std::string("blocked:body_clip_escape:") +
+                              escape_name;
+            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+                "A*: body_clip at (%.2f,%.2f yaw=%.2f) — escaping %s "
+                "(r=%.2f m, v=%.2f,%.2f). CHAMP strafe sliding body out; "
+                "replan resumes when clear.",
+                rx, ry, ryaw, escape_name, esc_dist_used,
+                v_x_out, v_y_out);
+        } else {
+            v_x_out = 0.0;
+            v_y_out = 0.0;
+            w_out   = 0.0;
+            blocked_reason_ = "blocked:body_clip";
+            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+                "A*: body_clip at (%.2f,%.2f yaw=%.2f) AND no escape "
+                "direction within %.2f m (largest radius) — robot fully "
+                "wedged. Manual intervention required.",
+                rx, ry, ryaw, kEscDistTries[2]);
+        }
+        // last_v_cmd_ etc. updated by publish_cmd path; we set them
+        // here too for consistency with the rate-limit chain.
+        last_v_cmd_   = v_x_out;
+        last_w_cmd_   = w_out;
+        last_v_y_cmd_ = v_y_out;
+        return true;
+    }
+
     // ── publishers ────────────────────────────────────────────────────
 
     void publish_cmd(double lin, double ang, const std::string &state,
@@ -2055,7 +2453,9 @@ private:
             const bool is_pose_relative =
                 (tag == "body_clip") ||
                 (tag.rfind("body_clip_escape", 0) == 0) ||
-                (tag.rfind("pivot_relief", 0) == 0);
+                (tag.rfind("pivot_relief", 0) == 0) ||
+                (tag.rfind("pivot_recovery_t1", 0) == 0) ||
+                (tag.rfind("pivot_recovery_t2", 0) == 0);
             out_state = is_pose_relative ? "stuck" : "unreachable";
 
             // Goal-relative block → arm 1.5 s brake. Next tick(s) will
@@ -2220,12 +2620,19 @@ private:
     double global_inflation_m_, global_wp_spacing_, global_replan_sec_, resample_step_;
     int   astar_clr_target_cells_ = 0;
     float astar_clr_weight_       = 0.0f;
+    double min_path_len_to_track_ = 0.40;
     double wheel_lin_thresh_, wheel_ang_thresh_, prefer_legs_curv_;
     double legs_bias_lin_max_, legs_bias_ang_min_;
     double leg_heading_thresh_;      // rad (loaded as deg → rad)
     double legs_mode_v_cap_;         // m/s
     double legs_mode_w_cap_;         // rad/s
     double legs_pivot_above_;        // rad — pivot-in-place above this
+    double legs_pivot_enter_ = 0.61; // rad — enter pivot when |ψ_err| > this (35°)
+    double legs_pivot_exit_  = 0.26; // rad — exit pivot when |ψ_err| < this (15°)
+    double legs_mode_commit_sec_ = 0.5;
+    bool   legs_mode_in_pivot_ = false;
+    double legs_mode_pivot_until_sec_ = -1.0;
+    double legs_mode_walk_until_sec_  = -1.0;
     double legs_pivot_v_floor_;      // m/s — creep during pivot (CHAMP gait engagement)
     double traj_min_step_;           // m — trajectory downsample step
     int    traj_max_points_;
@@ -2284,6 +2691,36 @@ private:
     // old direction. Demo3_mixed 2026-04-25: 13 s window with 12 goal
     // switches across NE/S/SW/W; A coasted 5 m southward into zigzag_3.
     double brake_until_sec_ = -1.0;
+    double goal_reached_brake_sec_ = 1.0;
+
+    // ── pivot-unsafe recovery state machine ───────────────────────────
+    enum class PivotRecoveryTier {
+        NONE,           // pivot is safe (or check not yet run this tick)
+        T1_BRAKE,       // brake-and-retry; transient pivot_clips heal here
+        T2_BACKTRACK,   // driving toward a recent trajectory crumb
+        T3_UNREACH      // give up; CFPA2 fast-blacklists goal
+    };
+    PivotRecoveryTier pivot_recovery_tier_ = PivotRecoveryTier::NONE;
+    int    pivot_recovery_t1_attempts_ = 0;
+    double pivot_recovery_t1_brake_sec_ = 1.5;
+    int    pivot_recovery_t1_max_attempts_ = 2;
+    double pivot_recovery_backtrack_dist_m_ = 0.40;
+    double pivot_recovery_backtrack_speed_  = 0.10;
+    double pivot_recovery_trail_cap_m_      = 2.0;
+    double pivot_recovery_trail_stride_m_   = 0.05;
+    double pivot_recovery_arrive_tol_m_     = 0.10;
+    bool   backtrack_active_ = false;
+    double backtrack_target_x_ = 0.0;
+    double backtrack_target_y_ = 0.0;
+
+    // Breadcrumb trail: pose snapshots every trail_stride_m of motion.
+    // Used by T2 backtrack to find a recently-occupied (and therefore
+    // footprint-clear) pose to retreat to. Capped at trail_cap_m total.
+    struct TrailCrumb { double x, y, yaw; };
+    std::deque<TrailCrumb> trail_;
+    double trail_last_x_ = 0.0;
+    double trail_last_y_ = 0.0;
+    bool   trail_init_ = false;
 
     // When the planner refuses to issue motion because a geometric guard
     // tripped (imminent footprint clip ahead, pure-pivot would clip,

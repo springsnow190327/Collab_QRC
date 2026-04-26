@@ -12,12 +12,20 @@ Architecture (matches what real-robot multi-agent deployment looks like):
                                                 ↓
                                   astar_nav, safety monitor, rviz, …
 
-Cell-merge rule: local cell wins when KNOWN; the merged map only fills
-positions where local is unknown. Local sensor values are always trusted
-over swarm contributions; swarm contributions only ever populate the
-gaps. Output preserves the local map's geometry exactly (same origin,
-resolution, width, height) so downstream planners see a drop-in
-replacement for the raw octomap topic.
+Cell-merge rule: local cell wins when KNOWN; merged map fills every
+other cell. Local sensor values are always trusted over swarm
+contributions; swarm contributions populate the gaps AND the area
+beyond what the robot has personally explored.
+
+Output geometry: MERGED map's geometry (origin/extent/resolution).
+Earlier we kept local geometry, which made the swarm contribution
+cosmetic — a robot that hadn't physically driven east couldn't see
+A's east discoveries even though /merged_map had them. The planner
+then refused to plan to any frontier outside the local extent (goal
+clamped to map edge → unknown → no path → robot frozen forever even
+though merged knew the way). With merged geometry, the planner sees
+the full swarm-discovered map; local readings override merged
+wherever they exist (most-recent / on-robot data still wins).
 
 Why this rather than astar_nav subscribing to /merged_map directly:
 
@@ -67,6 +75,12 @@ class MapAugmenter(Node):
         # keeps flowing (so the planner still gets the latest swarm
         # view through us).
         self.declare_parameter("heartbeat_rate_hz", 1.0)
+        # Hard cap on output extent (each axis, m). Caps the union
+        # bbox so a feedback loop with multirobot_map_merge can't
+        # grow geometry unboundedly. demo3_mixed world ≈ 24 × 16 m,
+        # 50 m is safe headroom.
+        self.declare_parameter("max_extent_m", 50.0)
+        self._max_extent_m = max(1.0, float(self.get_parameter("max_extent_m").value))
 
         local_topic = self.get_parameter("local_map_topic").value
         merged_topic = self.get_parameter("merged_map_topic").value
@@ -129,11 +143,16 @@ class MapAugmenter(Node):
             self._republish_count += 1
             return
 
-        # Cell-by-cell merge. Output keeps local's geometry. For each
-        # local cell index i with world coords (wx, wy), we compute the
-        # corresponding merged cell index. Where local is unknown AND
-        # merged is in-bounds AND merged is known, the merged value
-        # populates the output.
+        # Output geometry = UNION of local and merged extents. Earlier
+        # we used merged.info directly, but multirobot_map_merge can
+        # lag behind / clip the bounding box, so cells in the local
+        # octomap that fell outside merged's extent disappeared from
+        # the output. demo3_mixed 2026-04-25: A explored east to
+        # x=11.9 m, merged was capped at x=10.35 m, A's planner had
+        # NO data on cross_v_n (the wall A then drove into). The
+        # union geometry guarantees neither map contributes "blind"
+        # cells — wherever EITHER has data, output has data, with
+        # local taking priority on overlap.
         lw = int(local.info.width)
         lh = int(local.info.height)
         lres = float(local.info.resolution)
@@ -160,50 +179,105 @@ class MapAugmenter(Node):
             self._pub.publish(local)
             return
 
-        # Vectorised world-coord → merged-cell-index mapping.
-        gy_arr, gx_arr = np.divmod(np.arange(lw * lh, dtype=np.int64), lw)
-        wx = lox + (gx_arr.astype(np.float64) + 0.5) * lres
-        wy = loy + (gy_arr.astype(np.float64) + 0.5) * lres
+        # Compute union bounding box. Output resolution = local's
+        # (so existing safety params calibrated for octomap res still
+        # apply); merged is resampled into this grid at the same res.
+        # Both maps in MuJoCo sim use 0.05 m so this is a no-op
+        # except for the geometric extent.
+        #
+        # HARD CAP on output extent to break a positive feedback loop
+        # with multirobot_map_merge:
+        #   1. augmenter outputs /{ns}/map at union(local, merged)
+        #      extent
+        #   2. map_merge subscribes to /{ns}/map (per its config), bbox
+        #      = max of inputs
+        #   3. /merged_map = bbox of (already-augmented) inputs, slightly
+        #      larger due to cumulative warpAffine drift in
+        #      multirobot_map_merge
+        #   4. augmenter sees larger merged → output extent grows
+        #   5. loop — observed 807×325 → 814×325 in 4 s (2026-04-25)
+        # The cap stops step 4: even if merged grows past the world
+        # bounds, augmenter output stays bounded. map_merge's bbox is
+        # then dictated by the smallest input extent (capped) instead
+        # of growing unbounded.
+        # World size for demo3_mixed = 24 × 16 m centred near origin.
+        # 50 × 50 m gives huge headroom for any reasonable scene.
+        out_res = lres
+        ux_min = min(lox, mox)
+        uy_min = min(loy, moy)
+        ux_max = max(lox + lw * lres, mox + mw * mres)
+        uy_max = max(loy + lh * lres, moy + mh * mres)
+        # Cap to world bounds
+        max_extent_m = self._max_extent_m
+        if (ux_max - ux_min) > max_extent_m:
+            cx = 0.5 * (ux_min + ux_max)
+            ux_min = cx - 0.5 * max_extent_m
+            ux_max = cx + 0.5 * max_extent_m
+        if (uy_max - uy_min) > max_extent_m:
+            cy = 0.5 * (uy_min + uy_max)
+            uy_min = cy - 0.5 * max_extent_m
+            uy_max = cy + 0.5 * max_extent_m
+        out_w = max(1, int(np.ceil((ux_max - ux_min) / out_res)))
+        out_h = max(1, int(np.ceil((uy_max - uy_min) / out_res)))
+        out_ox = ux_min
+        out_oy = uy_min
+
+        # Cell centres → world coords for every output cell.
+        ogy_arr, ogx_arr = np.divmod(np.arange(out_w * out_h, dtype=np.int64), out_w)
+        wx = out_ox + (ogx_arr.astype(np.float64) + 0.5) * out_res
+        wy = out_oy + (ogy_arr.astype(np.float64) + 0.5) * out_res
+
+        # Look up merged value at each output cell.
         mgx = np.floor((wx - mox) / mres).astype(np.int64)
         mgy = np.floor((wy - moy) / mres).astype(np.int64)
-        in_bounds = (mgx >= 0) & (mgx < mw) & (mgy >= 0) & (mgy < mh)
-
-        # Output starts as a copy of local; only overwrite where local
-        # is unknown (-1) AND merged provides a known value at the
-        # same world position.
-        out_arr = local_arr.copy()
-        unknown_local = (local_arr < 0)
-        # Safe lookup: clamp out-of-bounds to 0, mask result with in_bounds.
-        midx = np.where(in_bounds, mgy * mw + mgx, 0)
+        in_merged = (mgx >= 0) & (mgx < mw) & (mgy >= 0) & (mgy < mh)
+        midx = np.where(in_merged, mgy * mw + mgx, 0)
         merged_value = merged_arr[midx]
-        merged_known = (merged_value >= 0) & in_bounds
-        replace_mask = unknown_local & merged_known
-        if replace_mask.any():
-            out_arr[replace_mask] = merged_value[replace_mask]
+
+        # Start unknown; fill from merged where in-bounds.
+        out_arr = np.full(out_w * out_h, -1, dtype=np.int8)
+        out_arr[in_merged] = merged_value[in_merged]
+
+        # Look up local value; override wherever local is known
+        # (local takes priority — on-robot, freshest, fewer alignment
+        # errors. Critical: when merged drops cells the local octomap
+        # still has, this layer keeps them.)
+        lgx = np.floor((wx - lox) / lres).astype(np.int64)
+        lgy = np.floor((wy - loy) / lres).astype(np.int64)
+        in_local = (lgx >= 0) & (lgx < lw) & (lgy >= 0) & (lgy < lh)
+        lidx = np.where(in_local, lgy * lw + lgx, 0)
+        local_value = local_arr[lidx]
+        local_known = (local_value >= 0) & in_local
+        if local_known.any():
+            out_arr[local_known] = local_value[local_known]
             self._merge_count += 1
 
         out = OccupancyGrid()
         out.header = local.header  # Keep local frame_id + stamp
-        out.info = local.info
-        # rclpy's OccupancyGrid.data setter asserts the value is a sequence
-        # of int8s. The fast path is `array.array('b', ...)` (signed char,
-        # zero-copy from a contiguous int8 numpy buffer); plain bytes
-        # objects fail the assertion (each "int in [-128, 127]" check),
-        # and `.tolist()` is correct but does a per-cell Python conversion
-        # that costs ~40 ms on a 487×327 grid at 1 Hz.
-        out.data = array.array("b", out_arr.astype(np.int8, copy=False).tobytes())
+        out.info.resolution = out_res
+        out.info.width = out_w
+        out.info.height = out_h
+        out.info.origin.position.x = out_ox
+        out.info.origin.position.y = out_oy
+        out.info.origin.position.z = 0.0
+        out.info.origin.orientation.w = 1.0
+        # rclpy OccupancyGrid.data needs int8 sequence; array('b',...) is the
+        # zero-copy fast path.
+        out.data = array.array("b", out_arr.tobytes())
         self._pub.publish(out)
         self._republish_count += 1
 
         if self._republish_count % 10 == 0:
-            n_total = lw * lh
-            n_unknown_local = int(unknown_local.sum())
-            n_filled = int(replace_mask.sum())
+            n_total = out_w * out_h
+            n_local_overrides = int(local_known.sum())
+            n_unknown = int((out_arr < 0).sum())
             self.get_logger().info(
-                "augment: local has %d unknown cells, "
-                "%d filled from merged (%.1f%% of unknown filled)"
-                % (n_unknown_local, n_filled,
-                   100.0 * n_filled / max(1, n_unknown_local))
+                "augment: union geom %dx%d origin=(%.2f,%.2f) "
+                "(%d cells, %d local-override, %d unknown) | "
+                "local %dx%d, merged %dx%d"
+                % (out_w, out_h, out_ox, out_oy,
+                   n_total, n_local_overrides, n_unknown,
+                   lw, lh, mw, mh)
             )
 
 

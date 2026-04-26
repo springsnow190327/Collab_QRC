@@ -71,6 +71,8 @@ def _get(ctx, key: str) -> str:
 _NAV_DEBUG_KEEP_EXECUTABLES = (
     # Path planners / nav
     "astar_nav_node",
+    "hybrid_astar_nav_node",
+    "nav2_hybrid_astar_nav_node",
     "far_planner",
     "localPlanner",
     "pathFollower",
@@ -415,10 +417,38 @@ def _build_fastlio_nav_stack(
                     "output_topic": "registered_scan_octomap",
                     "peer_namespaces": list(peer_namespaces),
                     "peer_pose_topic": "/odom/ground_truth",
-                    # Go2W half-diag 0.40 m, Go2 half-diag 0.36 m. 0.50
-                    # gives margin without eating real returns near peer.
-                    "peer_filter_radius_m": 0.50,
-                    "peer_pose_stale_sec": 2.0,
+                    # Go2W body half-diag 0.45 m, Go2 0.36 m. Radius
+                    # bumped 0.50 → 0.80 (2026-04-26): 0.50 was barely
+                    # larger than the body and missed:
+                    #   • pose-update lag (LiDAR 10 Hz, odom 50 Hz, up
+                    #     to 100 ms = 5 cm slip at 0.5 m/s)
+                    #   • CHAMP gait swing-foot extending beyond body box
+                    #   • body rotation: rectangle corners protrude past
+                    #     the half-diag during yaw motion
+                    # Bumped 0.80 → 1.20 (2026-04-26): demo3_mixed dual
+                    # showed asymmetric drop rates A=2.5/scan vs
+                    # B=14.1/scan. Either pose-frame mismatch (peer
+                    # odom-frame xy vs cloud lidar-frame xy can drift
+                    # 0.1-0.3 m) or geometric difference (Go2W taller,
+                    # sees over B's body) caused A to leave B-imprint
+                    # in its octomap → permanent fake walls when robots
+                    # crossed. 1.20 m absorbs the worst-case frame
+                    # mismatch + body envelope + pose lag.
+                    "peer_filter_radius_m": 1.20,
+                    # Stale tolerance tightened 2.0 → 0.3 s. With 2 s
+                    # peer could be 0.6 m off (0.3 m/s × 2 s) — filter
+                    # circle drawn in wrong place, peer body untouched
+                    # by filter, octomap stamps peer as a moving wall.
+                    # 0.3 s = 6 ticks at 20 Hz, enough slack for one
+                    # missed odom tick but no more.
+                    # Bumped 0.3 → 5.0 (2026-04-26): demo3_mixed showed
+                    # asymmetric drop A=0/scan B=217/scan. A's filter
+                    # subscribed to peer odom but dropped nothing —
+                    # pose freshness check rejected every received
+                    # message. Likely sim_time vs wall_time stamp
+                    # mismatch at startup. 5 s is generous; if peer
+                    # is truly disconnected we'll know fast.
+                    "peer_pose_stale_sec": 5.0,
                     "stats_log_period_sec": 10.0,
                 }],
                 output="screen",
@@ -686,13 +716,33 @@ def _build_fastlio_nav_stack(
         )
     )
 
-    # ── A* branch: astar_nav_node + twist_bridge (+ hybrid_router on Go2W) ──
+    # ── A* / Hybrid A* branch: nav_node + twist_bridge (+ hybrid_router on Go2W) ──
+    # Both backends share the same I/O contract and supporting infra — they
+    # differ only in the search/smoothing core. Selecting executable + yaml
+    # by `nav_backend`:
+    #   astar         → astar_nav_node          (8-conn A* + reactive Option B)
+    #   hybrid_astar  → hybrid_astar_nav_node   (Hybrid A* + OMPL RS + Ceres)
     # Much lighter than FAR — no terrain_analysis, no localPlanner/pathFollower.
     # Uses the same /{ns}/map (from octomap above) directly for planning.
-    if nav_backend == "astar":
-        astar_config_yaml = os.path.join(
-            go2w_config_pkg, "config", "nav", "astar_nav_go2w.yaml"
-        )
+    if nav_backend in ("astar", "hybrid_astar", "nav2_hybrid_astar"):
+        if nav_backend == "astar":
+            astar_config_yaml = os.path.join(
+                go2w_config_pkg, "config", "nav", "astar_nav_go2w.yaml"
+            )
+            nav_executable = "astar_nav_node"
+            nav_node_name  = "astar_nav"
+        elif nav_backend == "hybrid_astar":
+            astar_config_yaml = os.path.join(
+                go2w_config_pkg, "config", "nav", "hybrid_astar_nav_go2w.yaml"
+            )
+            nav_executable = "hybrid_astar_nav_node"
+            nav_node_name  = "hybrid_astar_nav"
+        else:  # nav2_hybrid_astar
+            astar_config_yaml = os.path.join(
+                go2w_config_pkg, "config", "nav", "nav2_hybrid_astar_nav_go2w.yaml"
+            )
+            nav_executable = "nav2_hybrid_astar_nav_node"
+            nav_node_name  = "nav2_hybrid_astar_nav"
         # ── Per-robot body geometry overrides ──
         # The shared yaml has Go2W defaults (wheeled, body 0.65×0.45). Go2
         # menagerie body (robot_b) is narrower and needs different
@@ -702,7 +752,17 @@ def _build_fastlio_nav_stack(
         #   -----------------------|------------------|--------------------|------
         #   footprint_length       | 0.65 (yaml)      | 0.65               | body length similar
         #   footprint_width        | 0.45 (yaml)      | 0.30               | Go2 narrower → more clearance
-        #   global_inflation_m     | 0.25 (yaml)      | 0.30               | wider passable margin
+        #   global_inflation_m     | 0.25 (yaml)      | 0.18               | inflation ~= width/2 + safety;
+        #                          |                  |                    | B's body is 33% narrower so its
+        #                          |                  |                    | inflation should be smaller, not
+        #                          |                  |                    | larger. Old 0.30 made B's spawn
+        #                          |                  |                    | area (4,-6) pivot_unsafe in all
+        #                          |                  |                    | directions because the corridor
+        #                          |                  |                    | walls had a 0.30 m phantom buffer
+        #                          |                  |                    | wider than the gaps B needed to
+        #                          |                  |                    | turn. demo3_mixed 2026-04-26:
+        #                          |                  |                    | 17 T1_BRAKE + 7 T2_BACKTRACK on B
+        #                          |                  |                    | in 200 s, B moved only 1.9 m total.
         #   legs_pivot_v_floor     | 0.0  (override)  | 0.05 (yaml)        | Go2W cmd_router converts ω to
         #                          |                  |                    | wheel diff; Go2 needs forward
         #                          |                  |                    | creep to engage CHAMP gait
@@ -717,19 +777,63 @@ def _build_fastlio_nav_stack(
         if has_wheels:
             # Go2W (robot_a): keep yaml defaults, just kill the leg
             # creep (yaml has 0.05; Go2W doesn't need it).
-            body_overrides["legs_pivot_v_floor"] = 0.0
+            # The legs_pivot_v_floor knob exists only in astar_nav_node's
+            # legged-pivot recovery FSM; hybrid_astar_nav_node has no
+            # pivot-recovery FSM (Hybrid A* output is kinematically
+            # feasible by construction), so the override is astar-only.
+            if nav_backend == "astar":
+                body_overrides["legs_pivot_v_floor"] = 0.0
         else:
-            # Go2 (robot_b): narrower body + larger inflation buffer.
+            # Go2 (robot_b): narrower body → smaller inflation halo.
+            # Inflation rule of thumb = body_half_width + safety_margin:
+            #   A:  0.45/2 + 0.025 = 0.25
+            #   B:  0.30/2 + 0.030 = 0.18
             body_overrides["footprint_width"] = 0.30
-            body_overrides["global_inflation_m"] = 0.30
+            # `global_inflation_m` is an astar/hybrid_astar param;
+            # nav2_hybrid_astar uses `smoother_inflation_radius_m` instead.
+            if nav_backend in ("astar", "hybrid_astar"):
+                body_overrides["global_inflation_m"] = 0.18
+            else:  # nav2_hybrid_astar
+                body_overrides["smoother_inflation_radius_m"] = 0.18
+            # Yaml footprint_length (0.85) is sized for Go2W body+head;
+            # Go2 menagerie is shorter and B has known-working past runs
+            # at 0.65. Two attempts to bump (0.85, 0.70) both clipped at
+            # narrow passage (4.51, -3.77) just north of B's spawn,
+            # making astar report no_plan_repeated → B parked. Keep B
+            # at 0.65 (= prior yaml default before A's head-fix bump);
+            # B has not exhibited the head-on-wall climb that motivated
+            # the 0.85 increase for A. demo3_mixed 2026-04-26.
+            body_overrides["footprint_length"] = 0.65
             # leg_pivot_v_floor stays at yaml's 0.05 (Go2 needs creep).
+
+        # Common remappings for both astar and hybrid_astar. The
+        # `astar_nogo_disks` viz topic is only published by astar_nav_node;
+        # appended below conditionally.
+        nav_remaps = [
+            # CFPA2 publishes goals on /{ns}/way_point_coord; the planner
+            # subscribes on /way_point (remapped into the namespace).
+            ("/way_point", f"/{ns}/way_point_coord"),
+            ("/odom/ground_truth", f"/{ns}/odom/nav"),
+            ("/scan", f"/{ns}/scan_3d"),
+            ("/cmd_vel_stamped", f"/{ns}/cmd_vel_stamped"),
+            ("/nav_status", f"/{ns}/nav_status"),
+            ("/planned_path", f"/{ns}/planned_path"),
+            ("/global_planned_path", f"/{ns}/global_planned_path"),
+            ("/robot_trajectory", f"/{ns}/robot_trajectory"),
+            ("/final_goal_marker", f"/{ns}/final_goal_marker"),
+            ("/robot_pose_marker", f"/{ns}/robot_pose_marker"),
+            ("/frontier_replan", f"/{ns}/frontier_replan"),
+            ("/stop", f"/{ns}/stop"),
+        ]
+        if nav_backend == "astar":
+            nav_remaps.append(("/astar_nogo_disks", f"/{ns}/astar_nogo_disks"))
 
         astar_nodes = [
             Node(
                 package="go2w_nav",
-                executable="astar_nav_node",
+                executable=nav_executable,
                 namespace=ns,
-                name="astar_nav",
+                name=nav_node_name,
                 parameters=[
                     astar_config_yaml,
                     {"use_sim_time": use_sim_time},
@@ -748,23 +852,7 @@ def _build_fastlio_nav_stack(
                         "stop_topic": f"/{ns}/stop",
                     },
                 ],
-                remappings=[
-                    # CFPA2 publishes goals on /{ns}/way_point_coord; astar
-                    # subscribes on /way_point (remapped into the namespace).
-                    ("/way_point", f"/{ns}/way_point_coord"),
-                    ("/odom/ground_truth", f"/{ns}/odom/nav"),
-                    ("/scan", f"/{ns}/scan_3d"),
-                    ("/cmd_vel_stamped", f"/{ns}/cmd_vel_stamped"),
-                    ("/nav_status", f"/{ns}/nav_status"),
-                    ("/planned_path", f"/{ns}/planned_path"),
-                    ("/global_planned_path", f"/{ns}/global_planned_path"),
-                    ("/robot_trajectory", f"/{ns}/robot_trajectory"),
-                    ("/final_goal_marker", f"/{ns}/final_goal_marker"),
-                    ("/robot_pose_marker", f"/{ns}/robot_pose_marker"),
-                    ("/astar_nogo_disks", f"/{ns}/astar_nogo_disks"),
-                    ("/frontier_replan", f"/{ns}/frontier_replan"),
-                    ("/stop", f"/{ns}/stop"),
-                ] + tf_remaps,
+                remappings=nav_remaps + tf_remaps,
                 output="screen",
             ),
             Node(
@@ -970,7 +1058,13 @@ def _build_fastlio_nav_stack(
                 # obs_inflate_size=0 let FAR route along walls and every
                 # rotation primitive clipped — fixing FAR inflation
                 # unblocks this path.
-                "twoWayDrive": True,
+                # twoWayDrive disabled 2026-04-26: B spent 60+ s reversing
+                # at -0.19 m/s along cross_v_s, leg-scuffing the wall on the
+                # way back; A reversed into corners during recovery turns.
+                # Forward-only forces FAR/pathFollower to plan a real
+                # turn-around when blocked, surfacing stuck conditions to
+                # CFPA2 instead of grinding backward through clutter.
+                "twoWayDrive": False,
                 "laserVoxelSize": 0.05,
                 "terrainVoxelSize": 0.2,
                 "useTerrainAnalysis": True,
@@ -987,14 +1081,50 @@ def _build_fastlio_nav_stack(
                 # walls at long range project to low intensity; 0.50 was
                 # letting wall points through as "ground" and localPlanner
                 # then approved path primitives that clip the wall.
-                "obstacleHeightThre": 0.20,
+                # Lowered to 0.02 (2026-04-26) for zero-scuff. With 0.10,
+                # cross_h_e wall base at z=0.08 was below threshold →
+                # localPlanner saw the wall as ground, drove A's head
+                # straight INTO it, then climbed (tilt 56°, 1100+
+                # contacts). 0.02 catches anything with intensity > 2 cm
+                # — well above MuJoCo flat-ground noise floor (mathematic
+                # ground plane, no physics jitter). Real-robot floor is
+                # 0.10-0.50 m noise so this only works in sim.
+                "obstacleHeightThre": 0.02,
                 "groundHeightThre": 0.1,
                 "costHeightThre": 0.1,
-                "costScore": 0.02,
-                "useCost": False,
-                "pointPerPathThre": 2,
+                # Cost-based path scoring enabled (was useCost=False).
+                # localPlanner picks among precomputed path candidates;
+                # without cost, it picks the shortest one regardless of
+                # how close it shaves walls. costScore 0.10 (was 0.02)
+                # adds a meaningful clearance preference: paths near
+                # obstacles get penalized so the planner picks a wider
+                # arc when one exists.
+                "costScore": 0.10,
+                "useCost": True,
+                # Lowered 2 → 1 (2026-04-26) for zero-scuff. CMU's
+                # localPlanner only blocks a path candidate if ≥
+                # pointPerPathThre obstacle points fall inside the
+                # candidate's swept volume. At 24 m range, Mid-360's
+                # angular resolution leaves sparse hits on far walls
+                # (often 0-1 pts/voxel); with threshold 2, A's path
+                # to wall_east had only 1 wall hit and slid through.
+                # Threshold 1 = "any obstacle point blocks the path",
+                # which is what we want for zero-scuff in clean
+                # MuJoCo. Real-robot would need 2 to reject sensor
+                # noise.
+                "pointPerPathThre": 1,
                 "minRelZ": -0.5,
-                "maxRelZ": 0.25,
+                # Bumped 0.25 → 0.8 (2026-04-26) for zero-scuff. With
+                # 0.25 the localPlanner dropped any LiDAR voxel >25 cm
+                # above local ground from its obstacle map. Mid-360 (or
+                # sim equivalent) mounted at ~0.4 m height scans far
+                # walls (24 m east in demo3_mixed) at z=0.3-0.5 m due
+                # to grazing angles → those wall points filtered → far
+                # walls invisible to localPlanner → A's RViz path went
+                # straight through wall_east. Bumping to 0.8 matches
+                # terrainAnalysis's own maxRelZ so the local obstacle
+                # map sees the same walls FAR's V-graph does.
+                "maxRelZ": 0.8,
                 "maxSpeed": far_max_speed,
                 "dirWeight": 0.02,
                 "dirThre": 90.0,
@@ -1022,9 +1152,63 @@ def _build_fastlio_nav_stack(
                 ("/terrain_map", f"/{ns}/terrain_map"),
                 ("/overall_map", f"/{ns}/terrain_map"),
                 ("/joy", f"/{ns}/joy"),
-                ("/path", f"/{ns}/local_path"),
+                # Route localPlanner's chosen path through the safety
+                # filter (octomap hard-collision shield) before
+                # pathFollower consumes it. See path_safety_filter.py.
+                ("/path", f"/{ns}/local_path_raw"),
                 ("/freePaths", f"/{ns}/free_paths"),
             ],
+            output="screen",
+        ),
+        # ── path_safety_filter: octomap-based hard collision shield ──
+        # Sits between localPlanner (publishes raw chosen path) and
+        # pathFollower (consumes safe path). Truncates or rejects path
+        # if any pose's footprint intersects an occupied cell in /map.
+        # Trade-off: occasional "no path" stalls vs zero wall-crossing
+        # execution. CFPA2's stuck detection eventually reassigns goal
+        # if FAR keeps emitting blocked paths.
+        Node(
+            package="go2w_nav",
+            executable="path_safety_filter.py",
+            namespace=ns,
+            name="path_safety_filter",
+            # CRITICAL: namespace TF — without /tf → /{ns}/tf the filter's
+            # TF lookup (vehicle → map) silently fails and every path is
+            # passthrough'd unchecked. We discovered this only because
+            # the filter's status published "passthrough_no_tf" — RViz
+            # then showed local_path crossing walls because filter never
+            # truncated.
+            remappings=tf_remaps,
+            parameters=[{
+                "use_sim_time": use_sim_time,
+                # 0.65 m radius. Go2W body diagonal half = 0.50, head
+                # extends 0.10-0.15 m forward of body, plus 0.05 m
+                # turning margin = 0.65. 0.55 still let head_lower
+                # graze ne_div_h_west at z=0.30 m. Per-pose disk check
+                # is conservative-pessimistic in tight corridors —
+                # we accept some narrow-passage rejections in exchange
+                # for actual zero-contact.
+                # 0.50 m radius — middle ground. 0.65 + occ_thr=30
+                # rejected too aggressively (everything within
+                # inflation halo blocked → cov stuck at 46.9% / 100 s).
+                # 0.50 covers Go2W body + small wheel-margin without
+                # being so wide that narrow corridors are unpassable.
+                "footprint_radius_m": 0.50,
+                # Restored 50: only count clearly-occupied cells (the
+                # actual wall), not inflation halos. Filter's job is
+                # to catch FAR's "path through wall" topology errors,
+                # not to enforce extra clearance (that's localPlanner's
+                # cost-based scoring).
+                "occ_threshold": 50,
+                "check_stride_m": 0.05,
+                "min_safe_path_len": 1,
+                "input_topic": f"/{ns}/local_path_raw",
+                "output_topic": f"/{ns}/local_path",
+                "map_topic": f"/{ns}/map",
+                "status_topic": f"/{ns}/path_safety_status",
+                # Fall back to base_link if vehicle frame missing.
+                "base_frame_fallback": base_frame,
+            }],
             output="screen",
         ),
         Node(
@@ -1039,7 +1223,13 @@ def _build_fastlio_nav_stack(
                 "sensorOffsetX": 0.0,
                 "sensorOffsetY": 0.0,
                 "pubSkipNum": 1,
-                "twoWayDrive": True,
+                # twoWayDrive disabled 2026-04-26: B spent 60+ s reversing
+                # at -0.19 m/s along cross_v_s, leg-scuffing the wall on the
+                # way back; A reversed into corners during recovery turns.
+                # Forward-only forces FAR/pathFollower to plan a real
+                # turn-around when blocked, surfacing stuck conditions to
+                # CFPA2 instead of grinding backward through clutter.
+                "twoWayDrive": False,
                 "lookAheadDis": 0.5,
                 "yawRateGain": 1.5,
                 "stopYawRateGain": 1.5,
@@ -1072,11 +1262,56 @@ def _build_fastlio_nav_stack(
             remappings=[
                 ("/state_estimation", far_odom_topic),
                 ("/path", f"/{ns}/local_path"),
-                ("/cmd_vel", f"/{ns}/cmd_vel_stamped"),
+                # Route cmd_vel through cmd_vel_safety_shield before
+                # twist_bridge / hybrid router. See shield wiring below.
+                ("/cmd_vel", f"/{ns}/cmd_vel_stamped_raw"),
                 ("/joy", f"/{ns}/joy"),
                 ("/speed", f"/{ns}/speed"),
                 ("/stop", f"/{ns}/stop"),
             ],
+            output="screen",
+        ),
+        # ── cmd_vel_safety_shield: execution-time clearance check ──
+        # Kills angular cmd when robot is hugging a wall (clearance disk
+        # within /map intersects an occupied cell). Translation passes
+        # through so the robot can drive out of the corridor; only
+        # in-place rotation that would sweep wheels through a wall is
+        # suppressed. Mirrors CFPA2's pivot-lock at execution layer so
+        # held goals demanding rotation can't cause wall scraping.
+        Node(
+            package="go2w_nav",
+            executable="cmd_vel_safety_shield.py",
+            namespace=ns,
+            name="cmd_vel_safety_shield",
+            # CRITICAL: same TF remap reason as path_safety_filter above
+            # — without it, shield can't transform base_link to map and
+            # falls back to odom-only pose (no yaw → footprint check
+            # broken). This was the silent failure that let A scuff
+            # ne_div_v_north for 240+ ticks.
+            remappings=tf_remaps,
+            parameters=[{
+                "use_sim_time": use_sim_time,
+                "clearance_radius_m": 0.50,
+                "occ_threshold": 50,
+                "angular_kill_threshold_rad_s": 0.10,
+                # Predictive footprint check: simulate requested ω over
+                # this horizon, kill ω only if rotated body clips.
+                # 0.4 s × max ω 1.4 rad/s ≈ 32° sweep — enough lookahead
+                # to catch corner sweeps but small enough to allow
+                # genuine away-from-wall rotation.
+                "predict_horizon_sec": 0.4,
+                # Footprint per-robot (Go2W wider than Go2)
+                "footprint_length_m": 0.85 if has_wheels else 0.65,
+                "footprint_width_m":  0.45 if has_wheels else 0.30,
+                "input_topic": f"/{ns}/cmd_vel_stamped_raw",
+                "output_topic": f"/{ns}/cmd_vel_stamped",
+                "map_topic": f"/{ns}/map",
+                "odom_topic": f"/{ns}/odom/nav",
+                "status_topic": f"/{ns}/cmd_vel_shield_status",
+                "base_frame": base_frame,
+                "map_frame": "map",
+                "use_tf": True,
+            }],
             output="screen",
         ),
         # CMU convention: static sensor↔vehicle + sensor↔camera TFs
@@ -1086,6 +1321,22 @@ def _build_fastlio_nav_stack(
             namespace=ns,
             name="far_vehicle_tf",
             arguments=["0", "0", "0", "0", "0", "0", "sensor", "vehicle"],
+            remappings=tf_remaps,
+            output="screen",
+        ),
+        # Bridge "vehicle" frame into the main TF tree. CMU's stack
+        # only publishes sensor→vehicle, but in our SLAM tree "sensor"
+        # isn't connected to map (we use sensor_at_scan from slam_relay
+        # plus odom→base_link). Without this bridge, lookup_transform
+        # (map ↔ vehicle) fails — path_safety_filter then silently
+        # passthroughs every path because it can't transform vehicle-
+        # frame poses to map-frame for collision check.
+        Node(
+            package="tf2_ros",
+            executable="static_transform_publisher",
+            namespace=ns,
+            name="base_link_to_vehicle_bridge",
+            arguments=["0", "0", "0", "0", "0", "0", base_frame, "vehicle"],
             remappings=tf_remaps,
             output="screen",
         ),
@@ -1163,14 +1414,21 @@ def _launch_setup(context):
     nav_backend_a = (_get(context, "nav_backend_a").strip().lower() or "far")
     nav_backend_b = (_get(context, "nav_backend_b").strip().lower() or "far")
     # Back-compat aliases from the removed planners.
+    # `hybrid` → our v0.1 Hybrid A* + Ceres-smoothed planner.
+    # `nav2`   → B-route: nav2_smac_planner library integration.
     _alias = {"rrt_star": "astar", "far_rrt_star": "astar", "mppi": "astar",
-              "reactive": "astar", "default": "astar"}
+              "reactive": "astar", "default": "astar",
+              "hybrid": "hybrid_astar",
+              "nav2":   "nav2_hybrid_astar"}
     nav_backend_a = _alias.get(nav_backend_a, nav_backend_a)
     nav_backend_b = _alias.get(nav_backend_b, nav_backend_b)
-    if nav_backend_a not in {"far", "astar"}:
-        raise ValueError(f"nav_backend_a must be 'far' or 'astar', got '{nav_backend_a}'")
-    if nav_backend_b not in {"far", "astar"}:
-        raise ValueError(f"nav_backend_b must be 'far' or 'astar', got '{nav_backend_b}'")
+    _allowed = {"far", "astar", "hybrid_astar", "nav2_hybrid_astar"}
+    if nav_backend_a not in _allowed:
+        raise ValueError(
+            f"nav_backend_a must be one of {_allowed}, got '{nav_backend_a}'")
+    if nav_backend_b not in _allowed:
+        raise ValueError(
+            f"nav_backend_b must be one of {_allowed}, got '{nav_backend_b}'")
 
     go2_gazebo_pkg = get_package_share_directory("go2_gazebo_sim")
     go2w_config_pkg = get_package_share_directory("go2w_config")

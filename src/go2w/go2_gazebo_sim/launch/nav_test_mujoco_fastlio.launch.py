@@ -7,7 +7,11 @@ Cartographer mode. Everything else (FAR, CFPA2, etc.) is identical.
 
 Nav backends (nav_backend:=):
   far   — CMU autonomy stack: terrain_analysis + far_planner + localPlanner + pathFollower (default)
-  astar — go2w_nav astar_nav_node (C++ A* + pure-pursuit + oriented footprint check)
+  astar              — go2w_nav astar_nav_node (C++ 8-conn A* + pure-pursuit + footprint check)
+  hybrid_astar       — go2w_nav hybrid_astar_nav_node (Hybrid A* + OMPL Reeds-Shepp + Ceres)
+  hybrid             — alias for hybrid_astar
+  nav2_hybrid_astar  — go2w_nav nav2_hybrid_astar_nav_node (nav2_smac_planner lib + Smoother)
+  nav2               — alias for nav2_hybrid_astar
 
 Modes:
   - Default: CFPA2 frontier exploration drives the robot autonomously.
@@ -118,11 +122,19 @@ def _launch_setup(context):
 
     tf_remaps = [("/tf", f"/{robot_ns}/tf"), ("/tf_static", f"/{robot_ns}/tf_static")]
     nav_backend = _get(context, "nav_backend").strip().lower() or "far"
-    # Back-compat alias — rrt_star points to astar now (reactive_nav deleted).
+    # Back-compat aliases — rrt_star/mppi → astar (deleted 2026-04-24).
     if nav_backend == "rrt_star":
         nav_backend = "astar"
-    if nav_backend not in {"astar", "far"}:
-        raise ValueError(f"nav_backend must be 'astar' or 'far', got '{nav_backend}'")
+    # `hybrid`  → hybrid_astar (Ceres-smoothed Hybrid A*, our v0.1)
+    # `nav2`    → nav2_hybrid_astar (B-route: nav2_smac_planner lib)
+    if nav_backend == "hybrid":
+        nav_backend = "hybrid_astar"
+    if nav_backend == "nav2":
+        nav_backend = "nav2_hybrid_astar"
+    if nav_backend not in {"astar", "hybrid_astar", "nav2_hybrid_astar", "far"}:
+        raise ValueError(
+            f"nav_backend must be 'astar' | 'hybrid_astar' | 'nav2_hybrid_astar' | 'far'; "
+            f"got '{nav_backend}'")
     cfpa2_config_path = os.path.join(cfpa2_pkg, "config", "cfpa2_single_robot.yaml")
 
     actions = []
@@ -371,8 +383,28 @@ def _launch_setup(context):
         )
 
     # ── 4. Navigation backend ──
-    if nav_backend == "astar":
-        nav_config_path = os.path.join(go2w_config_pkg, "config", "nav", "astar_nav_go2w.yaml")
+    if nav_backend in ("astar", "hybrid_astar", "nav2_hybrid_astar"):
+        # All three share the same I/O contract and supporting infra
+        # (octomap_server + map_merger). They differ only in the nav
+        # executable + yaml config:
+        #   astar              → astar_nav_node            (8-conn A* + Option B)
+        #   hybrid_astar       → hybrid_astar_nav_node     (our v0.1: OMPL RS + Ceres)
+        #   nav2_hybrid_astar  → nav2_hybrid_astar_nav_node (B-route: nav2_smac lib)
+        if nav_backend == "astar":
+            nav_config_path = os.path.join(
+                go2w_config_pkg, "config", "nav", "astar_nav_go2w.yaml")
+            nav_executable = "astar_nav_node"
+            nav_node_name  = "astar_nav"
+        elif nav_backend == "hybrid_astar":
+            nav_config_path = os.path.join(
+                go2w_config_pkg, "config", "nav", "hybrid_astar_nav_go2w.yaml")
+            nav_executable = "hybrid_astar_nav_node"
+            nav_node_name  = "hybrid_astar_nav"
+        else:  # nav2_hybrid_astar
+            nav_config_path = os.path.join(
+                go2w_config_pkg, "config", "nav", "nav2_hybrid_astar_nav_go2w.yaml")
+            nav_executable = "nav2_hybrid_astar_nav_node"
+            nav_node_name  = "nav2_hybrid_astar_nav"
         nav_remappings = [
             ("/way_point", f"/{robot_ns}/way_point_coord"),
             ("/odom/ground_truth", f"/{robot_ns}/odom/nav"),
@@ -444,9 +476,9 @@ def _launch_setup(context):
 
         astar_nav_node = Node(
             package="go2w_nav",
-            executable="astar_nav_node",
+            executable=nav_executable,
             namespace=robot_ns,
-            name="astar_nav",
+            name=nav_node_name,
             parameters=[
                 nav_config_path,
                 {"use_sim_time": use_sim_time},

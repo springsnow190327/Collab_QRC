@@ -63,6 +63,8 @@ _PREFLIGHT_PATTERNS=(
   "simple_scan_mapper"
   "cfpa2_"
   "astar_nav_node"
+  "hybrid_astar_nav_node"
+  "nav2_hybrid_astar_nav_node"
   "default_nav.py"
   # CHAMP locomotion + EKF
   "champ_base"
@@ -89,7 +91,7 @@ _preflight_kill_patterns() {
 
 # Regex reused for pre/post-kill detection. Matches any process likely to
 # hold DDS resources, GPU contexts, or a LiDAR plugin handle.
-_PREFLIGHT_ALIVE_RE='mujoco_ros2_control|tare_planner_node|far_planner|localPlanner|pathFollower|sensor_scan_generation|champ_base|fastlio_mapping|octomap_server|cfpa2_coordinator_node|cartographer_node|sc_pgo_node|pointcloud_frame_bridge|pointcloud_adapter|qos_bridge|twist_bridge|slam_odom_relay|astar_nav_node|stand_up_slowly|go2w_hybrid_cmd_router|map_merge|map_augmenter|robot_self_filter|multi_tf_relay|dual_robot_collision_monitor|__node:=(world_to_map_tf|base_link_to_body_tf|b_base_link_to_body_tf|far_vehicle_tf|far_camera_tf|map_to_odom_tf)'
+_PREFLIGHT_ALIVE_RE='mujoco_ros2_control|tare_planner_node|far_planner|localPlanner|pathFollower|sensor_scan_generation|champ_base|fastlio_mapping|octomap_server|cfpa2_coordinator_node|cartographer_node|sc_pgo_node|pointcloud_frame_bridge|pointcloud_adapter|qos_bridge|twist_bridge|slam_odom_relay|astar_nav_node|hybrid_astar_nav_node|nav2_hybrid_astar_nav_node|stand_up_slowly|go2w_hybrid_cmd_router|map_merge|map_augmenter|robot_self_filter|multi_tf_relay|dual_robot_collision_monitor|__node:=(world_to_map_tf|base_link_to_body_tf|b_base_link_to_body_tf|far_vehicle_tf|far_camera_tf|map_to_odom_tf)'
 
 # Report any stuck processes (D = kernel I/O, Z = zombie waiting reap).
 # D-state cannot be killed by SIGKILL — usually a wedged GPU/DDS syscall.

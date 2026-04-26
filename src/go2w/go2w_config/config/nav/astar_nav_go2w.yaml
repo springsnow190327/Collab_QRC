@@ -41,10 +41,50 @@
     startup_ramp_sec:    3.0     # s — gentle ramp 0→1 after startup_delay
 
     # ── goal behaviour ────────────────────────────────────────────
-    goal_tolerance:                       0.25    # m — within this: done
+    # Goal tolerance bumped 0.25 → 0.40 (2026-04-25). Tighter tolerance
+    # forced A* to keep planning sub-0.4 m paths that pure-pursuit then
+    # tried to track in 180° turns when goals flipped behind the robot,
+    # producing 1 m of overshoot into walls. 0.40 m declares goal_reached
+    # earlier so the short-path overshoot regime is skipped entirely.
+    # Combined with min_path_length_to_track_m=0.40, any path shorter
+    # than 0.4 m freezes the robot — both protections cover the same
+    # failure mode from different angles.
+    goal_tolerance:                       0.40    # m — within this: done
     goal_slow_radius:                     1.5     # m — begin braking
     goal_slow_floor:                      0.15    # m/s — min v in slow zone
     goal_reached_replan_cooldown_sec:     1.0
+    # Hold zero cmd_vel for this many seconds after goal_reached
+    # fires. Bleeds off CHAMP gait residual + body inertia so the
+    # robot doesn't drift 0.5-1 m past the goal toward whatever
+    # direction it was last walking. demo3_mixed 2026-04-25: A
+    # racked up multiple back-to-back short-distance goals, each
+    # firing goal_reached briefly; without this hold, residual
+    # foot-cycle motion accumulated and pushed A into cross_h_e
+    # where it climbed and tipped.
+    goal_reached_brake_sec:               1.0
+
+    # ── pivot-unsafe 3-tier recovery (replaces pivot_relief) ──────
+    # Old pivot_relief open-loop strafed up to 0.5 m through clutter
+    # and walked A into cross_h_w / zigzag_1 → tip-over (demo3_mixed
+    # 2026-04-26). Replaced with brake-first / planned-backtrack /
+    # surrender state machine.
+    #
+    # T1 BRAKE: most pivot_unsafe events are transient (peer crossing
+    # halo, scan jitter). Braking 1.5 s lets them resolve without any
+    # robot motion. Up to N retries → ~3 s budget on transients.
+    pivot_recovery_t1_brake_sec:          1.5
+    pivot_recovery_t1_max_attempts:       2
+    # T2 BACKTRACK: drive low-speed toward a recent trajectory crumb.
+    # 0.40 m back is far enough to clear most footprint snags but
+    # short enough that we stay near the prior heading.
+    pivot_recovery_backtrack_dist_m:      0.40
+    pivot_recovery_backtrack_speed:       0.10
+    # Breadcrumb trail config: stride=record-every-N-m, cap=total-m.
+    # 2 m / 0.05 m = 40 crumbs ring buffer.
+    pivot_recovery_trail_cap_m:           2.0
+    pivot_recovery_trail_stride_m:        0.05
+    # Arrival tolerance — stop T2 motion when this close to crumb.
+    pivot_recovery_arrive_tol_m:          0.10
 
     # ── curvature shaping (core "slow in turns" logic) ────────────
     # Window is now MAX-κ over the lookahead (not avg) — one sharp turn
@@ -122,6 +162,17 @@
     astar_clearance_target_cells:  4
     astar_clearance_weight:        0.5
 
+    # Short-path guard: pure-pursuit-tracking a path shorter than ~Ld
+    # (lookahead) is unstable — when the goal is just behind the robot's
+    # heading, lookahead clamps to the path end (= goal in body frame),
+    # steering computes a 180° turn at high gain, body sweeps wide while
+    # CHAMP gait residual carries it forward. Net: 1 m overshoot into
+    # walls even though the path itself was geometrically safe.
+    # 2026-04-25 demo3_mixed: A had a 0.26 m WEST path after a goal
+    # flip, body swept SE 1 m, FL_wheel hit cross_h_e north face.
+    # Below threshold, freeze and wait for next plan.
+    min_path_length_to_track_m:    0.40
+
     # ── wheel ↔ legged mode dispatch ──────────────────────────────
     # Dispatch now uses HEADING ERROR (robot yaw vs path tangent) as the
     # primary signal, not just curvature. Rationale: legacy κ-only logic
@@ -151,6 +202,24 @@
     # opposite the goal. 30° picks a tight threshold so the robot
     # commits to aligning with the path before any forward motion.
     legs_pivot_above_deg:             30.0
+    # Pivot/walk hysteresis. User requested STRICT alignment for
+    # walk (2026-04-26): only walk when |ψ_err| ≤ 3°, pivot in all
+    # other cases. Forces the robot to align very precisely with
+    # the path tangent before any forward motion — eliminates the
+    # "walk while turning into a wall" failure mode where even a
+    # small ψ_err combined with forward motion produces a body
+    # sweep that catches walls. Pivot is the SAFE default near
+    # walls; walk only when geometry is clean.
+    #   |ψ_err| ≥ 3° → pivot (v=0, ω≠0)
+    #   |ψ_err| ≤ 1.5° → walk + turn
+    #   1.5°-3° → keep current mode (commit window also applies)
+    legs_pivot_enter_deg:             3.0
+    legs_pivot_exit_deg:              1.5
+    # Once a mode is entered, hold for at least this many seconds
+    # before re-evaluating. CHAMP step cycle ≈ 0.5 s; mid-step mode
+    # flips don't help. Suppresses the high-frequency residual that
+    # hysteresis alone might miss when |ψ_err| oscillates fast.
+    legs_mode_commit_sec:             0.5
     # Forward creep during pivot. CHAMP's gait library treats
     # (lin.x = 0, ω ≠ 0) as a stand request — Go2 (legged-only, mixed
     # launch) sat motionless even though astar was commanding ω = -0.35.
@@ -182,7 +251,17 @@
     # paths — the failure mode where Go2W's 0.65 m long body hits
     # a wall while cornering even though the centre line of A*
     # stays in free space.
-    footprint_length:                 0.65   # m — Go2W body length
+    # Bumped 0.65 → 0.85 (2026-04-26) after demo3_mixed dual-robot run
+    # showed A's head_lower_collision climbing ne_div_h_west wall at
+    # (15.00, 3.93) — body footprint cleared but the head extends
+    # ~+0.15 m forward of base_link. astar planned a body-safe path
+    # that was head-unsafe; A's head clipped the wall and tilt rose
+    # to 56°. 0.85 = body 0.65 + head extension 0.15 + 0.05 safety
+    # margin, applied symmetrically (centred on base_link). Rear
+    # over-extension is harmless: Go2W reverse motion is rare and
+    # short (T2 backtrack only ~0.4 m), and CHAMP's natural rear
+    # clearance is already wider than the footprint.
+    footprint_length:                 0.85   # m — body 0.65 + head 0.15 + buffer
     footprint_width:                  0.55   # m — Go2W full WHEEL-TO-WHEEL
                                               # extent. The chassis box is
                                               # 0.45 m wide, but the four

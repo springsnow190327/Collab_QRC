@@ -29,9 +29,33 @@ far_planner:
     # but ground noise in demo3_mixed is low (MuJoCo flat plane ground)
     # so we accept the risk.
     robot_dim: 0.45                     # m — per-side polygon inflation
-    voxel_dim: 0.1                      # m — grid cell size (finer = less buffer)
+    # Halved 0.10 → 0.05 (2026-04-26): finer V-graph contour sampling
+    # so narrow doorways and short divider edges produce vertices that
+    # FAR's edge-check correctly recognizes as obstacles. With 0.10,
+    # demo3_mixed's room entries (1.0 m wide) had only 4-5 contour
+    # voxels along an edge → V-graph occasionally connected straight
+    # through the doorway as if it were free. 0.05 doubles the contour
+    # density and the new entries get 8-10 voxels — robust topology.
+    # Cost: V-graph update CPU ~2× (was 30-50 ms, now 60-100 ms;
+    # well within 500 ms budget at 2 Hz).
+    voxel_dim: 0.05                     # m — grid cell size (finer = less buffer)
+    # Tried bumping 2 → 4 for zero-scuff but at robot_dim=0.45 m + 0.4 m
+    # inflate = 0.85 m single-side margin would close B's spawn corridor
+    # at (4.1, -6.0). Keeping 2 = 0.2 m hard inflation; soft clearance
+    # preference is handled by localPlanner cost scoring (useCost=True,
+    # costScore=0.10) which biases the path picker toward wider arcs in
+    # open areas but still allows narrow traversal when no other route
+    # exists.
     util/obs_inflate_size: 2            # cells — 2×voxel_dim = 0.2 m margin
-    util/terrain_free_Z: 0.15           # m — intensity >= this = obstacle
+    # Lowered 0.15 → 0.05 (2026-04-26) for zero-scuff. With 0.15, wall
+    # bases (lidar points hitting wall at z=0.05-0.15 m) classified as
+    # GROUND; FAR sees free-space where wall actually stands → V-graph
+    # plans paths whose curvature radius brushes wall corners as the
+    # robot turns. 0.05 catches wall bases. MuJoCo ground plane is
+    # mathematically flat (no physics noise on the ground mesh) so
+    # there's no false-classify risk in sim. On real-robot with noisy
+    # ground (carpet/grass) this would need to be higher.
+    util/terrain_free_Z: 0.05           # m — intensity >= this = obstacle
     # Bumped 3 → 10 s. With 3 s the V-graph dropped obstacle evidence
     # whenever the wall left the LiDAR cone (turn away for 3 s → wall
     # points decay → V-graph re-connects an edge through the gap → next

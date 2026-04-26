@@ -204,6 +204,21 @@ class CFPA2Coordinator(Node):
         # into one. demo3_mixed corridors are 1.0–2.0 m wide, so 1.0 m
         # keeps separate corridor mouths distinct.
         self.declare_parameter("cfpa2_frontier_cluster_radius_m", 1.0)
+        # Dead-frontier filter: drop centroids whose surrounding has
+        # too few unknown cells. The radius is the search square
+        # (half-side, m). The threshold is the minimum unknown cell
+        # count inside that square for the frontier to be considered
+        # "live". A trap frontier (unknown cells behind a wall, or
+        # outside world bounds) has only 1-3 unknown cells nearby;
+        # a real frontier has dozens.
+        self.declare_parameter("cfpa2_frontier_unknown_check_radius_m", 0.40)
+        self.declare_parameter("cfpa2_frontier_min_unknown_cells", 20)
+        # Min-hold lock-in: once a goal is assigned, refuse to switch
+        # it for at least this many seconds. Doesn't apply to blacklist
+        # or max-lock overrides — those still force a switch. Stops
+        # cluster-centroid jitter from reassigning the same robot 5-10×
+        # in a few seconds while it's mid-navigation.
+        self.declare_parameter("cfpa2_goal_min_hold_sec", 5.0)
         self.declare_parameter("cfpa2_min_utility", -0.5)
         self.declare_parameter("cfpa2_sigma_overlap_m", 0.0)
         self.declare_parameter("cfpa2_stuck_lock_sec", 45.0)
@@ -347,6 +362,12 @@ class CFPA2Coordinator(Node):
         self.cfpa2_momentum_beta  = max(0.0, float(self.get_parameter("cfpa2_momentum_beta").value))
         self.cfpa2_frontier_cluster_radius_m = max(
             0.0, float(self.get_parameter("cfpa2_frontier_cluster_radius_m").value))
+        self.cfpa2_frontier_unknown_check_radius_m = max(
+            0.0, float(self.get_parameter("cfpa2_frontier_unknown_check_radius_m").value))
+        self.cfpa2_frontier_min_unknown_cells = max(
+            0, int(self.get_parameter("cfpa2_frontier_min_unknown_cells").value))
+        self.cfpa2_goal_min_hold_sec = max(
+            0.0, float(self.get_parameter("cfpa2_goal_min_hold_sec").value))
         self.cfpa2_min_utility = float(self.get_parameter("cfpa2_min_utility").value)
         self.cfpa2_sigma_overlap_m = max(0.0, float(self.get_parameter("cfpa2_sigma_overlap_m").value))
         self.cfpa2_stuck_lock_sec = max(0.0, float(self.get_parameter("cfpa2_stuck_lock_sec").value))
@@ -380,6 +401,72 @@ class CFPA2Coordinator(Node):
         # Per-namespace dedup: remembers the goal_seq we already fast-blacklisted
         # so we don't keep firing for every repeat of the same status message.
         self._last_unreachable_goal_seq: dict[str, object] = {}
+
+        # Fast-BL debounce + startup grace (added 2026-04-26).
+        # Without these, demo3_mixed dual-robot run at sim t=26-32 s
+        # blacklisted 5 of B's first 5 goals because astar returned
+        # no_plan_repeated while the local map was still being built.
+        # All 5 BLs were 60 s long; by sim t≈130 s every reachable
+        # candidate near B was poisoned and B parked permanently
+        # (exploration_complete) for the rest of the 11-min run.
+        #
+        # Two guards:
+        #  (a) startup_grace_sec: don't fast-BL during initial period
+        #      after node start. Default 15 s — long enough for Fast-LIO
+        #      to bootstrap (~5 s) and octomap to populate B's local
+        #      grid (~5 s) plus margin.
+        #  (b) consecutive_threshold: require K back-to-back unreachable
+        #      reports on the SAME (ns, goal) before fast-BL. Default 3.
+        #      Real unreachables persist (astar republishes status at
+        #      10 Hz so 3 reports = 0.3 s); transient startup fails
+        #      typically resolve within 1-2 reports.
+        self.declare_parameter("fast_unreachable_startup_grace_sec", 15.0)
+        self.declare_parameter("fast_unreachable_consecutive_threshold", 3)
+        self.fast_unreachable_startup_grace_sec = max(
+            0.0, float(self.get_parameter("fast_unreachable_startup_grace_sec").value)
+        )
+        self.fast_unreachable_consecutive_threshold = max(
+            1, int(self.get_parameter("fast_unreachable_consecutive_threshold").value)
+        )
+        self._node_start_ns = self.get_clock().now().nanoseconds
+        # Per-(ns, goal_key) consecutive count; reset on goal change or
+        # when a non-unreachable status arrives.
+        self._unreachable_consec: dict[str, dict[tuple, int]] = {}
+
+        # ── Narrow-passage pivot lock ────────────────────────────────
+        # When the robot is in a corridor with clearance smaller than
+        # its bounding-circle radius (= half-diagonal + tolerance), it
+        # CANNOT pivot in place to face a new goal direction without
+        # leg/body contact with the wall. demo3_mixed B's spawn corner
+        # at (4.1, -6.0) is sandwiched by sw_v_1/sw_v_2 (~0.45 m gap);
+        # any CFPA2 goal change while B is in this zone forced B to
+        # turn, which scuffed sw_v_2 with the rear thigh.
+        #
+        # Lock: if pivot-clearance < pivot_lock_radius_m, refuse goal
+        # changes that demand reorientation; keep the previous goal so
+        # the pathFollower drives the robot OUT of the narrow zone in
+        # a straight line. Lock auto-releases the moment clearance
+        # opens (robot exits the corridor).
+        #
+        # Default 0.45 m = max(B half-diag 0.36, A half-diag 0.50) - a
+        # bit; chosen as a conservative single value across both bots.
+        # Override per-namespace if needed.
+        self.declare_parameter("pivot_lock_radius_m", 0.45)
+        self.pivot_lock_radius_m = max(
+            0.0, float(self.get_parameter("pivot_lock_radius_m").value)
+        )
+        # Cache map for _set_active_goal pivot check (set each tick).
+        self._cur_planning_map: Optional[OccupancyGrid] = None
+        # Per-namespace start time of pivot-lock (when we first refused
+        # a goal change). After pivot_lock_max_hold_sec, we release the
+        # lock — necessary escape valve when held goal demands rotation
+        # the executor can't perform (shield kills ω) → B would
+        # otherwise sit forever with no way out.
+        self.declare_parameter("pivot_lock_max_hold_sec", 15.0)
+        self.pivot_lock_max_hold_sec = max(
+            0.0, float(self.get_parameter("pivot_lock_max_hold_sec").value)
+        )
+        self._pivot_lock_start_ns: dict[str, int] = {}
         self.cfpa2_close_stop_radius_m = max(
             0.0, float(self.get_parameter("cfpa2_close_stop_radius_m").value)
         )
@@ -683,6 +770,12 @@ class CFPA2Coordinator(Node):
             return
         state = str(payload.get("state") or "")
         if state not in ("unreachable", "failed"):
+            # Don't reset consec counter here: astar publishes status
+            # at 50 Hz interleaving unreachable + brake_hold +
+            # navigating:leg as it tries different recovery strategies.
+            # A reset on every non-unreachable would mean the counter
+            # never accumulates above 1. Counter resets only on goal
+            # change (handled in _set_active_goal).
             return
         self._apply_fast_blacklist(ns, payload)
 
@@ -712,12 +805,37 @@ class CFPA2Coordinator(Node):
         if reported_key != current_key:
             return
 
+        # Startup grace: skip fast-BL while map/SLAM are still bootstrapping.
+        elapsed_sec = (now_ns - self._node_start_ns) * 1e-9
+        if elapsed_sec < self.fast_unreachable_startup_grace_sec:
+            self.get_logger().info(
+                f"{ns}: skipping fast-BL goal=({current_goal[0]:.2f},"
+                f"{current_goal[1]:.2f}) — startup grace "
+                f"({elapsed_sec:.1f}/{self.fast_unreachable_startup_grace_sec:.1f}s)"
+            )
+            return
+
+        # Consecutive-threshold debounce: count repeated unreachable
+        # reports on the same (ns, goal) before committing to BL.
+        ns_consec = self._unreachable_consec.setdefault(ns, {})
+        ns_consec[current_key] = ns_consec.get(current_key, 0) + 1
+        if ns_consec[current_key] < self.fast_unreachable_consecutive_threshold:
+            self.get_logger().info(
+                f"{ns}: pending fast-BL goal=({current_goal[0]:.2f},"
+                f"{current_goal[1]:.2f}) — consec "
+                f"{ns_consec[current_key]}/"
+                f"{self.fast_unreachable_consecutive_threshold}"
+            )
+            return
+
         bl_sec = float(self.fast_unreachable_blacklist_sec)
         until_ns = now_ns + int(bl_sec * 1e9)
         self.goal_blacklist_until_ns[ns][current_key] = max(
             self.goal_blacklist_until_ns[ns].get(current_key, 0),
             until_ns,
         )
+        # Reset consecutive counter for this key (BL latched).
+        ns_consec[current_key] = 0
         # Cluster disk (Fix #1 + #3): when the planner reports unreachable,
         # forbid a whole neighbourhood so re-picks can't land in the same
         # orphan. Pairs with _set_active_goal clearing goal_seq on new goals
@@ -856,14 +974,91 @@ class CFPA2Coordinator(Node):
         else:
             raw = self._extract_frontiers_py(msg, w, h, res, s, min_area_m2, clearance_cells, max_targets)
         # Collapse per-cell samples into one representative per spatial
-        # cluster. Without this, the C++/Python extractor returns dozens
-        # of cells per frontier line; the assignment then puts robot_a
-        # and robot_b on different cells of the SAME cluster — utility
-        # treats them as independent goals (high info_gain each), they
-        # both head into the same room, and CFPA2 thrashes between
-        # cluster-A-cell-3 / cluster-A-cell-7 every tick. Centroid
-        # collapse cuts candidates ~10× and stabilises assignment.
-        return self._cluster_representatives(raw, self.cfpa2_frontier_cluster_radius_m)
+        # cluster.
+        clustered = self._cluster_representatives(raw, self.cfpa2_frontier_cluster_radius_m)
+        # Filter out "dead" / trap frontiers: a frontier is only worth
+        # exploring if there's a meaningful patch of unknown cells
+        # adjacent. When the unknown side is just 1-2 cells stuck
+        # behind a wall (or outside world bounds), driving to it
+        # accomplishes nothing — the unknown cells stay unknown
+        # forever (LiDAR can't see through walls), and the robot
+        # gets pinned to that frontier indefinitely.
+        # demo3_mixed 2026-04-26: A reached coverage 97 %, was assigned
+        # frontier (1.14, 7.44) just 0.56 m from wall_north. The unknown
+        # cells "behind" the frontier are outside the arena (y > 8) —
+        # permanently invisible to LiDAR. A drove there, FL_wheel hit
+        # wall_north, body climbed; A wedged there for 156 s while
+        # CFPA2 kept reassigning the same trap frontier.
+        return self._filter_dead_frontiers(clustered, msg)
+
+    def _filter_dead_frontiers(
+        self, points: list[tuple[float, float]], msg: OccupancyGrid
+    ) -> list[tuple[float, float]]:
+        """Drop centroids whose surrounding has too few "live" unknowns.
+        A LIVE unknown is one whose 8-neighbour kernel has NO occupied
+        cell — i.e., it sits >=1 cell away from any wall. Trap unknowns
+        (the cells right outside the arena, beyond a thin wall like
+        wall_north) are EXCLUDED because their immediate neighbours
+        include the wall itself. Real exploration unknowns sit in
+        open areas where the robot's LiDAR will reach if the robot
+        gets close — they have only free + unknown neighbours, no
+        occupied. demo3_mixed 2026-04-26: A pinned at wall_north for
+        156 s chasing a frontier whose "unknowns" were all 1 cell
+        outside the arena boundary; live-unknown count = 0, naive
+        count = 50+."""
+        if not points or self.cfpa2_frontier_min_unknown_cells <= 0:
+            return points
+        w = int(msg.info.width)
+        h = int(msg.info.height)
+        res = float(msg.info.resolution)
+        if res <= 0:
+            return points
+        ox = float(msg.info.origin.position.x)
+        oy = float(msg.info.origin.position.y)
+        data = msg.data
+        occ_thr = self.occ_thresh
+        R_cells = max(1, int(round(self.cfpa2_frontier_unknown_check_radius_m / res)))
+        thr = self.cfpa2_frontier_min_unknown_cells
+
+        def is_live_unknown(nx, ny):
+            # Cell at (nx, ny) is unknown AND none of its 8-neighbours
+            # is occupied (i.e., the unknown is not against a wall).
+            idx = ny * w + nx
+            if data[idx] >= 0:
+                return False  # not unknown
+            for ddy in (-1, 0, 1):
+                yy = ny + ddy
+                if yy < 0 or yy >= h:
+                    continue
+                for ddx in (-1, 0, 1):
+                    if ddx == 0 and ddy == 0:
+                        continue
+                    xx = nx + ddx
+                    if xx < 0 or xx >= w:
+                        continue
+                    if data[yy * w + xx] >= occ_thr:
+                        return False
+            return True
+
+        out = []
+        for px, py in points:
+            gx = int((px - ox) / res)
+            gy = int((py - oy) / res)
+            live_n = 0
+            y0 = max(1, gy - R_cells); y1 = min(h - 2, gy + R_cells)
+            x0 = max(1, gx - R_cells); x1 = min(w - 2, gx + R_cells)
+            done = False
+            for ny in range(y0, y1 + 1):
+                if done: break
+                for nx in range(x0, x1 + 1):
+                    if is_live_unknown(nx, ny):
+                        live_n += 1
+                        if live_n >= thr:
+                            done = True
+                            break
+            if live_n >= thr:
+                out.append((px, py))
+        return out
 
     def _cluster_representatives(
         self, points: list[tuple[float, float]], cluster_radius_m: float
@@ -1272,8 +1467,65 @@ class CFPA2Coordinator(Node):
             return None
         return samples[0][1] - samples[-1][1]
 
+    def _pivot_clearance_blocked(self, ns: str) -> bool:
+        """True if robot at current pose is in a corridor too narrow to
+        pivot (clearance disk < pivot_lock_radius_m). Uses the most
+        recent planning_map cached by _tick_impl.
+        """
+        if self.pivot_lock_radius_m <= 0.0:
+            return False
+        if ns not in self.odoms or self._cur_planning_map is None:
+            return False
+        msg = self._cur_planning_map
+        od = self.odoms[ns]
+        rx, ry = od.pose.pose.position.x, od.pose.pose.position.y
+        g = self._world_to_grid(msg, rx, ry)
+        if g is None:
+            return False
+        radius_cells = max(1, int(math.ceil(
+            self.pivot_lock_radius_m / max(0.01, msg.info.resolution))))
+        cx, cy = g
+        w, h = int(msg.info.width), int(msg.info.height)
+        data = msg.data
+        radius_sq = radius_cells * radius_cells
+        for dy in range(-radius_cells, radius_cells + 1):
+            ny = cy + dy
+            if ny < 0 or ny >= h:
+                continue
+            row_off = ny * w
+            for dx in range(-radius_cells, radius_cells + 1):
+                if dx * dx + dy * dy > radius_sq:
+                    continue
+                nx = cx + dx
+                if nx < 0 or nx >= w:
+                    continue
+                v = data[row_off + nx]
+                if v != self.unknown_value and v >= self.occ_thresh:
+                    return True
+        return False
+
     def _set_active_goal(self, ns: str, goal: tuple[float, float], now_ns: int) -> None:
         prev = self.last_goal.get(ns)
+        # Narrow-passage pivot lock: if the robot can't pivot at its
+        # current pose without scraping a wall, refuse a goal change
+        # that would demand reorientation. Keep the previous goal so
+        # the executor drives the robot OUT of the corridor in a
+        # straight line. Lock auto-releases as soon as clearance opens.
+        if (
+            prev is not None
+            and goal is not None
+            and (abs(prev[0] - goal[0]) > 1e-3 or abs(prev[1] - goal[1]) > 1e-3)
+            and self._pivot_clearance_blocked(ns)
+        ):
+            self.get_logger().info(
+                f"{ns}: pivot-lock — clearance < {self.pivot_lock_radius_m:.2f} m "
+                f"at ({self.odoms[ns].pose.pose.position.x:.2f},"
+                f"{self.odoms[ns].pose.pose.position.y:.2f}); "
+                f"keeping prev goal ({prev[0]:.2f},{prev[1]:.2f}) instead of "
+                f"({goal[0]:.2f},{goal[1]:.2f})"
+            )
+            self._set_policy_reason(ns, "hold/narrow_passage_pivot_lock")
+            goal = prev
         if prev is None or math.hypot(prev[0] - goal[0], prev[1] - goal[1]) > 1e-6:
             self.last_goal_set_time_ns[ns] = now_ns
             self.goal_progress_samples[ns].clear()
@@ -1283,6 +1535,10 @@ class CFPA2Coordinator(Node):
             # re-picked a neighbour <0.3 m from the previous goal).
             self.goal_lock_pose_history[ns].clear()
             self._last_unreachable_goal_seq.pop(ns, None)
+            # Reset per-namespace consecutive-unreachable counts when
+            # CFPA2 hands out a different goal: any pending streak no
+            # longer applies to the new target.
+            self._unreachable_consec.pop(ns, None)
         elif self.goal_lock_start_xy.get(ns) is None and ns in self.odoms:
             self.goal_lock_start_xy[ns] = self._robot_xy(ns)
         self.last_goal[ns] = goal
@@ -1330,6 +1586,32 @@ class CFPA2Coordinator(Node):
         if self._is_blacklisted(ns, last, now_ns):
             self._set_policy_reason(ns, "switch/held_goal_blacklisted")
             return goal
+
+        # ── Min-hold lock-in ─────────────────────────────────────
+        # Once a goal is assigned, hold it for at least min_hold_sec
+        # before allowing a switch to a different cluster. Without
+        # this, CFPA2 reassigns the same robot 5-10× in a few seconds
+        # (cluster centroids of similar info_gain frontiers oscillate
+        # tick-to-tick). The robot's astar can't catch up: each new
+        # goal causes a wp_sub callback path-clear, plan_astar
+        # attempts the new direction, fails or partially succeeds,
+        # next tick CFPA2 reassigns again. Net effect: residual
+        # motion from the latest valid path drags the robot toward
+        # whichever cluster won early, even when subsequent goals
+        # point opposite. demo3_mixed 2026-04-25: A pulled 4 m SW
+        # into zigzag_3 by a 13 s string of SW cluster goals despite
+        # later NE goals.
+        # Exception: never override blacklist (handled above) or
+        # max_lock_sec stuck-detection (handled below).
+        lock_start_ns = self.last_goal_set_time_ns.get(ns, 0)
+        if lock_start_ns > 0 and self.cfpa2_goal_min_hold_sec > 0.0:
+            lock_age_sec = max(0.0, (now_ns - lock_start_ns) / 1e9)
+            if lock_age_sec < self.cfpa2_goal_min_hold_sec:
+                self._set_policy_reason(
+                    ns,
+                    f"hold/min_hold_{lock_age_sec:.1f}s",
+                )
+                return last
 
         od = self.odoms[ns]
         rx = float(od.pose.pose.position.x)
@@ -2895,6 +3177,11 @@ class CFPA2Coordinator(Node):
         if using_shared_map:
             planning_map = self._build_shared_with_local_patches(target_map)
 
+        # Stash for _set_active_goal's pivot-clearance check (so the
+        # goal-change lock has access to the current map without
+        # re-plumbing it through every assignment site).
+        self._cur_planning_map = planning_map
+
         self._publish_coordinator_map(planning_map)
         self._publish_robot_markers(planning_map)
 
@@ -2938,6 +3225,26 @@ class CFPA2Coordinator(Node):
                 planning_map=planning_map,
                 per_ns_targets=per_ns_targets,
             )
+            # Park each robot at its own current pose so the executor
+            # sees a reachable "stay here" goal instead of holding the
+            # last assigned (now-unreachable) frontier forever. Without
+            # this, FAR adapter reports nav=failed for the stale goal
+            # for the rest of the run while CFPA2 returns early every
+            # tick. demo3_mixed 2026-04-26: A held (22.86, 1.24) for
+            # 60+ s with nav=failed even though all global frontiers
+            # had been filtered.
+            for ns in self.namespaces:
+                if ns not in self.odoms:
+                    continue
+                od = self.odoms[ns]
+                park_goal = (
+                    float(od.pose.pose.position.x),
+                    float(od.pose.pose.position.y),
+                )
+                self._set_policy_reason(ns, "hold/exploration_complete")
+                self._set_active_goal(ns, park_goal, now_ns)
+                publish_map = self.maps.get(ns, planning_map)
+                self._publish_goal(ns, publish_map, park_goal)
             return
 
         dist_maps = {}
@@ -3204,6 +3511,29 @@ class CFPA2Coordinator(Node):
                 per_ns_reachable[ns] = reachable
 
             per_ns_frontiers = {ns: len(per_ns_targets.get(ns, [])) for ns in self.namespaces}
+
+            # ── exploration-complete / unreachable-park ──────────────
+            # If a robot's per_ns_reachable is 0 (no frontier this robot
+            # can plan a path to), park it at its current pose. astar
+            # then sees d_to_goal < tolerance, declares goal_reached,
+            # the goal_reached_brake holds it stationary. Without this
+            # the robot sits forever in idle:no_goal because CFPA2
+            # never publishes a goal for it; coverage stalls (B was
+            # exploring, A spawn-stuck for 190 s in 2026-04-26 run).
+            for ns in self.namespaces:
+                if per_ns_reachable.get(ns, 0) > 0:
+                    continue
+                if ns not in self.odoms:
+                    continue
+                od = self.odoms[ns]
+                park_goal = (float(od.pose.pose.position.x),
+                             float(od.pose.pose.position.y))
+                self._set_policy_reason(ns, "hold/exploration_complete")
+                self._set_active_goal(ns, park_goal, now_ns)
+                publish_map = self.maps.get(ns, planning_map)
+                self._publish_goal(ns, publish_map, park_goal)
+                per_ns_assigned[ns] = park_goal
+
             self._maybe_log_summary(
                 targets_total=len(targets),
                 per_ns_frontiers=per_ns_frontiers,
@@ -3455,6 +3785,47 @@ class CFPA2Coordinator(Node):
             per_ns_reachable[ns] = reachable
 
         per_ns_frontiers = {ns: len(per_ns_targets.get(ns, [])) for ns in self.namespaces}
+
+        # ── exploration-complete detection ───────────────────────
+        # When per_ns_reachable[ns] is zero, the robot has no
+        # frontier it can plan a path to. Re-publishing the same
+        # unreachable goal makes astar churn (valid=0) forever and
+        # CFPA2 fast-blacklists every retried frontier in a loop.
+        # Instead, park the robot at its CURRENT POSE — astar then
+        # sees d_to_goal < tolerance, declares goal_reached, and
+        # the post-goal-reached brake holds it stationary until the
+        # peer discovers a reachable frontier (which may extend the
+        # merged map and unstick this robot). Without this, B sat
+        # at (23.23, 5.83) for 240 s cycling between two goals it
+        # couldn't reach, while coverage was already 78.7 %.
+        for ns in self.namespaces:
+            if per_ns_reachable.get(ns, 0) > 0:
+                continue
+            if ns not in self.odoms:
+                continue
+            # Only park if exploration appears genuinely complete:
+            # there ARE frontiers somewhere globally OR map coverage
+            # is high. In the early-startup case (no frontiers yet
+            # because map is empty), don't park.
+            total_reachable = sum(per_ns_reachable.values())
+            if total_reachable == 0 and len(targets) > 0:
+                # Frontiers exist but none reachable from anyone — park.
+                pass
+            elif len(targets) == 0:
+                # No frontiers at all → exploration complete or
+                # not started. Skip parking unless we've seen frontiers
+                # before (handled by per-robot last_assigned tracking).
+                if per_ns_assigned.get(ns) is None:
+                    continue
+            od = self.odoms[ns]
+            park_goal = (float(od.pose.pose.position.x),
+                         float(od.pose.pose.position.y))
+            self._set_policy_reason(ns, "hold/exploration_complete")
+            self._set_active_goal(ns, park_goal, now_ns)
+            publish_map = self.maps.get(ns, planning_map)
+            self._publish_goal(ns, publish_map, park_goal)
+            per_ns_assigned[ns] = park_goal
+
         self._maybe_log_summary(
             targets_total=len(targets),
             per_ns_frontiers=per_ns_frontiers,

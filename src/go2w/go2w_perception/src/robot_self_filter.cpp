@@ -84,6 +84,14 @@ public:
         // 10 s heartbeat for the operator: how many points the filter
         // is dropping per scan on average.
         declare_parameter<double>("stats_log_period_sec", 10.0);
+        // Self-pose topic used to transform sensor-frame cloud points
+        // into world frame before comparing to peer pose. Without this,
+        // the filter only worked when cloud points coincidentally
+        // happened to be world-frame (publisher-dependent), which
+        // caused the asymmetric A-drops-0 / B-drops-217 bug in
+        // demo3_mixed (mujoco_ros2_control's lidar_sensor.cpp emits
+        // points in sensor frame, not world).
+        declare_parameter<std::string>("self_odom_topic", "odom/ground_truth");
 
         input_topic_ = get_parameter("input_topic").as_string();
         output_topic_ = get_parameter("output_topic").as_string();
@@ -116,6 +124,26 @@ public:
             std::bind(&RobotSelfFilter::on_cloud, this, _1));
         pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(
             output_topic_, cloud_qos);
+
+        // Self pose subscription — used to transform sensor-frame cloud
+        // to world frame so the peer-distance check is correct
+        // regardless of cloud frame_id.
+        const std::string self_topic = get_parameter("self_odom_topic").as_string();
+        self_odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
+            self_topic, odom_qos,
+            [this](nav_msgs::msg::Odometry::ConstSharedPtr msg) {
+                self_x_ = msg->pose.pose.position.x;
+                self_y_ = msg->pose.pose.position.y;
+                const auto &q = msg->pose.pose.orientation;
+                // 2D yaw from quaternion (assume roll/pitch ≈ 0).
+                self_yaw_ = std::atan2(2.0 * (q.w * q.z + q.x * q.y),
+                                        1.0 - 2.0 * (q.y * q.y + q.z * q.z));
+                self_pose_valid_ = true;
+            });
+        RCLCPP_INFO(get_logger(),
+                    "  self pose: subscribed to %s (cloud points will be "
+                    "rotated/translated to world before peer check)",
+                    self_topic.c_str());
 
         for (const auto &peer : peer_ns_) {
             const std::string topic = "/" + peer + pose_topic_suffix_;
@@ -218,9 +246,24 @@ private:
         }
 
         // Build a keep-mask in one pass over the buffer. For each point,
-        // read x and y as float32 from the field offsets and compare
-        // against every active peer's xy. If the squared planar distance
-        // to any peer is < radius², drop this point.
+        // read x and y as float32 from the field offsets, transform from
+        // sensor frame to world frame using cached self-pose (rotation +
+        // translation), then compare against every active peer's
+        // world-frame xy.
+        //
+        // Why the transform: mujoco_ros2_control's lidar_sensor.cpp (and
+        // mujoco_lidar_node.py) emit cloud points in SENSOR frame
+        // (xmat^T applied to world hit-points before publishing). The
+        // peer pose comes from /odom/ground_truth, which is world.
+        // Without transforming, the comparison is geometrically wrong;
+        // depending on robot geometry / yaw it might coincidentally
+        // drop SOME peer points (the demo3_mixed B=217/A=0 asymmetry
+        // came from this).
+        const bool have_self = self_pose_valid_;
+        const double cos_y = have_self ? std::cos(self_yaw_) : 1.0;
+        const double sin_y = have_self ? std::sin(self_yaw_) : 0.0;
+        const double sx = have_self ? self_x_ : 0.0;
+        const double sy = have_self ? self_y_ : 0.0;
         std::vector<uint8_t> keep(N, 1);
         std::size_t kept = 0;
         const uint8_t *base = msg->data.data();
@@ -229,10 +272,13 @@ private:
             float x, y;
             std::memcpy(&x, p + x_off, sizeof(float));
             std::memcpy(&y, p + y_off, sizeof(float));
+            // sensor-frame (x, y) → world-frame (wx, wy)
+            const double wx = sx + cos_y * x - sin_y * y;
+            const double wy = sy + sin_y * x + cos_y * y;
             bool drop = false;
             for (const auto &peer : peers) {
-                const double dx = x - peer.first;
-                const double dy = y - peer.second;
+                const double dx = wx - peer.first;
+                const double dy = wy - peer.second;
                 if ((dx * dx + dy * dy) < radius_sq_) {
                     drop = true;
                     break;
@@ -318,7 +364,11 @@ private:
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_;
     std::vector<rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr> peer_subs_;
+    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr self_odom_sub_;
     rclcpp::TimerBase::SharedPtr stats_timer_;
+    // Self pose in world (map) frame for sensor→world point transform.
+    double self_x_ = 0.0, self_y_ = 0.0, self_yaw_ = 0.0;
+    bool self_pose_valid_ = false;
 };
 
 

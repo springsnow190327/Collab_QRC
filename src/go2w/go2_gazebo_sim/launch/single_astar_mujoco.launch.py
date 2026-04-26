@@ -421,8 +421,21 @@ def _build_slam_stack(*, use_sim_time: bool, go2w_config_pkg: str,
 
 
 def _build_astar_stack(*, use_sim_time: bool, astar_config_path: str,
-                      nav_delay: float, has_wheels: bool, go2w_config_pkg: str):
-    """MPPI controller + twist_bridge + (Go2W only) hybrid_cmd_router."""
+                      nav_delay: float, has_wheels: bool, go2w_config_pkg: str,
+                      nav_backend: str = "astar"):
+    """Nav planner + twist_bridge + (Go2W only) hybrid_cmd_router.
+
+    nav_backend selects the planner executable:
+      astar              → astar_nav_node
+      hybrid_astar       → hybrid_astar_nav_node          (our v0.1)
+      nav2_hybrid_astar  → nav2_hybrid_astar_nav_node     (B-route)
+    """
+    _exe = {
+        "astar":             ("astar_nav_node",            "astar_nav"),
+        "hybrid_astar":      ("hybrid_astar_nav_node",     "hybrid_astar_nav"),
+        "nav2_hybrid_astar": ("nav2_hybrid_astar_nav_node", "nav2_hybrid_astar_nav"),
+    }
+    nav_executable, nav_node_name = _exe[nav_backend]
     tf_remaps = [("/tf", f"/{NS}/tf"), ("/tf_static", f"/{NS}/tf_static")]
 
     nav_remaps = [
@@ -442,9 +455,9 @@ def _build_astar_stack(*, use_sim_time: bool, astar_config_path: str,
 
     astar_node = Node(
         package="go2w_nav",
-        executable="astar_nav_node",
+        executable=nav_executable,
         namespace=NS,
-        name="astar_nav",
+        name=nav_node_name,
         parameters=[
             astar_config_path,
             {"use_sim_time": use_sim_time},
@@ -515,6 +528,15 @@ def _launch_setup(context):
     spawn_y_arg = _get(context, "spawn_y").strip()
     spawn_yaw = _get(context, "spawn_yaw").strip() or "0.0"
     astar_config_arg = _get(context, "astar_config").strip()
+    nav_backend = _get(context, "nav_backend").strip().lower() or "astar"
+    if nav_backend == "hybrid":
+        nav_backend = "hybrid_astar"
+    if nav_backend == "nav2":
+        nav_backend = "nav2_hybrid_astar"
+    if nav_backend not in {"astar", "hybrid_astar", "nav2_hybrid_astar"}:
+        raise ValueError(
+            f"nav_backend must be 'astar' | 'hybrid_astar' | 'nav2_hybrid_astar'; "
+            f"got '{nav_backend}'")
 
     # Bench plumbing: session_reporter counts wall contacts, computes
     # coverage, writes JSON. Wall checker is a terminal fail-early
@@ -572,9 +594,14 @@ def _launch_setup(context):
     ekf_base = os.path.join(champ_base_pkg, "config", "ekf", "base_to_footprint.yaml")
     ekf_odom = os.path.join(champ_base_pkg, "config", "ekf", "footprint_to_odom.yaml")
 
-    # MPPI config
+    # Nav config + executable per backend.
+    _backend_yaml = {
+        "astar":             "astar_nav_go2w.yaml",
+        "hybrid_astar":      "hybrid_astar_nav_go2w.yaml",
+        "nav2_hybrid_astar": "nav2_hybrid_astar_nav_go2w.yaml",
+    }[nav_backend]
     astar_config_path = astar_config_arg or os.path.join(
-        go2w_config_pkg, "config", "nav", "astar_nav_go2w.yaml"
+        go2w_config_pkg, "config", "nav", _backend_yaml
     )
 
     mujoco_plugin_dir = _find_mujoco_plugin_dir()
@@ -669,6 +696,7 @@ def _launch_setup(context):
         nav_delay=nav_delay,
         has_wheels=has_wheels,
         go2w_config_pkg=go2w_config_pkg,
+        nav_backend=nav_backend,
     ))
 
     # T=nav_delay+2: CFPA2 single-robot (publishes /robot/way_point_coord)
@@ -814,7 +842,13 @@ def generate_launch_description():
         DeclareLaunchArgument("spawn_yaw", default_value="0.0"),
         DeclareLaunchArgument(
             "astar_config", default_value="",
-            description="Path to A* nav params yaml; default = go2w_config/config/nav/astar_nav_go2w.yaml",
+            description="Path to A* nav params yaml; default depends on nav_backend",
+        ),
+        DeclareLaunchArgument(
+            "nav_backend", default_value="astar",
+            description="Nav planner: 'astar' (default) | 'hybrid_astar' (Hybrid A* + Ceres)"
+                        " | 'nav2_hybrid_astar' (B-route: nav2_smac_planner lib)."
+                        " Aliases: hybrid → hybrid_astar, nav2 → nav2_hybrid_astar.",
         ),
         DeclareLaunchArgument(
             "session_duration_sec", default_value="0",

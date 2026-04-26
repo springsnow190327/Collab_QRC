@@ -238,11 +238,14 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /robot_a/final_goal_marker
       Value: true
-    # TARE goal marker — published by the waypoint watchdog as a big
-    # magenta sphere so it's actually visible in the top-down ortho view.
+    # FAR way_point_marker — disabled by default. It draws a straight
+    # line from robot to next FAR intermediate way_point; that line
+    # geometrically crosses walls when the way_point is across an
+    # obstacle. It is FAR's *intent*, not the executed path. Enable in
+    # RViz UI if you want to see FAR's targeting; usually misleading.
     - Class: rviz_default_plugins/Marker
-      Enabled: true
-      Name: TAREGoal
+      Enabled: false
+      Name: FARWayPoint(intent)
       Namespaces: {}
       Topic:
         Depth: 5
@@ -281,7 +284,7 @@ Visualization Manager:
         Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /robot_a/path
+        Value: /robot_a/local_path
       Value: true
     - Alpha: 1
       Buffer Length: 1
@@ -309,7 +312,7 @@ Visualization Manager:
         Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /robot_b/path
+        Value: /robot_b/local_path
       Value: true
     - Class: rviz_default_plugins/Path
       Color: 50; 120; 255

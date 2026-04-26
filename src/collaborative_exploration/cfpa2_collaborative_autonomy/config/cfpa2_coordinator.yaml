@@ -14,13 +14,23 @@
     goal_topic_suffix: /way_point_coord
     marker_frame_override: world
     frontier_stride: 2
-    max_targets: 800
+    # 800 → 400 (2026-04-26): demo3_mixed dual-robot mode hit p95
+    # tick=518 ms / cpu=100% on 800 frontiers × IG(r=22). Halving
+    # candidates × halving IG-box (gain_r 22 → 14) cuts core scoring
+    # work ~6×; expect p95 < 100 ms, leaving 400 ms slack at 2 Hz.
+    max_targets: 400
     switch_hysteresis: 0.50
     switch_min_dist: 0.80
     min_assign_distance: 0.30
     overlap_weight: 1.0
-    cfpa2_w_ig: 1.0
-    cfpa2_w_c: 0.6
+    # Reweighted 2026-04-26 after demo3_mixed showed CFPA2 picking
+    # 18 m far goals for B while 5 m candidates were closer to its
+    # current heading. Doubling w_c (0.6 → 1.5) and halving w_ig
+    # (1.0 → 0.5) makes near goals dominate scoring; combined with
+    # the gain_r 22 → 14 cut, IG-vs-cost trade-off is now firmly
+    # cost-biased in dual-robot mode.
+    cfpa2_w_ig: 0.5
+    cfpa2_w_c: 1.5
     cfpa2_w_sw: 0.2
     cfpa2_lambda_overlap: 1.0
     # Momentum bonus: cos(heading_to_goal) × (alpha + beta·speed).
@@ -41,6 +51,30 @@
     # merges samples on one cluster, keeps separate corridor mouths
     # (≥1.0 m wide in demo3_mixed) distinct.
     cfpa2_frontier_cluster_radius_m: 1.0
+    # Dead-frontier filter: a frontier is only kept if at least
+    # `min_unknown_cells` unknown cells exist within `check_radius_m`
+    # of the cluster centroid. Trap frontiers (unknowns stuck behind
+    # walls, or outside world bounds — invisible to LiDAR) typically
+    # have just 1-3 unknown cells nearby; real frontiers have 30+.
+    # demo3_mixed 2026-04-26: A wedged at NW corner against
+    # wall_north chasing a frontier whose only unknowns were outside
+    # the arena (y > 8). Filter eliminates those.
+    cfpa2_frontier_unknown_check_radius_m: 0.40
+    # Min "live" unknowns (= unknown cells whose 8-neighbours do NOT
+    # include any occupied cell) within check_radius_m. Reduced
+    # 20 → 5 after first run had A_NEW=0 because the filter dropped
+    # ALL frontiers near A's spawn area (many were near walls so
+    # their nearby unknowns had occ neighbours, i.e. counted as
+    # trap). 5 still kills wall_north-style traps (which have ZERO
+    # live unknowns — every unknown is touching the wall) but keeps
+    # legitimate frontiers near walls in narrow corridors.
+    cfpa2_frontier_min_unknown_cells: 5
+    # Min-hold lock-in (5.0 s): once a goal is assigned, refuse to switch
+    # it for this many seconds. Stops the cluster-centroid jitter that
+    # reassigns the same robot 5-10× in a few seconds. Goal can still
+    # be overridden by blacklist (frontier became unreachable) or by
+    # max-lock (held >switch_hysteresis_max_lock_sec without progress).
+    cfpa2_goal_min_hold_sec: 5.0
     cfpa2_sigma_overlap_m: 0.0
     cfpa2_stuck_lock_sec: 45.0
     cfpa2_stuck_min_motion_m: 0.20
@@ -72,10 +106,12 @@
     # is fine with one robot but with two robots × ~400 frontiers the
     # coordinator tick hits 300 ms p95, 65% CPU, and the goal-assignment
     # lag causes one robot to move while the other waits for its next goal.
-    # Compromise: 22 cells = 2.2 m box at 0.05 m res, still enough to
-    # resolve big vs small regions, 3× cheaper than r=40.
-    exploration_gain_radius_cells: 22
-    adaptive_min_exploration_gain_radius_cells: 12
+    # Lowered 22 → 14 (2026-04-26) after demo3_mixed dual-robot run hit
+    # p95=518 ms / CPU=100% with r=22; r=14 gives (29²)/(45²) ≈ 0.42×
+    # IG-eval cost. 14 = 1.4 m box at 0.05 m res — still resolves
+    # room-vs-corner scales relevant for demo3 (24×16 m).
+    exploration_gain_radius_cells: 14
+    adaptive_min_exploration_gain_radius_cells: 8
 
     perf_enable: true
     perf_tick_window_size: 240
