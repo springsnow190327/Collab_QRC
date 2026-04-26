@@ -40,12 +40,28 @@ nav2_hybrid_astar_nav:
     lookahead_min:    0.30
     lookahead_max:    0.80
     lookahead_gain:   0.60
-    cross_track_gain: 0.70
+    # cross_track_gain history:
+    #   0.70 (default)  → understeer (Stanley pull too weak in corners)
+    #   1.20 (overshoot) → caused brake-stall when paired with eager curv decel
+    #   1.00 (sweet spot) → balanced lateral correction, no stall
+    cross_track_gain: 1.00
 
     # ── curvature speed shaping ───────────────────────────────────────
-    curvature_lookahead_segments: 6
+    # Anticipatory braking horizon. History:
+    #   6  (0.6m)  → too late (0.86s window @ 0.7m/s, inertia overshoot)
+    #   15 (1.5m)  → too early (brake-stall: v drops to ~0 before corner,
+    #                pure-pursuit loses steering authority on tight ω
+    #                because atan2(k·e, max(v,min_v)) saturates and
+    #                CHAMP gait cuts ω at low v → robot "推头" stalls)
+    #   10 (1.0m)  → sweet spot: enough lookahead to slow gracefully
+    #                without bleeding all kinetic energy on the straight
+    curvature_lookahead_segments: 10
     curv_full_speed_below:        0.30
-    curv_slow_above:              1.50
+    # 1.50 → 0.80 was too aggressive (caused stall pairing).
+    # 1.15 keeps full-speed up to R≈0.87m, brakes on tighter corners.
+    # Paths near our min_R=0.8m still trigger ~70% slowdown but retain
+    # ~0.20 m/s entry speed — enough for steering authority.
+    curv_slow_above:              1.15
     curv_factor_min:              0.10
 
     # ── reactive scan brake ───────────────────────────────────────────
