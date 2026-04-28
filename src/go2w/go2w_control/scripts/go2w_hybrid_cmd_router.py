@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
+from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray, String
 
 
@@ -63,6 +64,25 @@ class Go2WHybridCmdRouter(Node):
         self.declare_parameter("wheel_track_m", 0.40)
         self.declare_parameter("wheel_max_angular_speed", 8.5)
         self.declare_parameter("wheel_joint_signs", [1.0, 1.0, 1.0, 1.0])
+        # Sustain hysteresis: cmd_vel must satisfy wheel-eligible criteria
+        # CONTINUOUSLY for this many seconds before switching to wheel
+        # mode. Disengagement is immediate. Filters out brief cmd peaks
+        # at goal-switch moments that would power the wheels and then
+        # leave them coasting when cmd drops to 0.
+        self.declare_parameter("wheel_engage_sustain_sec", 0.5)
+        # In legged/idle mode, mirror actual wheel ω back as the velocity
+        # setpoint so the velocity actuator's brake torque is zero (error=0)
+        # and the wheels can freewheel under the body's leg-gait motion. With
+        # the previous default (cmd=0 in legged mode), kv=50 generates up to
+        # ±15 N·m brake force opposing residual body motion → wheel skids
+        # against the ground. Subscribe to joint_states to read actual ω.
+        # Names match the MJCF foot_joint convention ([FL,FR,RL,RR]_foot_joint
+        # — Robot A is unprefixed; Robot B is b_*-prefixed and skipped).
+        self.declare_parameter("wheel_state_topic", "/mujoco_sim/joint_states")
+        self.declare_parameter("wheel_joint_names", [
+            "FL_foot_joint", "FR_foot_joint", "RL_foot_joint", "RR_foot_joint"
+        ])
+        self.declare_parameter("freewheel_in_legged", True)
 
         input_topic = str(self.get_parameter("input_topic").value)
         legged_topic = str(self.get_parameter("legged_topic").value)
@@ -97,12 +117,28 @@ class Go2WHybridCmdRouter(Node):
         if len(self.wheel_joint_signs) != 4:
             raise ValueError("wheel_joint_signs must contain exactly four entries")
 
+        self.wheel_engage_sustain_sec = max(
+            0.0, float(self.get_parameter("wheel_engage_sustain_sec").value)
+        )
+
         self._last_cmd = Twist()
         self._last_cmd_time_sec: float | None = None
         self._active_mode = "idle"
         self._last_mode_change_sec: float | None = None
+        # Tracks when cmd_vel first became wheel-eligible (None if not).
+        # Reset on any below-threshold tick. Sustain hysteresis condition.
+        self._wheel_eligible_since_sec: float | None = None
+
+        self.wheel_joint_names = [str(v) for v in self.get_parameter("wheel_joint_names").value][:4]
+        self.freewheel_in_legged = bool(self.get_parameter("freewheel_in_legged").value)
+        # Latest measured ω for [FL,FR,RL,RR]_foot_joint (rad/s). Defaults
+        # to zeros so the first few ticks (before joint_states arrives)
+        # behave like the legacy "cmd=0 in legged" path.
+        self._latest_wheel_vels: list[float] = [0.0, 0.0, 0.0, 0.0]
 
         self.create_subscription(Twist, input_topic, self._cmd_cb, 10)
+        wheel_state_topic = str(self.get_parameter("wheel_state_topic").value)
+        self.create_subscription(JointState, wheel_state_topic, self._joint_state_cb, 10)
         self._legged_pub = self.create_publisher(Twist, legged_topic, 10)
         self._wheel_pub = self.create_publisher(Float64MultiArray, wheel_command_topic, 10)
         self._status_pub = self.create_publisher(String, status_topic, 10)
@@ -117,8 +153,22 @@ class Go2WHybridCmdRouter(Node):
         return self.get_clock().now().nanoseconds / 1e9
 
     def _cmd_cb(self, msg: Twist) -> None:
+        # Event-driven publish: as soon as MPPI gives us a fresh cmd_vel,
+        # forward it immediately. The 50ms timer-wait that used to sit
+        # between the callback and the publish was the dominant single
+        # source of brake-latency in the chain (MPPI publishes at 20 Hz,
+        # router timer was 20 Hz too → up to 50ms additional delay).
+        # CHAMP caches cmd_vel anyway in its own 200 Hz loop, so a faster
+        # publish rate from us is purely upside.
         self._last_cmd = msg
         self._last_cmd_time_sec = self._now_sec()
+        self._tick()
+
+    def _joint_state_cb(self, msg: JointState) -> None:
+        # Cache latest ω for the four wheel joints. Skip Robot B (b_-prefix).
+        for nm, vel in zip(msg.name, msg.velocity):
+            if nm in self.wheel_joint_names:
+                self._latest_wheel_vels[self.wheel_joint_names.index(nm)] = float(vel)
 
     def _is_recent(self, now_sec: float) -> bool:
         return self._last_cmd_time_sec is not None and (now_sec - self._last_cmd_time_sec) <= self.cmd_timeout_sec
@@ -142,20 +192,28 @@ class Go2WHybridCmdRouter(Node):
         angular_z = abs(float(cmd.angular.z))
         curvature = angular_z / max(linear_x, 0.05)
 
-        # wheel cruise: forward, fast, near-straight. The ONLY wheel-mode
-        # case. Everything else — rotation, tight curves, reverse, strafe —
-        # uses CHAMP's legged gait, which handles in-place rotation and
-        # narrow turns deterministically via foot-step placement, whereas
-        # skid-steer wheel pivot causes body oscillation because CHAMP's
-        # compliant legs can't lock rigidly.
-        if (
+        # Sustain hysteresis: cmd_vel must satisfy wheel-eligible criteria
+        # CONTINUOUSLY for `wheel_engage_sustain_sec` before we engage
+        # wheel mode. Disengagement is immediate (one tick of below-
+        # threshold cmd → back to legged). Filters out brief cmd peaks at
+        # goal-switch moments that would otherwise power the wheels and
+        # then leave them coasting when cmd drops to 0 (wheel velocity
+        # controller has soft kv → wheels coast 5+ s before stopping).
+        wheel_eligible = (
             raw_linear_x > 0
             and linear_x >= self.thresholds.wheel_linear
             and linear_y <= self.thresholds.wheel_lateral
             and angular_z <= self.thresholds.wheel_angular
             and curvature <= self.thresholds.wheel_curvature
-        ):
-            return ("wheel", curvature)
+        )
+        if wheel_eligible:
+            if self._wheel_eligible_since_sec is None:
+                self._wheel_eligible_since_sec = now_sec
+            sustained = now_sec - self._wheel_eligible_since_sec
+            if sustained >= self.wheel_engage_sustain_sec:
+                return ("wheel", curvature)
+        else:
+            self._wheel_eligible_since_sec = None
 
         return ("legged", curvature)
 
@@ -214,7 +272,16 @@ class Go2WHybridCmdRouter(Node):
 
         legged_cmd = Twist()
         wheel_cmd = Float64MultiArray()
-        wheel_cmd.data = [0.0, 0.0, 0.0, 0.0]
+        # Default freewheel: mirror current actual ω back as setpoint so the
+        # velocity actuator's brake torque is zero. Without this, kv≈50 with
+        # cmd=0 generates ±15 N·m brake force opposing residual body motion
+        # under leg gait → wheel skids on the ground in legged/idle mode.
+        # First few ticks before joint_states arrives use the legacy [0,0,0,0]
+        # path (latest_wheel_vels is initialised to zeros).
+        if self.freewheel_in_legged:
+            wheel_cmd.data = list(self._latest_wheel_vels)
+        else:
+            wheel_cmd.data = [0.0, 0.0, 0.0, 0.0]
 
         if self._active_mode == "wheel":
             wheel_cmd = self._wheel_command(self._last_cmd)

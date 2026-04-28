@@ -464,8 +464,14 @@ namespace mujoco_ros2_control {
                                              joint.velocity_limit);
                 // check if an actuator is available
                 if (actuators.find(VELOCITY) != actuators.end()) {
-                    // write to actuator ctrl
+                    // write to actuator ctrl. Note: must update last_command to
+                    // match — POSITION branch does this (line ~441), VELOCITY
+                    // branch originally did not, so once velocity matched the
+                    // (uninitialised, ~0) last_command it stopped writing and
+                    // ctrl stayed at the previous non-zero setpoint. That was
+                    // the "wheels don't brake when cmd=0" bug.
                     if (velocity != joint.last_command) {
+                        joint.last_command = velocity;
                         mujoco_data_->ctrl[actuators[VELOCITY]] = velocity;
                     }
                 } else {

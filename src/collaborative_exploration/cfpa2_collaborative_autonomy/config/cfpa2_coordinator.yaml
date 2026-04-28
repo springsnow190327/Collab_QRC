@@ -59,7 +59,17 @@
     # demo3_mixed 2026-04-26: A wedged at NW corner against
     # wall_north chasing a frontier whose only unknowns were outside
     # the arena (y > 8). Filter eliminates those.
-    cfpa2_frontier_unknown_check_radius_m: 0.40
+    # Lowered 0.40 → 0.30 to match new footprint (half-width 0.20 m + 0.05
+    # buffer = 0.25 m, with 0.05 m extra for the live-unknown count). Prior
+    # 0.40 was tuned for robot_radius=0.40 circle approximation.
+    cfpa2_frontier_unknown_check_radius_m: 0.30
+    # Drop obstacle clearance from default 0.40 m → 0.25 m. Same logic:
+    # 0.40 m clearance ruled out every cell inside the 0.425 m demo3
+    # narrow corridor (centerline only 0.213 m from each wall) so the
+    # whole corridor was a frontier-extraction dead zone. With the new
+    # rectangular footprint (half-width 0.20 m), 0.25 m clearance has
+    # a 5 cm safety pad on top of the body half-width.
+    cfpa2_frontier_obstacle_clearance_m: 0.25
     # Min "live" unknowns (= unknown cells whose 8-neighbours do NOT
     # include any occupied cell) within check_radius_m. Reduced
     # 20 → 5 after first run had A_NEW=0 because the filter dropped
@@ -92,7 +102,13 @@
     cfpa2_space_time_max_expansions: 12000
     cfpa2_space_time_assumed_speed_mps: 0.25
     cfpa2_space_time_max_speed_mps: 0.60
-    cfpa2_frontier_min_cluster_area_m2: 0.20
+    # 2026-04-28: lowered 0.20 → 0.05 m². Live-probe of /merged_map after
+    # 7 min explore showed largest remaining frontier cluster was 0.15 m²;
+    # original 0.20 m² threshold filtered EVERY cluster → fronts=0 →
+    # robot stuck "exploration done" at 79.5 % cov. 0.05 m² (20 cells at
+    # 0.05 m res) is still big enough to filter speckle/noise but
+    # accepts fragmented late-stage frontiers.
+    cfpa2_frontier_min_cluster_area_m2: 0.05
     communication_timeout_sec: 6.0
     prediction_horizon_sec: 4.0
     pursuit_weight: 2.0

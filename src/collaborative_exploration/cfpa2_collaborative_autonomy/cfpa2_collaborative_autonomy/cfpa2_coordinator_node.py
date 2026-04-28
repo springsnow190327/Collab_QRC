@@ -577,6 +577,15 @@ class CFPA2Coordinator(Node):
         self.nav_status: dict[str, dict[str, Any]] = {}
         self.nav_status_rx_time_ns: dict[str, int] = {}
         self.last_goal: dict[str, tuple[float, float]] = {}
+        # Per-ns timestamp (ns) when pivot-lock first started holding the
+        # current goal. Used to enforce pivot_lock_max_hold_sec escape:
+        # after holding pivot-lock for more than max_hold_sec, release the
+        # lock and allow the new goal through. Without this, a robot that
+        # enters a narrow corridor whose clearance is permanently <
+        # pivot_lock_radius_m (e.g. demo3 0.425 m corridor) can never
+        # change goal — it stays in legged/idle indefinitely (CLAUDE.md
+        # golden rule #12 — multi-layer safety stacks deadlock easily).
+        self._pivot_lock_held_since_ns: dict[str, int] = {}
         self.last_goal_set_time_ns: dict[str, int] = {}
         self.goal_progress_samples: dict[str, deque[tuple[int, float]]] = {
             ns: deque() for ns in self.namespaces

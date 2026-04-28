@@ -267,7 +267,7 @@ namespace mujoco_ros2_control {
             double velocity_command;  ///< Commanded velocity for the joint.
             double acceleration_command;  ///< Commanded acceleration for the joint.
             double effort_command;  ///< Commanded effort to be applied to the joint.
-            double last_command; ///< Last command;
+            double last_command{std::numeric_limits<double>::quiet_NaN()}; ///< Last command. NaN-init so first write always fires (any cmd != NaN).
             std::map<ControlMethod, int> actuators;  ///< Mapping of control methods to actuator IDs.
             std::vector<hardware_interface::CommandInterface *> command_interfaces;  ///< Command interfaces associated with the joint.
             std::vector<hardware_interface::StateInterface *> state_interfaces;  ///< State interfaces associated with the joint.
