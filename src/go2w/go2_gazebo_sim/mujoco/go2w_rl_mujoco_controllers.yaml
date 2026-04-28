@@ -1,0 +1,50 @@
+# Controllers config for the rl_sar Go2W policy.
+#
+# Diff vs go2w_mujoco_controllers.yaml:
+#   - drops the joint_trajectory_controller (CHAMP path) for legs
+#   - adds robot_leg_effort_controller (forward_command_controller, effort)
+#     so the rl_locomotion_node can publish raw torques per leg joint
+#   - keeps robot_wheel_velocity_controller as-is (forward_command, velocity)
+#
+# Joint order is the local MJCF order (FL, FR, RL, RR per quadrant). The
+# rl_locomotion node remaps to/from rl_sar's policy order (FR, FL, RR, RL)
+# by joint name on every callback.
+
+/**:
+  ros__parameters:
+    use_sim_time: true
+    update_rate: 200
+    robot_joint_states_controller:
+      type: joint_state_broadcaster/JointStateBroadcaster
+    robot_leg_effort_controller:
+      type: forward_command_controller/ForwardCommandController
+    robot_wheel_velocity_controller:
+      type: forward_command_controller/ForwardCommandController
+
+/**/robot_leg_effort_controller:
+  ros__parameters:
+    use_sim_time: true
+    joints:
+      - FL_hip_joint
+      - FL_thigh_joint
+      - FL_calf_joint
+      - FR_hip_joint
+      - FR_thigh_joint
+      - FR_calf_joint
+      - RL_hip_joint
+      - RL_thigh_joint
+      - RL_calf_joint
+      - RR_hip_joint
+      - RR_thigh_joint
+      - RR_calf_joint
+    interface_name: effort
+
+/**/robot_wheel_velocity_controller:
+  ros__parameters:
+    use_sim_time: true
+    joints:
+      - FL_foot_joint
+      - FR_foot_joint
+      - RL_foot_joint
+      - RR_foot_joint
+    interface_name: velocity

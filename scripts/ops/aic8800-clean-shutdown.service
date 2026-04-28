@@ -1,0 +1,14 @@
+[Unit]
+Description=AIC8800 clean teardown before shutdown/reboot (avoids modprobe -r D-state hang)
+DefaultDependencies=no
+Before=shutdown.target reboot.target halt.target
+Conflicts=reboot.target halt.target shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStopSec=15
+ExecStop=/usr/local/sbin/aic8800-clean-shutdown
+
+[Install]
+WantedBy=halt.target reboot.target shutdown.target

@@ -19,7 +19,7 @@ nav2_hybrid_astar_nav:
     use_sim_time: true
 
     # ── speed envelope ────────────────────────────────────────────────
-    max_linear_speed:  0.70
+    max_linear_speed:  0.40
     max_angular_speed: 1.00
     min_linear_speed:  0.05
     linear_accel_max:  0.50
@@ -45,6 +45,19 @@ nav2_hybrid_astar_nav:
     #   1.20 (overshoot) → caused brake-stall when paired with eager curv decel
     #   1.00 (sweet spot) → balanced lateral correction, no stall
     cross_track_gain: 1.00
+
+    # ── feed-forward ω from path curvature ────────────────────────────
+    # ω_ff = curvature_ff_gain · v · κ_signed(path, segments ahead).
+    # Pure-pursuit is structurally reactive — only steers after cross-track
+    # error grows, so it's late on every curve. FF makes the controller
+    # anticipate: starts turning the moment the path curves, killing the
+    # delayed-steering / understeer mode (2026-04-26 screenshot: blue
+    # executed traj undershoots orange plan, then over-corrects into spiral).
+    # Window = 4 segments × 0.10 m resample = ~0.4 m anticipation horizon.
+    # Gain 1.0 = exact kinematic FF for a unicycle on its planned path;
+    # tune down if FF + PP sum overshoots, up if still understeers.
+    curvature_ff_gain:     1.0
+    curvature_ff_segments: 4
 
     # ── curvature speed shaping ───────────────────────────────────────
     # Anticipatory braking horizon. History:

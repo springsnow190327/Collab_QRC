@@ -1,0 +1,28 @@
+#!/bin/bash
+# Clean AIC8800 teardown to prevent modprobe -r from wedging in shutdown.
+# Order matters: stop watchdog -> drop NM device -> SIGSTOP wpa -> unload -> SIGCONT.
+# All steps are best-effort; we MUST NOT block shutdown.
+
+exec >/run/aic8800-clean-shutdown.log 2>&1
+set +e
+echo "[aic8800-clean-shutdown] $(date -Is) start"
+
+systemctl stop aic8800-watchdog.service 2>/dev/null
+
+IFACE=$(nmcli -t -f DEVICE,TYPE device 2>/dev/null \
+        | awk -F: '$2=="wifi"{print $1; exit}')
+[[ -n "$IFACE" ]] && nmcli device disconnect "$IFACE" 2>/dev/null
+
+pkill -STOP wpa_supplicant 2>/dev/null
+sleep 1
+
+# Time-boxed unload — never block shutdown indefinitely.
+timeout 8 modprobe -r aic8800_fdrv 2>/dev/null
+timeout 4 modprobe -r aic_load_fw 2>/dev/null
+# Last-resort force removal
+lsmod | grep -q '^aic8800_fdrv' && timeout 3 rmmod -f aic8800_fdrv 2>/dev/null
+lsmod | grep -q '^aic_load_fw'  && timeout 3 rmmod -f aic_load_fw 2>/dev/null
+
+pkill -CONT wpa_supplicant 2>/dev/null
+echo "[aic8800-clean-shutdown] $(date -Is) done"
+exit 0

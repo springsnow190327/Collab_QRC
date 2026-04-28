@@ -721,6 +721,20 @@ public:
         // off the path actively pulls back. 0.5-1.0 is typical.
         declare_parameter("cross_track_gain", 0.70);
 
+        // Cross-track-error replan trigger. When the robot's lateral drift
+        // off the *current* planned path exceeds this distance, force a
+        // replan from the robot's actual pose instead of letting pure-
+        // pursuit ride the stale path's lookahead — which can route the
+        // robot's correction trajectory through obstacles the path doesn't
+        // pass through. Failure mode this guards against (demo3_mixed
+        // 2026-04-28): A's body_clip_escape pushed it 0.7 m off the planned
+        // path; pure-pursuit kept tracking the old path, the rejoin
+        // trajectory cut through wall_east at +24.0 m, robot tipped at
+        // 52° tilt. Threshold ≈ footprint radius (0.40 m): smaller fights
+        // Stanley correction (oscillation), larger lets the robot drive
+        // a half-body-width through obstacles before noticing.
+        declare_parameter("xte_replan_threshold_m", 0.40);
+
         // ── reactive safety layer (scan) ─────────────────────────────
         declare_parameter("obstacle_slow_dist", 0.75);
         declare_parameter("obstacle_stop_dist", 0.35);
@@ -998,6 +1012,8 @@ private:
         curv_floor_      = get_parameter("curv_factor_min").as_double();
 
         cross_track_gain_ = get_parameter("cross_track_gain").as_double();
+        xte_replan_threshold_m_ =
+            get_parameter("xte_replan_threshold_m").as_double();
         Ld_min_  = get_parameter("lookahead_min").as_double();
         Ld_max_  = get_parameter("lookahead_max").as_double();
         Ld_gain_ = get_parameter("lookahead_gain").as_double();
@@ -1209,9 +1225,38 @@ private:
         bool need_replan = last_global_plan_time_ < 0
             || resampled_path_.size() < 2;
 
+        // Cross-track-error guard: if the robot has drifted off the planned
+        // path by more than xte_replan_threshold_m_, force a replan from
+        // its current pose. Without this, pure-pursuit keeps tracking the
+        // stale path's lookahead — and the rejoin trajectory from off-path
+        // can cut through obstacles the path itself doesn't intersect
+        // (demo3_mixed 2026-04-28 wall_east tip-over). Also wipes the
+        // stale path so this tick publishes a brake instead of a final
+        // pure-pursuit cmd_vel based on the bad path.
+        double xte_now = 0.0;
+        bool xte_replan = false;
+        if (resampled_path_.size() >= 2 && xte_replan_threshold_m_ > 0.0) {
+            size_t n_xte = nearest_index(resampled_path_, rx, ry,
+                                         last_pursuit_idx_);
+            xte_now = std::hypot(rx - resampled_path_[n_xte].first,
+                                 ry - resampled_path_[n_xte].second);
+            if (xte_now > xte_replan_threshold_m_) {
+                xte_replan = true;
+                need_replan = true;
+                resampled_path_.clear();
+                RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+                    "A*: cross-track error %.2f m > %.2f m — discarding "
+                    "stale path, forcing replan from current pose.",
+                    xte_now, xte_replan_threshold_m_);
+            }
+        }
+
         // Floor so dynamic replans don't hammer A* at full 20 Hz.
         // Even a perfectly-invalid plan only needs to replan once per 200 ms.
+        // xte_replan bypasses this floor — drift past threshold means the
+        // current path is unsafe, can't wait 200 ms.
         bool min_interval_ok = (last_global_plan_time_ < 0)
+            || xte_replan
             || ((now_sec - last_global_plan_time_) >= 0.2);
 
         if (!need_replan && min_interval_ok && last_map_ && !resampled_path_.empty()) {
@@ -2614,6 +2659,7 @@ private:
     double curv_low_, curv_high_, curv_floor_;
     double Ld_min_, Ld_max_, Ld_gain_;
     double cross_track_gain_;
+    double xte_replan_threshold_m_ = 0.40;
     double obs_slow_, obs_stop_, front_half_, side_half_;
     bool   turn_in_place_;
     int    map_occupied_thresh_, global_downsample_;

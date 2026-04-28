@@ -1,0 +1,139 @@
+#!/bin/bash
+# AIC8800 silent-stall watchdog — soft reconnect via nmcli, hard reload via modprobe.
+# 设计要点:
+#   - 软恢复优先：默认 nmcli disconnect/connect 走用户态。
+#   - 硬恢复仅在确认 cmd queue crashed 时触发；驱动 .open() 路径已修，
+#     .remove() WARN 仅装饰性，可承受偶发触发。
+#   - 即使没有默认路由 (USB tether 时), 仍能通过 dmesg 检测 cmd queue crashed。
+#   - IFACE 和 connection 名称动态抓取。
+
+FAIL_LIMIT=3                # 连续 ping 失败阈值
+INTERVAL=20                 # 主循环间隔(秒) — 缩短以便更快捕获 dmesg 事件
+SOFT_GAP=120                # 两次软重连最小间隔(秒)
+HARD_GAP=300                # 两次硬重载最小间隔(秒)
+HARD_NEED_HITS=3            # dmesg 中检测到 N 次 'cmd queue crashed' 才硬重载
+
+fails=0
+last_soft=0
+last_hard=0
+last_dmesg_ts=$(date +%s)   # 只看本次循环之后的新事件
+
+cleanup() { exit 0; }
+trap cleanup TERM INT HUP
+
+# 返回第一块 Wi-Fi 接口名；无则空
+find_iface() {
+    nmcli -t -f DEVICE,TYPE device 2>/dev/null \
+        | awk -F: '$2=="wifi"{print $1; exit}'
+}
+
+soft_reconnect() {
+    local iface="$1"
+    local now; now=$(date +%s)
+    if (( now - last_soft < SOFT_GAP )); then
+        logger -t aic8800-watchdog "skip soft (cooldown ${SOFT_GAP}s)"
+        return
+    fi
+    last_soft=$now
+
+    local conn
+    conn=$(nmcli -t -f NAME,DEVICE connection show --active 2>/dev/null \
+           | awk -F: -v d="$iface" '$2==d {print $1; exit}')
+
+    logger -t aic8800-watchdog "soft reconnect iface=$iface conn=${conn:-<auto>}"
+    nmcli device disconnect "$iface" 2>/dev/null || true
+    sleep 3
+    if [[ -n "$conn" ]]; then
+        nmcli connection up "$conn" ifname "$iface" 2>/dev/null \
+            || nmcli device connect "$iface" 2>/dev/null || true
+    else
+        nmcli device connect "$iface" 2>/dev/null || true
+    fi
+    fails=0
+}
+
+hard_reload() {
+    local now; now=$(date +%s)
+    if (( now - last_hard < HARD_GAP )); then
+        logger -t aic8800-watchdog "skip hard (cooldown ${HARD_GAP}s)"
+        return
+    fi
+    last_hard=$now
+    last_soft=$now   # 硬重载也算软重载冷却
+
+    logger -t aic8800-watchdog "hard reload: cmd queue crashed detected, modprobe -r/+ aic8800_fdrv"
+
+    # 用户空间清理：让 NM/wpa 释放对 wlan 的引用，避免 modprobe -r 卡死
+    local iface
+    iface=$(find_iface)
+    if [[ -n "$iface" ]]; then
+        nmcli device disconnect "$iface" 2>/dev/null || true
+    fi
+    pkill -STOP wpa_supplicant 2>/dev/null || true
+    sleep 1
+
+    if ! modprobe -r aic8800_fdrv aic_load_fw 2>/dev/null; then
+        logger -t aic8800-watchdog "modprobe -r failed, falling back to rmmod -f"
+        rmmod -f aic8800_fdrv 2>/dev/null || true
+        rmmod -f aic_load_fw 2>/dev/null || true
+    fi
+    sleep 2
+    modprobe aic8800_fdrv 2>/dev/null || logger -t aic8800-watchdog "modprobe + failed"
+
+    pkill -CONT wpa_supplicant 2>/dev/null || true
+    sleep 4
+
+    # 重新激活当前 wifi 连接（如有）
+    iface=$(find_iface)
+    if [[ -n "$iface" ]]; then
+        local conn
+        conn=$(nmcli -t -f NAME,DEVICE connection show 2>/dev/null \
+               | awk -F: -v d="$iface" '$2==d {print $1; exit}')
+        [[ -n "$conn" ]] && nmcli connection up "$conn" ifname "$iface" 2>/dev/null || true
+    fi
+    fails=0
+    last_dmesg_ts=$(date +%s)   # 重置 dmesg 起点，避免再次误触发
+}
+
+# 检查 dmesg 中自上次检查以来是否出现 'cmd queue crashed' 至少 HARD_NEED_HITS 次
+check_cmd_crashed() {
+    local since hits
+    since=$(date -d "@$last_dmesg_ts" "+%Y-%m-%d %H:%M:%S" 2>/dev/null)
+    [[ -z "$since" ]] && return 1
+    hits=$(dmesg --time-format iso --since "$since" 2>/dev/null \
+           | grep -c "cmd queue crashed")
+    last_dmesg_ts=$(date +%s)
+    (( hits >= HARD_NEED_HITS ))
+}
+
+while true; do
+    IFACE=$(find_iface)
+
+    # 1) 优先检测 cmd queue crashed —— 即便没有 wifi 默认路由也能触发硬重载
+    if check_cmd_crashed; then
+        logger -t aic8800-watchdog "cmd queue crashed detected (>=${HARD_NEED_HITS} hits), forcing hard reload"
+        hard_reload
+        sleep "$INTERVAL" & wait $!
+        continue
+    fi
+
+    # 2) 常规 ping-via-default-route 检测
+    if [[ -z "$IFACE" ]]; then
+        fails=0
+    else
+        gw=$(ip route 2>/dev/null | awk -v i="$IFACE" '$0 ~ "default.*"i {print $3; exit}')
+        if [[ -n "$gw" ]] && ip link show "$IFACE" 2>/dev/null | grep -q 'state UP'; then
+            if ping -c 2 -W 3 -I "$IFACE" "$gw" &>/dev/null; then
+                fails=0
+            else
+                fails=$((fails + 1))
+                logger -t aic8800-watchdog "ping $gw via $IFACE failed (fails=$fails)"
+                (( fails >= FAIL_LIMIT )) && soft_reconnect "$IFACE"
+            fi
+        else
+            fails=0
+        fi
+    fi
+
+    sleep "$INTERVAL" & wait $!
+done

@@ -164,3 +164,20 @@ qrc_report_and_agenda.md
 /test_scan_drift.sh
 /yolov8n.pt
 /stale/
+
+# =============================================
+# Runtime debug dumps & failure reports (per-run, not source)
+# =============================================
+# Per-run JSON / log artifacts produced by collision monitor,
+# failure_decomposer, height_filter_audit, etc. Nothing belongs in git.
+*_collision_report.json
+*_failure_report.json
+*_decomposer_*.json
+*_failure_decompose*.json
+*_safety_status.json
+audit_*.log
+audit_*.json
+demo3_*.log
+session_*.json
+/tmp_runtime_dumps/
+*.run.log

@@ -709,6 +709,32 @@ class DualRobotSafetyMonitor(Node):
         # next ones in the burst just get a one-liner counter.
         if not hasattr(self, "_last_scuff_dump_t"):
             self._last_scuff_dump_t = {"A": -1e9, "B": -1e9}
+        # Always publish a structured event on /collision_events so
+        # downstream tools (failure_decomposer, dataset loggers) get
+        # one JSON per real contact, regardless of the announce throttle.
+        if not hasattr(self, "_collision_event_pub"):
+            self._collision_event_pub = self.create_publisher(
+                String, "/collision_events", 50)
+        try:
+            self._collision_event_pub.publish(String(
+                data=json.dumps({
+                    "schema": "collision_event/v1",
+                    "t_sim": round(now, 3),
+                    "robot": c.ns,
+                    "kind": kind,
+                    "part": robot_geom,
+                    "other": other,
+                    "pos": [round(xyz[0], 3), round(xyz[1], 3), round(xyz[2], 3)],
+                    "goal": (list(c.current_goal) if c.current_goal else None),
+                    "nav_state": c.last_nav_state,
+                    "v_cmd": c.last_v_cmd,
+                    "w_cmd": c.last_w_cmd,
+                    "tilt_deg": c.last_tilt_deg,
+                    "ever_touched": bool(c.ever_touched_anything),
+                })))
+        except Exception:
+            # If the publisher hiccups don't take down the monitor.
+            pass
         if (now - self._last_scuff_dump_t[label]) > 2.0:
             self._last_scuff_dump_t[label] = now
             goal_str = (

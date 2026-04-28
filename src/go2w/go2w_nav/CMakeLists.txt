@@ -119,6 +119,7 @@ install(PROGRAMS
   scripts/far_status_adapter.py
   scripts/path_safety_filter.py
   scripts/cmd_vel_safety_shield.py
+  scripts/rl_locomotion_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

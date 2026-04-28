@@ -1,0 +1,33 @@
+# Single-hyperparameter height filter for the entire navigation stack.
+#
+# Replaces 7 disagreeing height filters across 4 reference frames:
+#   - pointcloud_to_laserscan min/max_height (base_link)
+#   - octomap point_cloud_min/max_z (world)
+#   - octomap filter_ground_plane RANSAC ±distance (base_link)
+#   - octomap occupancy_min/max_z (world)
+#   - terrain_analysis maxRelZ (vehicle)
+#   - localPlanner maxRelZ + obstacleHeightThre (vehicle / local-ground)
+#   - far_planner util/terrain_free_Z (local ground)
+#
+# After unification, ALL of those collapse to one quantity:
+#
+#   min_obstacle_height_m  =  the smallest obstacle, measured as
+#                             "height above the ground beneath it",
+#                             that this stack treats as an obstacle.
+#
+# This value is consumed by:
+#   - terrain_height_filter.py        (drops points with intensity < min_obstacle_height_m)
+#   - localPlanner.obstacleHeightThre (bound to same value via launch override)
+#   - far_planner util/terrain_free_Z (bound to same value via launch override)
+#
+# Tuning rule:
+#   Pick the smallest value above your platform's ground-noise floor.
+#   - Sim (MuJoCo, mathematically flat ground): 0.02 – 0.05
+#   - Real robot (Mid-360 indoors):              0.06 – 0.12
+#
+# Use the highest value that doesn't miss obstacles you actually need
+# to avoid (e.g. door thresholds at 4-6 cm → require ≤ 0.04 m).
+
+/**:
+  ros__parameters:
+    min_obstacle_height_m: 0.05

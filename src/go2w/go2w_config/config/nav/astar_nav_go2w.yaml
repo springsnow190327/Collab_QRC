@@ -107,6 +107,14 @@
     # weight = clamp(|e_ct|/0.30, 0, 1) — on path: pure PP; 30 cm off: full Stanley.
     cross_track_gain: 0.70
 
+    # Cross-track-error replan trigger. If the robot drifts laterally
+    # more than this off the planned path, force a fresh replan from
+    # the current pose (instead of letting pure-pursuit ride the stale
+    # path). Set to 0 to disable. ~footprint radius = 0.40 m.
+    # demo3_mixed 2026-04-28: A drifted 0.7 m off path during recovery,
+    # PP rejoin trajectory cut through wall_east at +24 m, robot tipped.
+    xte_replan_threshold_m: 0.40
+
     # ── reactive safety (scan) ────────────────────────────────────
     obstacle_slow_dist:      0.75
     obstacle_stop_dist:      0.35
