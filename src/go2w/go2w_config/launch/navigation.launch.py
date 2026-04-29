@@ -158,10 +158,18 @@ def _setup(context):
         # invokes with go2w paths, so default to wheeled yaml.
         _robot_model = (_get(context, "robot_model") or "").strip().lower()
         _is_legged_only = _robot_model == "go2"
-        _nav2_yaml_name = (
-            "nav2_go2_full_stack.yaml" if _is_legged_only
-            else "nav2_go2w_full_stack.yaml"
-        )
+        # Optional override: real-robot launches pass nav2_yaml_override to
+        # select a real-tuned yaml (e.g. nav2_go2_real.yaml) with reduced
+        # SmacPlanner iteration cap, smaller MPPI batch, softer obstacle
+        # critic, etc. Sim launches leave it empty and get the auto-pick.
+        _yaml_override = _get(context, "nav2_yaml_override").strip()
+        if _yaml_override:
+            _nav2_yaml_name = _yaml_override
+        else:
+            _nav2_yaml_name = (
+                "nav2_go2_full_stack.yaml" if _is_legged_only
+                else "nav2_go2w_full_stack.yaml"
+            )
         _go2w_config_pkg = get_package_share_directory("go2w_config")
         _nav2_yaml_path = os.path.join(
             _go2w_config_pkg, "config", "nav", _nav2_yaml_name
@@ -195,13 +203,26 @@ def _setup(context):
             convert_types=True,
         )
 
+        # Nav2 publishes plain Twist on `cmd_vel` (relative → /<ns>/cmd_vel
+        # under PushRosNamespace). The real-bringup cmd chain expects the
+        # downstream "auto" feed at /<ns>/cmd_vel_auto (consumed by
+        # cmd_vel_activity_mux which arbitrates manual vs auto). The legacy
+        # twist_bridge that connects /<ns>/cmd_vel_stamped → /<ns>/cmd_vel_auto
+        # is for default_nav.py / astar (TwistStamped publishers) and is
+        # completely silent under Nav2 (different topic name + message type).
+        # Remap controller_server and behavior_server's cmd_vel directly to
+        # cmd_vel_auto so the mux receives Nav2's output. Without this,
+        # /<ns>/cmd_vel has 5 pubs / 0 subs while /<ns>/cmd_vel_auto has 0
+        # pubs / 1 sub — robot receives /api/sport/request {x:0,y:0,z:0}
+        # at heartbeat rate and stands still.
+        cmd_vel_remap = [("cmd_vel", "cmd_vel_auto")]
         nav2_inner_nodes = [
             PushRosNamespace(robot_ns),
             Node(
                 package="nav2_controller", executable="controller_server",
                 name="controller_server",
                 parameters=[_rewritten],
-                remappings=tf_remaps if remap_tf else [],
+                remappings=(tf_remaps if remap_tf else []) + cmd_vel_remap,
                 output="screen",
             ),
             Node(
@@ -215,7 +236,9 @@ def _setup(context):
                 package="nav2_behaviors", executable="behavior_server",
                 name="behavior_server",
                 parameters=[_rewritten],
-                remappings=tf_remaps if remap_tf else [],
+                # spin/backup/wait recovery primitives also publish cmd_vel —
+                # remap them too so recoveries actually drive the robot.
+                remappings=(tf_remaps if remap_tf else []) + cmd_vel_remap,
                 output="screen",
             ),
             Node(
@@ -870,6 +893,10 @@ def generate_launch_description():
             # this to "/Odometry" (absolute) because their Fast-LIO is started
             # un-namespaced. The adapter handles both forms (see fast_lio_tf_adapter.py).
             DeclareLaunchArgument("fast_lio_input_topic", default_value="Odometry"),
+            # Real-robot launches override e.g. "nav2_go2_real.yaml" to swap
+            # in a yaml retuned for the laptop's CPU + Mid-360 noise. Sim
+            # leaves empty and gets nav2_go2{,w}_full_stack.yaml by robot_model.
+            DeclareLaunchArgument("nav2_yaml_override", default_value=""),
             # Sim default: adapter publishes TF (sole base_link owner). Real
             # overrides to "false" because slam.launch.py already provides the
             # full TF chain map→camera_init→body→base_link plus map→odom static.

@@ -168,6 +168,14 @@ def _launch_setup(context):
                 # would multi-parent it. Adapter still publishes the topic
                 # /robot/odom/nav, just not TF.
                 "fast_lio_publish_tf": "false",
+                # Pick the real-tuned yaml when one exists for this platform.
+                # Real tunings: 80k iter cap, 1.5s plan budget, MPPI batch 1000,
+                # softer obstacle critic, tighter inflation. Falls back to the
+                # sim full-stack yaml on platforms where a real yaml doesn't
+                # exist yet (currently only go2 has nav2_go2_real.yaml).
+                "nav2_yaml_override": (
+                    "nav2_go2_real.yaml" if robot_model == "go2" else ""
+                ),
             }.items(),
         ),
         # ── Safety ──
