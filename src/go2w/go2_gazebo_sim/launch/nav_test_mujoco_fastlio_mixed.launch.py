@@ -1070,6 +1070,31 @@ def _build_fastlio_nav_stack(
             output="screen",
         )
 
+        # stuck_watchdog: outer-loop self-recovery. Detects 10 s of no
+        # motion under an active goal, fires a Nav2 BackUp action then
+        # republishes the goal so SmacHybrid replans from the new
+        # (post-backup) pose. Pivot-lock and pivot-stuck-on-tight-turn
+        # are both handled by this — the robot physically backs up by
+        # 0.40 m, clearance recomputes, the new plan can include
+        # forward+reverse Reeds-Shepp segments. Mirrors Nav2's built-in
+        # Backup recovery behaviour, but triggered by EXTERNAL motion
+        # check rather than a controller-reported failure (MPPI in
+        # narrow-pivot scenarios outputs v≈ω≈0 without ever reporting
+        # failure, so the BT never enters its recovery branch).
+        stuck_watchdog_path = os.path.expanduser(
+            "~/Research/Collab_QRC/scripts/runtime/stuck_watchdog.py"
+        )
+        stuck_watchdog_node = ExecuteProcess(
+            cmd=[
+                "python3", "-u", stuck_watchdog_path,
+                "--ros-args",
+                "-p", f"namespace:={ns}",
+                "-p", f"use_sim_time:={'true' if use_sim_time else 'false'}",
+            ],
+            name=f"stuck_watchdog_{ns}",
+            output="screen",
+        )
+
         # hybrid_cmd_router: only relevant for Go2W (it splits cmd_vel
         # into wheel vs legged based on curvature). Go2 (no wheels) has
         # no `*_wheel_velocity_controller` to publish to; CHAMP for
@@ -1145,10 +1170,12 @@ def _build_fastlio_nav_stack(
         from launch.actions import GroupAction
         _nav2_actions = [
             GroupAction(actions=nav2_inner_nodes),
-            # Bridge + relay run at root NS; they compute namespaced
-            # topics internally from their `namespace` parameter.
+            # Bridge + relay + watchdog run at root NS; they compute
+            # namespaced topics internally from their `namespace`
+            # parameter.
             bridge_node,
             path_relay_node,
+            stuck_watchdog_node,
             bag_record,
         ]
         if router_node is not None:
