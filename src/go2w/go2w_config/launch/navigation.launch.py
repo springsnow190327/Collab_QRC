@@ -167,8 +167,29 @@ def _setup(context):
             _go2w_config_pkg, "config", "nav", _nav2_yaml_name
         )
         _base_frame = "b_base_link" if _is_legged_only else "base_link"
+
+        # The yamls bake in /robot_a/ (go2w yaml) and /robot_b/ (go2 yaml) for
+        # the dual-robot sim case. On real (ns=robot), those topics don't
+        # exist — Nav2 silently subscribes to dead topics:
+        #   global_costmap.static_layer.map_topic    /robot_a/map
+        #   local_costmap.obstacle_layer.scan.topic  /robot_a/scan_3d
+        #   controller_server.odom_topic             /robot_a/odom/nav
+        # No map → planner cannot plan → no path ever appears in RViz, even
+        # though TF and QoS are correct. RewrittenYaml.param_rewrites matches
+        # by key name only and would rewrite every "topic"/"map_topic" in the
+        # file (some are intentionally relative). Safer: do the namespace
+        # substitution on the raw yaml content, drop it in a temp file.
+        import tempfile, re
+        with open(_nav2_yaml_path) as _f:
+            _yaml_text = _f.read()
+        _yaml_text = re.sub(r"/robot_[ab]/", f"/{robot_ns}/", _yaml_text)
+        _tmp_yaml = tempfile.NamedTemporaryFile(
+            mode="w", suffix=f"_{robot_ns}_nav2.yaml", delete=False
+        )
+        _tmp_yaml.write(_yaml_text)
+        _tmp_yaml.close()
         _rewritten = RewrittenYaml(
-            source_file=_nav2_yaml_path,
+            source_file=_tmp_yaml.name,
             root_key=robot_ns,
             param_rewrites={"use_sim_time": str(use_sim_time).lower()},
             convert_types=True,
@@ -299,6 +320,31 @@ def _setup(context):
                     "-p", f"use_sim_time:={'true' if use_sim_time else 'false'}",
                 ],
                 name=f"path_relay_{robot_ns}",
+                output="screen",
+            )
+        )
+
+        # robot_pose_marker: synthesizes /<ns>/robot_pose_marker (red triangle)
+        # from /<ns>/odom/nav. Nav2 MPPI doesn't publish this marker (only the
+        # legacy A*/default backends do); without this node the RViz config's
+        # RobotPoseTriangle stays blank.
+        # Footprint dims here are chosen by robot_model: Go2W is 0.70×0.35,
+        # Go2 is 0.65×0.30 — matches the polygon footprints in the nav2 yamls.
+        _length = "0.65" if _is_legged_only else "0.70"
+        _width = "0.30" if _is_legged_only else "0.35"
+        actions.append(
+            ExecuteProcess(
+                cmd=[
+                    "python3", "-u",
+                    os.path.join(_repo_scripts, "robot_pose_marker.py"),
+                    "--ros-args",
+                    "-p", f"namespace:={robot_ns}",
+                    "-p", "frame_id:=map",
+                    "-p", f"length:={_length}",
+                    "-p", f"width:={_width}",
+                    "-p", f"use_sim_time:={'true' if use_sim_time else 'false'}",
+                ],
+                name=f"robot_pose_marker_{robot_ns}",
                 output="screen",
             )
         )

@@ -81,4 +81,6 @@ export FASTRTPS_DEFAULT_PROFILES_FILE="${WS_DIR}/config/fastdds_no_shm.xml"
 exec ros2 launch go2_gazebo_sim nav_test_mujoco_fastlio_mixed.launch.py \
   nav_backend_a:=astar \
   nav_backend_b:=astar \
+  gui:=true \
+  rviz:=true \
   "$@"

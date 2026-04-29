@@ -112,14 +112,16 @@ class StuckWatchdog(Node):
         check_period = 1.0 / max(0.1,
                                  float(self.get_parameter("check_rate_hz").value))
 
-        # bt_navigator publishes goal_pose with BEST_EFFORT in our
-        # mixed-launch setup; the cfpa2_to_nav2_bridge that produces it
-        # likewise. Mirror the same QoS so we receive every update.
-        be_qos = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
+        # Nav2's bt_navigator subscribes goal_pose with rclcpp::SystemDefaultsQoS
+        # = RELIABLE/VOLATILE/KEEP_LAST(10). The earlier BEST_EFFORT mirror was
+        # wrong (cfpa2_to_nav2_bridge had the same bug — see its commit) and
+        # caused QoS-incompatibility warnings + silent drops of every
+        # republished goal during stuck recovery.
+        nav2_goal_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE,
             history=HistoryPolicy.KEEP_LAST,
-            depth=1,
+            depth=10,
         )
 
         # Pose history: deque of (t_sec, x, y).
@@ -129,10 +131,10 @@ class StuckWatchdog(Node):
         self._recovery_in_flight: bool = False
 
         self.create_subscription(Odometry, odom_topic, self._odom_cb, 10)
-        self.create_subscription(PoseStamped, goal_topic, self._goal_cb, be_qos)
+        self.create_subscription(PoseStamped, goal_topic, self._goal_cb, nav2_goal_qos)
         # Republish goal on the same topic Nav2 listens on, with the
-        # same BEST_EFFORT QoS bt_navigator expects.
-        self._goal_pub = self.create_publisher(PoseStamped, goal_topic, be_qos)
+        # same RELIABLE QoS bt_navigator actually expects.
+        self._goal_pub = self.create_publisher(PoseStamped, goal_topic, nav2_goal_qos)
         self._backup_client = ActionClient(self, BackUp, backup_action)
         self.create_timer(check_period, self._check_stuck)
 

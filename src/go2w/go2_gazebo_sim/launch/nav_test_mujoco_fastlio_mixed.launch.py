@@ -29,6 +29,12 @@ _here = os.path.dirname(os.path.abspath(__file__))
 if _here not in sys.path:
     sys.path.insert(0, _here)
 
+# Workspace root resolved via the launch file's realpath — symlink-install
+# means __file__ points into install/, but the actual src lives at
+# <ws>/src/go2w/go2_gazebo_sim/launch/. Walk 4 dirs up to <ws>/. Used to
+# locate scripts under <ws>/scripts/ that aren't installed as a ROS package.
+_ws_root = os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..", "..", ".."))
+
 import xacro
 import yaml
 from ament_index_python.packages import get_package_share_directory
@@ -608,9 +614,7 @@ def _build_fastlio_nav_stack(
         ExecuteProcess(
             cmd=[
                 "python3", "-u",
-                os.path.expanduser(
-                    "~/Research/Collab_QRC/scripts/runtime/fast_lio_tf_adapter.py"
-                ),
+                os.path.join(_ws_root, "scripts/runtime/fast_lio_tf_adapter.py"),
                 "--ros-args",
                 "-p", f"namespace:={ns}",
                 "-p", f"use_sim_time:={'true' if use_sim_time else 'false'}",
@@ -1071,9 +1075,7 @@ def _build_fastlio_nav_stack(
         # BEST_EFFORT to match bt_navigator's QoS). Lives outside an
         # installed package so we run it via ExecuteProcess with an
         # absolute path.
-        bridge_path = os.path.expanduser(
-            "~/Research/Collab_QRC/scripts/runtime/cfpa2_to_nav2_bridge.py"
-        )
+        bridge_path = os.path.join(_ws_root, "scripts/runtime/cfpa2_to_nav2_bridge.py")
         bridge_node = ExecuteProcess(
             cmd=[
                 "python3", "-u", bridge_path,
@@ -1089,9 +1091,7 @@ def _build_fastlio_nav_stack(
         # Path relay: rename Nav2's /plan → /planned_path so the existing
         # nav_test_mixed.rviz config (carried over from astar_nav layout)
         # picks up the visualisation without RViz config changes.
-        path_relay_path = os.path.expanduser(
-            "~/Research/Collab_QRC/scripts/runtime/path_relay.py"
-        )
+        path_relay_path = os.path.join(_ws_root, "scripts/runtime/path_relay.py")
         path_relay_node = ExecuteProcess(
             cmd=[
                 "python3", "-u", path_relay_path,
@@ -1114,9 +1114,7 @@ def _build_fastlio_nav_stack(
         # check rather than a controller-reported failure (MPPI in
         # narrow-pivot scenarios outputs v≈ω≈0 without ever reporting
         # failure, so the BT never enters its recovery branch).
-        stuck_watchdog_path = os.path.expanduser(
-            "~/Research/Collab_QRC/scripts/runtime/stuck_watchdog.py"
-        )
+        stuck_watchdog_path = os.path.join(_ws_root, "scripts/runtime/stuck_watchdog.py")
         stuck_watchdog_node = ExecuteProcess(
             cmd=[
                 "python3", "-u", stuck_watchdog_path,

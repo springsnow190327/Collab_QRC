@@ -66,12 +66,18 @@ class Cfpa2ToNav2Bridge(Node):
             history=HistoryPolicy.KEEP_LAST,
             depth=5,
         )
-        # Nav2's bt_navigator subscribes goal_pose with BEST_EFFORT.
+        # Nav2's bt_navigator subscribes goal_pose with rclcpp::SystemDefaultsQoS,
+        # which is RELIABLE/VOLATILE/KEEP_LAST(10). Earlier comment claiming
+        # BEST_EFFORT was wrong — published goals were silently dropped on the
+        # wire (publisher logs "forwarded goal" but bt_navigator never received
+        # them). Confirmed via the runtime warning:
+        #   "New publisher discovered on '/<ns>/goal_pose'... incompatible
+        #    QoS. Last incompatible policy: RELIABILITY".
         nav2_goal_qos = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
+            reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE,
             history=HistoryPolicy.KEEP_LAST,
-            depth=1,
+            depth=10,
         )
 
         self._last_pose_x: float | None = None
