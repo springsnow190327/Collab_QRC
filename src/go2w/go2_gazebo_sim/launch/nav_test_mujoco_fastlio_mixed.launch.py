@@ -312,10 +312,17 @@ def _build_sensor_bridges(ns: str, mjcf_path: str, base_body: str, imu_site: str
                 "base_body_name": base_body,
                 "odom_frame": "odom",
                 "base_frame": base_body,
-                # Fast-LIO needs to own the map→odom→base_link chain.
-                # Setting publish_tf=True here gives an early odom→base_link
-                # identity TF so Fast-LIO has something to seed from.
-                "publish_tf": True,
+                # 2026-04-29: TF chain ownership moved to fast_lio_tf_adapter
+                # (publishes map→base_link from Fast-LIO's `/<ns>/Odometry`).
+                # mujoco_odom_bridge keeps publishing the *topic*
+                # /<ns>/odom/ground_truth for sim-only consumers
+                # (collision_monitor / session_reporter / GT bootstrap), but
+                # NO LONGER writes TF — sim and real now share the same TF
+                # source (Fast-LIO via adapter). Without this change, sim's
+                # mujoco_odom_bridge would compete with the adapter on the
+                # same `odom→base_link` link, producing duplicate TFs and
+                # confusing TF lookups.
+                "publish_tf": False,
                 "pose_topic": f"/mujoco_sim/{pose_sensor}/pose",
                 "imu_topic": f"/mujoco_sim/{imu_sensor}/imu",
                 "republish_imu_topic": "imu/data",
@@ -587,23 +594,49 @@ def _build_fastlio_nav_stack(
             ],
             output="screen",
         ),
-        # slam_odom_relay: renames Fast-LIO's Odometry topic for nav consumption
-        Node(
-            package="go2w_perception",
-            executable="slam_odom_relay.py",
-            namespace=ns,
-            name="slam_odom_relay",
-            parameters=[{
-                "use_sim_time": use_sim_time,
-                "input_topic": f"/{ns}/Odometry",
-                "gt_topic": f"/{ns}/odom/ground_truth",
-                "output_topic": f"/{ns}/odom/nav",
-                "output_frame_id": "world",
-                "output_child_frame_id": base_frame,
-                "bootstrap_from_gt": True,
-                "require_gt_for_alignment": True,
-            }],
-            remappings=tf_remaps,
+        # fast_lio_tf_adapter: replaces both slam_odom_relay (frame
+        # remap) and the mujoco_odom_bridge's TF role. Subscribes
+        # Fast-LIO's `/<ns>/Odometry` (frame camera_init→body), applies
+        # one-shot GT bootstrap so map frame's origin aligns with the
+        # world origin, then publishes:
+        #   - /<ns>/odom/nav         (Odometry, frame=map child=base_link)
+        #   - TF map → base_link     (the canonical pose for Nav2)
+        # Real-robot compatible: doesn't depend on mujoco_odom_bridge or
+        # CHAMP's broken state_estimation/odom_raw chain. On real, the
+        # same code path runs; with SC-PGO ported (loop_closure:=true),
+        # adapter prefers /<ns>/corrected_odom over raw when fresh.
+        ExecuteProcess(
+            cmd=[
+                "python3", "-u",
+                os.path.expanduser(
+                    "~/Research/Collab_QRC/scripts/runtime/fast_lio_tf_adapter.py"
+                ),
+                "--ros-args",
+                "-p", f"namespace:={ns}",
+                "-p", f"use_sim_time:={'true' if use_sim_time else 'false'}",
+                "-p", "input_topic:=Odometry",
+                "-p", "output_topic:=odom/nav",
+                # TF parent must match local_costmap's `global_frame: odom`.
+                # The static `map → odom = identity` from the launch's TF
+                # publishers connects this to the map frame for global
+                # planning. With GT bootstrap the alignment offset (dx,
+                # dy, yaw_offset) is baked into the published pose, so
+                # robot's pose in `odom` already equals world coords.
+                "-p", "output_frame_id:=odom",
+                "-p", f"output_child_frame_id:={base_frame}",
+                "-p", "publish_tf:=true",
+                "-p", "bootstrap_from_gt:=true",
+                "-p", "gt_topic:=odom/ground_truth",
+                "-p", "corrected_topic:=corrected_odom",
+                # TransformBroadcaster publishes to global /tf by default;
+                # in this namespaced dual-robot setup, all consumers
+                # subscribe /<ns>/tf. Without this remap, the adapter's
+                # TF is invisible to nav2 (Could not find a connection
+                # between 'odom' and 'base_link').
+                "-r", f"/tf:=/{ns}/tf",
+                "-r", f"/tf_static:=/{ns}/tf_static",
+            ],
+            name=f"fast_lio_tf_adapter_{ns}",
             output="screen",
         ),
     ]
@@ -2213,12 +2246,22 @@ def generate_launch_description():
             default_value="/tmp/dual_robot_collision_report.json",
         ),
         DeclareLaunchArgument(
-            "nav_backend_a", default_value="far",
-            description="Nav backend for robot_a (Go2W): 'far' | 'astar'.",
+            "nav_backend_a", default_value="nav2_mppi",
+            description=(
+                "Nav backend for robot_a (Go2W). Default 'nav2_mppi' "
+                "(SmacPlannerHybrid + MPPI + behavior_server, polygon "
+                "footprint, stuck_watchdog) — production stack since "
+                "2026-04-29. Other options: 'far' | 'astar' | 'none'."
+            ),
         ),
         DeclareLaunchArgument(
-            "nav_backend_b", default_value="astar",
-            description="Nav backend for robot_b (Go2): 'far' | 'astar'.",
+            "nav_backend_b", default_value="nav2_mppi",
+            description=(
+                "Nav backend for robot_b (Go2). Default 'nav2_mppi' "
+                "(uses nav2_go2_full_stack.yaml: 0.65×0.30 m footprint, "
+                "vx_max 0.30, in-place pivot via min_turning_radius=0.05). "
+                "Other options: 'far' | 'astar' | 'none'."
+            ),
         ),
         DeclareLaunchArgument(
             "loop_closure", default_value="false",

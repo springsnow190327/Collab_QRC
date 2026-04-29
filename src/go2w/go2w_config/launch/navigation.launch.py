@@ -4,9 +4,14 @@
 Included by both sim and real top-level launch files with platform-appropriate args.
 
 nav_backend:
-  default  — default_nav.py (Python A* grid planner with D* Lite + recovery)
-  astar    — astar_nav_node (C++ A* + pure-pursuit + oriented footprint check)
-  far      — CMU autonomy stack: terrain_analysis + far_planner + localPlanner/pathFollower
+  default    — default_nav.py (Python A* grid planner with D* Lite + recovery)
+  astar      — astar_nav_node (C++ A* + pure-pursuit + oriented footprint check)
+  far        — CMU autonomy stack: terrain_analysis + far_planner + localPlanner/pathFollower
+  nav2_mppi  — Nav2 SmacPlannerHybrid + MPPI + behavior_server +
+               lifecycle_manager, polygon footprint, fast_lio_tf_adapter
+               for TF, stuck_watchdog for self-recovery, cfpa2_to_nav2_bridge
+               for goal forwarding. Production stack on real robot since
+               2026-04-29. Default for both real_autonomy.sh entry points.
 """
 
 import os
@@ -129,6 +134,165 @@ def _setup(context):
         )
 
     # ── Local Planner Backend ──
+    if nav_backend == "nav2_mppi":
+        # Nav2 stack with SmacPlannerHybrid (REEDS_SHEPP) + MPPIController
+        # + behavior_server (Spin/BackUp/Wait) + bt_navigator + lifecycle_manager.
+        # Augmented by:
+        #   - fast_lio_tf_adapter (publishes /<ns>/odom/nav + odom→base_link TF
+        #     from Fast-LIO; replaces slam_odom_relay; works on real with
+        #     bootstrap_from_gt:=false)
+        #   - cfpa2_to_nav2_bridge (CFPA2 way_point_coord → Nav2 goal_pose)
+        #   - path_relay (Nav2 /plan → /planned_path for legacy RViz config)
+        #   - stuck_watchdog (10s no-motion → Nav2 BackUp + republish goal)
+        # Per-platform yaml: Go2W → nav2_go2w_full_stack.yaml,
+        # Go2 → nav2_go2_full_stack.yaml.
+        from launch.actions import ExecuteProcess
+        from launch_ros.actions import PushRosNamespace
+        from launch.actions import GroupAction
+        from nav2_common.launch import RewrittenYaml
+
+        # Determine platform from robot_namespace heuristic + base_frame param.
+        # Real launches pass base_frame via robot_model arg; for navigation.launch.py
+        # we read a lightweight `nav2_yaml_filename` override or fall back to
+        # robot_model="go2w" assumption. Currently real_autonomy.sh always
+        # invokes with go2w paths, so default to wheeled yaml.
+        _robot_model = (_get(context, "robot_model") or "").strip().lower()
+        _is_legged_only = _robot_model == "go2"
+        _nav2_yaml_name = (
+            "nav2_go2_full_stack.yaml" if _is_legged_only
+            else "nav2_go2w_full_stack.yaml"
+        )
+        _go2w_config_pkg = get_package_share_directory("go2w_config")
+        _nav2_yaml_path = os.path.join(
+            _go2w_config_pkg, "config", "nav", _nav2_yaml_name
+        )
+        _base_frame = "b_base_link" if _is_legged_only else "base_link"
+        _rewritten = RewrittenYaml(
+            source_file=_nav2_yaml_path,
+            root_key=robot_ns,
+            param_rewrites={"use_sim_time": str(use_sim_time).lower()},
+            convert_types=True,
+        )
+
+        nav2_inner_nodes = [
+            PushRosNamespace(robot_ns),
+            Node(
+                package="nav2_controller", executable="controller_server",
+                name="controller_server",
+                parameters=[_rewritten],
+                remappings=tf_remaps if remap_tf else [],
+                output="screen",
+            ),
+            Node(
+                package="nav2_planner", executable="planner_server",
+                name="planner_server",
+                parameters=[_rewritten],
+                remappings=tf_remaps if remap_tf else [],
+                output="screen",
+            ),
+            Node(
+                package="nav2_behaviors", executable="behavior_server",
+                name="behavior_server",
+                parameters=[_rewritten],
+                remappings=tf_remaps if remap_tf else [],
+                output="screen",
+            ),
+            Node(
+                package="nav2_bt_navigator", executable="bt_navigator",
+                name="bt_navigator",
+                parameters=[_rewritten],
+                remappings=tf_remaps if remap_tf else [],
+                output="screen",
+            ),
+            Node(
+                package="nav2_lifecycle_manager", executable="lifecycle_manager",
+                name="lifecycle_manager_navigation",
+                parameters=[_rewritten],
+                output="screen",
+            ),
+        ]
+        actions.append(GroupAction(actions=nav2_inner_nodes))
+
+        # Helper-script paths under repo's scripts/runtime/ — same on
+        # sim and real (mounted by source build, not in install/).
+        _repo_scripts = os.path.expanduser("~/Research/Collab_QRC/scripts/runtime")
+
+        # fast_lio_tf_adapter: publishes /<ns>/odom/nav + odom→base_link
+        # TF from Fast-LIO. On real, no GT to bootstrap against → set
+        # bootstrap_from_gt=false; the map frame's origin then equals
+        # robot's spawn pose (whatever Fast-LIO set as origin at startup).
+        actions.append(
+            ExecuteProcess(
+                cmd=[
+                    "python3", "-u",
+                    os.path.join(_repo_scripts, "fast_lio_tf_adapter.py"),
+                    "--ros-args",
+                    "-p", f"namespace:={robot_ns}",
+                    "-p", f"use_sim_time:={'true' if use_sim_time else 'false'}",
+                    "-p", "input_topic:=Odometry",
+                    "-p", "output_topic:=odom/nav",
+                    "-p", "output_frame_id:=odom",
+                    "-p", f"output_child_frame_id:={_base_frame}",
+                    "-p", "publish_tf:=true",
+                    # Bootstrap is sim-only privilege; real has no GT topic.
+                    "-p", f"bootstrap_from_gt:={'true' if use_sim_time else 'false'}",
+                    "-p", "gt_topic:=odom/ground_truth",
+                    "-p", "corrected_topic:=corrected_odom",
+                    "-r", f"/tf:=/{robot_ns}/tf",
+                    "-r", f"/tf_static:=/{robot_ns}/tf_static",
+                ],
+                name=f"fast_lio_tf_adapter_{robot_ns}",
+                output="screen",
+            )
+        )
+
+        # cfpa2_to_nav2_bridge: way_point_coord → goal_pose for bt_navigator.
+        actions.append(
+            ExecuteProcess(
+                cmd=[
+                    "python3", "-u",
+                    os.path.join(_repo_scripts, "cfpa2_to_nav2_bridge.py"),
+                    "--ros-args",
+                    "-p", f"namespace:={robot_ns}",
+                    "-p", f"use_sim_time:={'true' if use_sim_time else 'false'}",
+                    "-p", "waypoint_topic:=way_point_coord",
+                ],
+                name=f"cfpa2_to_nav2_bridge_{robot_ns}",
+                output="screen",
+            )
+        )
+
+        # path_relay: Nav2 /plan → /planned_path for legacy RViz config.
+        actions.append(
+            ExecuteProcess(
+                cmd=[
+                    "python3", "-u",
+                    os.path.join(_repo_scripts, "path_relay.py"),
+                    "--ros-args",
+                    "-p", f"namespace:={robot_ns}",
+                    "-p", f"use_sim_time:={'true' if use_sim_time else 'false'}",
+                ],
+                name=f"path_relay_{robot_ns}",
+                output="screen",
+            )
+        )
+
+        # stuck_watchdog: outer-loop self-recovery (10s no-motion → BackUp).
+        actions.append(
+            ExecuteProcess(
+                cmd=[
+                    "python3", "-u",
+                    os.path.join(_repo_scripts, "stuck_watchdog.py"),
+                    "--ros-args",
+                    "-p", f"namespace:={robot_ns}",
+                    "-p", f"use_sim_time:={'true' if use_sim_time else 'false'}",
+                ],
+                name=f"stuck_watchdog_{robot_ns}",
+                output="screen",
+            )
+        )
+        return actions
+
     if nav_backend == "far":
         far_goal_topic_override = _get(context, "far_goal_topic").strip()
         far_way_point_out_override = _get(context, "far_way_point_out").strip()
@@ -565,6 +729,16 @@ def generate_launch_description():
     return LaunchDescription(
         [
             DeclareLaunchArgument("robot_namespace", default_value="robot"),
+            DeclareLaunchArgument(
+                "robot_model", default_value="go2w",
+                description=(
+                    "Used by the nav2_mppi branch to pick the right per-platform "
+                    "yaml: 'go2w' → nav2_go2w_full_stack.yaml (0.70 × 0.40 m "
+                    "footprint, vx_max 0.50, base_link), 'go2' → "
+                    "nav2_go2_full_stack.yaml (0.65 × 0.30 m, vx_max 0.30, "
+                    "b_base_link). Other backends ignore this arg."
+                ),
+            ),
             DeclareLaunchArgument("use_sim_time", default_value="true"),
             DeclareLaunchArgument("map_frame", default_value="world"),
             DeclareLaunchArgument("remap_tf", default_value="true"),

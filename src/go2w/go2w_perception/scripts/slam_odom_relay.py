@@ -4,6 +4,16 @@
 Supports dual-source: when SC-PGO's /corrected_odom is available and fresh,
 use it instead of raw SLAM odom. Falls back to raw odom transparently
 when SC-PGO isn't running or hasn't detected a loop yet.
+
+2026-04-29: added `pose_from_tf` mode. When true, the relay's *pose* comes
+from a TF lookup (target_frame → child_frame), not from the input topic's
+pose. The input topic is still subscribed for *velocity* (twist). This
+makes /odom/nav consistent with whatever pose Nav2's planner uses
+internally (SmacPlannerHybrid reads pose from TF), eliminating the case
+where /odom/nav drifts from the actual planning pose. Real-robot
+compatible: on a real Go2/Go2W the TF chain is the EKF-fused estimate,
+which is the canonical pose source. On sim it's MuJoCo-bridged TF, which
+is GT-aligned. Either way every consumer sees the same pose.
 """
 import math
 import time
@@ -11,6 +21,7 @@ import time
 import rclpy
 from rclpy.node import Node
 from nav_msgs.msg import Odometry
+from tf2_ros import Buffer, TransformException, TransformListener
 
 
 class SlamOdomRelay(Node):

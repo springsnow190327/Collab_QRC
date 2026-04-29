@@ -13,7 +13,13 @@
 #                                         ensure_link so the dongle is up.
 #                                         Override GO2W_MID360_IP or set
 #                                         slam=carto_l1 explicitly to skip.)
-#   nav={cfpa2|tare|tare_real|far}       default: cfpa2
+#   nav={nav2_mppi|cfpa2|tare|tare_real|far}    default: nav2_mppi
+#                                        nav2_mppi = Nav2 SmacPlannerHybrid + MPPI +
+#                                                    behavior_server + stuck_watchdog +
+#                                                    fast_lio_tf_adapter
+#                                                    (production stack since 2026-04-29).
+#                                        cfpa2     = legacy default_nav.py (Python A* +
+#                                                    D* Lite + recovery).
 #                                        tare_real = real CMU TARE → localPlanner
 #                                                    direct (FAR unwired, CFPA2 off)
 #   mapper={scan|carto_binary|carto_2d}  default: carto_2d
@@ -49,7 +55,7 @@ REPO_ROOT="$( cd "$SCRIPT_DIR/../.." &> /dev/null && pwd )"
 ROBOT="go2w"
 CONNECT="ethernet"
 SLAM="auto"
-NAV="cfpa2"
+NAV="nav2_mppi"
 MAPPER="carto_2d"
 OA="true"
 EXECUTE="true"
@@ -134,6 +140,11 @@ source /opt/ros/humble/setup.bash
 
 # ── Map flag → launch ────────────────────────────────────────────────
 case "$NAV" in
+  # Default since 2026-04-29: Nav2 + SmacPlannerHybrid + MPPI +
+  # behavior_server + lifecycle_manager + fast_lio_tf_adapter +
+  # stuck_watchdog + cfpa2_to_nav2_bridge. See
+  # docs/claude/nav2_mppi_journey.md for the full stack rationale.
+  nav2_mppi) LAUNCH="real_single.launch.py";      NAV_BACKEND="nav2_mppi" ;;
   cfpa2)     LAUNCH="real_single.launch.py";      NAV_BACKEND="reactive" ;;
   far)       LAUNCH="real_single.launch.py";      NAV_BACKEND="far" ;;
   tare)      LAUNCH="real_single_tare.launch.py"; NAV_BACKEND="reactive" ;;
