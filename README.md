@@ -166,7 +166,12 @@ Keys go in `.env.xai` at repo root (or exported).
 micromamba activate cmu_env
 source /opt/ros/humble/setup.bash
 
-touch src/mtare_ros1_ws/COLCON_IGNORE
+# Mark the non-buildable vendored sources before the first colcon invocation.
+# COLCON_IGNORE is gitignored (see .gitignore), so each clone must recreate it.
+touch src/vendor/autonomy_stack_go2/COLCON_IGNORE  \
+      src/vendor/Livox-SDK2/COLCON_IGNORE          \
+      src/vendor/sc_pgo/fast_lio_sam/COLCON_IGNORE
+
 colcon build --symlink-install --cmake-clean-cache \
   --cmake-args -DPython3_EXECUTABLE=$CONDA_PREFIX/bin/python3
 
@@ -174,6 +179,12 @@ colcon build --symlink-install --cmake-clean-cache \
 colcon build --symlink-install --packages-select <pkg>
 source install/setup.bash
 ```
+
+| Path | Why ignored |
+| --- | --- |
+| `src/vendor/autonomy_stack_go2/` | CMU upstream, vendored as reference; the active FAR / terrain_analysis / localPlanner builds live in their own packages. |
+| `src/vendor/Livox-SDK2/` | Plain CMake library, not a colcon package; built workspace-local by `livox_ros_driver2`'s own install step. |
+| `src/vendor/sc_pgo/fast_lio_sam/` | ROS 1 (catkin) — see `PORT_TO_ROS2.md` next to it. The active SC-PGO loop closure path uses a different sub-tree. |
 
 YAML + Python are live via symlink-install; C++ requires rebuild.
 
