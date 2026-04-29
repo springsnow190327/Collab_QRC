@@ -127,10 +127,18 @@ class FastLioTfAdapter(Node):
         self.declare_parameter("corrected_staleness_sec", 2.0)
 
         ns = str(self.get_parameter("namespace").value)
-        self.in_topic = f"/{ns}/{self.get_parameter('input_topic').value}"
-        self.out_topic = f"/{ns}/{self.get_parameter('output_topic').value}"
-        self.gt_topic = f"/{ns}/{self.get_parameter('gt_topic').value}"
-        self.corrected_topic = f"/{ns}/{self.get_parameter('corrected_topic').value}"
+
+        def _qualify(t: str) -> str:
+            # Absolute topic (starts with `/`) → use as-is. This is the real-robot
+            # case where Fast-LIO is launched un-namespaced and publishes /Odometry.
+            # Relative topic → prepended with /<ns>/ (sim dual-robot case where
+            # each Fast-LIO is wrapped in its own namespace).
+            return t if t.startswith("/") else f"/{ns}/{t}"
+
+        self.in_topic = _qualify(str(self.get_parameter("input_topic").value))
+        self.out_topic = _qualify(str(self.get_parameter("output_topic").value))
+        self.gt_topic = _qualify(str(self.get_parameter("gt_topic").value))
+        self.corrected_topic = _qualify(str(self.get_parameter("corrected_topic").value))
         self.target_frame = str(self.get_parameter("output_frame_id").value)
         self.target_child = str(self.get_parameter("output_child_frame_id").value)
         self.publish_tf = bool(self.get_parameter("publish_tf").value)

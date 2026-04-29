@@ -210,6 +210,29 @@ def _launch_setup(context):
                 output="log",
             )
         )
+        # map → odom (identity) — phantom frame so Nav2's local_costmap can
+        # resolve TF(odom → base_link) via tree walk through the existing
+        # chain (odom → map (inv) → camera_init → body → base_link). On real
+        # there is no loop-closure correction yet, so map and odom are
+        # functionally identical; once SC-PGO ports cleanly, this static
+        # gets replaced by SC-PGO's dynamic map→odom + the adapter takes
+        # over odom→base_link as the canonical REP-105 split.
+        # The fast_lio_tf_adapter on real is launched with publish_tf=false
+        # (see real_single.launch.py) precisely to avoid double-parenting
+        # base_link (body→base_link static above is already its parent).
+        actions.append(
+            Node(
+                package="tf2_ros",
+                executable="static_transform_publisher",
+                name="map_to_odom_identity",
+                arguments=[
+                    "--frame-id", "map", "--child-frame-id", "odom",
+                    "--x", "0", "--y", "0", "--z", "0",
+                    "--qx", "0", "--qy", "0", "--qz", "0", "--qw", "1",
+                ],
+                output="log",
+            )
+        )
 
     else:
         raise ValueError(f"Unknown slam backend '{slam}' (expected carto_l1 or fastlio_mid360)")

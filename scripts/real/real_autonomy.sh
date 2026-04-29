@@ -102,7 +102,7 @@ done
 case "$ROBOT"   in go2w|go2) ;; *) echo "ERROR: robot must be go2w|go2" >&2; exit 1 ;; esac
 case "$CONNECT" in ethernet|webrtc) ;; *) echo "ERROR: connect must be ethernet|webrtc" >&2; exit 1 ;; esac
 case "$SLAM"    in auto|carto_l1|fastlio_mid360) ;; *) echo "ERROR: slam must be auto|carto_l1|fastlio_mid360" >&2; exit 1 ;; esac
-case "$NAV"     in cfpa2|tare|tare_real|far) ;; *) echo "ERROR: nav must be cfpa2|tare|tare_real|far" >&2; exit 1 ;; esac
+case "$NAV"     in nav2_mppi|cfpa2|tare|tare_real|far) ;; *) echo "ERROR: nav must be nav2_mppi|cfpa2|tare|tare_real|far" >&2; exit 1 ;; esac
 case "$MAPPER"  in scan|carto_binary|carto_2d) ;; *) echo "ERROR: mapper must be scan|carto_binary|carto_2d" >&2; exit 1 ;; esac
 case "$OA"      in true|false) ;; *) echo "ERROR: oa must be true|false" >&2; exit 1 ;; esac
 case "$EXECUTE" in true|false) ;; *) echo "ERROR: execute must be true|false" >&2; exit 1 ;; esac

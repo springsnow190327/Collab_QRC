@@ -118,11 +118,24 @@ ensure_link() {
     sudo ip addr add "$HOST_IP/$SUBNET" dev "$ETH_IFACE" 2>/dev/null || true
   fi
 
-  if ! ping -c 2 -W 2 "$ROBOT_IP" &>/dev/null; then
-    echo "ERROR: Cannot reach robot at $ROBOT_IP" >&2
-    return 1
-  fi
-  echo "  Ethernet link OK  ($ETH_IFACE → $ROBOT_IP, host bound @ $HOST_IP)"
+  # Retry the reachability probe — covers two real-world races:
+  #   1. Cable just plugged / dongle-on-dongle handoff: link state is "up"
+  #      but ARP / spanning-tree hasn't settled, first ping drops.
+  #   2. Robot just powered: networking comes up over a few seconds.
+  # Override the wait via ROBOT_PING_RETRIES (default 8 ≈ 24 s wall time).
+  local _retries="${ROBOT_PING_RETRIES:-8}"
+  local _attempt=1
+  while ! ping -c 2 -W 2 "$ROBOT_IP" &>/dev/null; do
+    if (( _attempt >= _retries )); then
+      echo "ERROR: Cannot reach robot at $ROBOT_IP after ${_retries} attempts" >&2
+      echo "       (override with ROBOT_PING_RETRIES=N)" >&2
+      return 1
+    fi
+    echo "  ping ${_attempt}/${_retries} to $ROBOT_IP failed — retrying in 1 s..." >&2
+    sleep 1
+    _attempt=$((_attempt + 1))
+  done
+  echo "  Ethernet link OK  ($ETH_IFACE → $ROBOT_IP, host bound @ $HOST_IP$([ "$_attempt" -gt 1 ] && echo " — settled after $_attempt attempts"))"
 }
 
 # detect_lidar

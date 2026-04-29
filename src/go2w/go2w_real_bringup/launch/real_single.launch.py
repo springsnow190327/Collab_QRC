@@ -158,6 +158,16 @@ def _launch_setup(context):
                 "explore": _get(context, "explore"),
                 "far_goal_topic": _get(context, "far_goal_topic"),
                 "far_way_point_out": _get(context, "far_way_point_out"),
+                # Real-robot Fast-LIO is launched un-namespaced (slam.launch.py
+                # has no PushRosNamespace around fastlio_mapping), so it
+                # publishes /Odometry. Tell the adapter to subscribe absolutely.
+                "fast_lio_input_topic": "/Odometry",
+                # Real has the legacy static chain map→camera_init→body→base_link
+                # (slam.launch.py) plus a new map→odom identity. base_link
+                # already has a parent (body); adapter publishing odom→base_link
+                # would multi-parent it. Adapter still publishes the topic
+                # /robot/odom/nav, just not TF.
+                "fast_lio_publish_tf": "false",
             }.items(),
         ),
         # ── Safety ──
@@ -366,7 +376,11 @@ def _launch_setup(context):
                     "free_threshold": 0,
                     "occ_threshold": 50,
                     "obstacle_clearance_m": 0.30,
-                    "min_cluster_area_m2": 0.5,
+                    # Match CFPA2's `cfpa2_frontier_min_cluster_area_m2`
+                    # (0.08 m²). Previous 0.5 m² hid every legitimate frontier
+                    # in indoor geometry — CFPA2 reported fronts=4 while the
+                    # viz showed clusters=0, leaving the operator blind.
+                    "min_cluster_area_m2": 0.08,
                     "cylinder_height": 0.8,
                     "cylinder_radius": 0.12,
                 }

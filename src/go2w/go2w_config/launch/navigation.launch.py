@@ -215,32 +215,58 @@ def _setup(context):
 
         # Helper-script paths under repo's scripts/runtime/ — same on
         # sim and real (mounted by source build, not in install/).
-        _repo_scripts = os.path.expanduser("~/Research/Collab_QRC/scripts/runtime")
+        # Resolved relative to this launch file's REAL path (realpath follows
+        # the colcon --symlink-install symlink back to src/). Works regardless
+        # of the developer's home layout. Override with COLLAB_QRC_RUNTIME_DIR.
+        _repo_scripts = os.environ.get(
+            "COLLAB_QRC_RUNTIME_DIR",
+            os.path.abspath(os.path.join(
+                os.path.dirname(os.path.realpath(__file__)),
+                "..", "..", "..", "..", "scripts", "runtime",
+            )),
+        )
 
         # fast_lio_tf_adapter: publishes /<ns>/odom/nav + odom→base_link
         # TF from Fast-LIO. On real, no GT to bootstrap against → set
         # bootstrap_from_gt=false; the map frame's origin then equals
         # robot's spawn pose (whatever Fast-LIO set as origin at startup).
+        adapter_cmd = [
+            "python3", "-u",
+            os.path.join(_repo_scripts, "fast_lio_tf_adapter.py"),
+            "--ros-args",
+            "-p", f"namespace:={robot_ns}",
+            "-p", f"use_sim_time:={'true' if use_sim_time else 'false'}",
+            # Real launches override to "/Odometry" because Fast-LIO is
+            # launched un-namespaced; sim dual leaves the default
+            # "Odometry" so the adapter prepends /<ns>/ correctly.
+            "-p", f"input_topic:={_get(context, 'fast_lio_input_topic') or 'Odometry'}",
+            "-p", "output_topic:=odom/nav",
+            "-p", "output_frame_id:=odom",
+            "-p", f"output_child_frame_id:={_base_frame}",
+            # Sim dual: adapter is the SOLE owner of base_link's TF. Real:
+            # the existing map→camera_init→body→base_link chain (slam.launch.py)
+            # already parents base_link, plus a map→odom static identity makes
+            # odom resolvable via tree walk. Adapter TF here would multi-parent.
+            "-p", f"publish_tf:={_get(context, 'fast_lio_publish_tf') or 'true'}",
+            # Bootstrap is sim-only privilege; real has no GT topic.
+            "-p", f"bootstrap_from_gt:={'true' if use_sim_time else 'false'}",
+            "-p", "gt_topic:=odom/ground_truth",
+            "-p", "corrected_topic:=corrected_odom",
+        ]
+        # Only namespace /tf when the rest of the stack does (sim dual). On
+        # real single-robot, every other publisher (static_transform_publisher,
+        # Cartographer, …) writes to global /tf — namespacing the adapter's
+        # output here would orphan it (1 pub, 0 subs), and Nav2 would
+        # report "Invalid frame ID 'odom'" forever despite the adapter
+        # cheerfully relaying messages.
+        if remap_tf:
+            adapter_cmd += [
+                "-r", f"/tf:=/{robot_ns}/tf",
+                "-r", f"/tf_static:=/{robot_ns}/tf_static",
+            ]
         actions.append(
             ExecuteProcess(
-                cmd=[
-                    "python3", "-u",
-                    os.path.join(_repo_scripts, "fast_lio_tf_adapter.py"),
-                    "--ros-args",
-                    "-p", f"namespace:={robot_ns}",
-                    "-p", f"use_sim_time:={'true' if use_sim_time else 'false'}",
-                    "-p", "input_topic:=Odometry",
-                    "-p", "output_topic:=odom/nav",
-                    "-p", "output_frame_id:=odom",
-                    "-p", f"output_child_frame_id:={_base_frame}",
-                    "-p", "publish_tf:=true",
-                    # Bootstrap is sim-only privilege; real has no GT topic.
-                    "-p", f"bootstrap_from_gt:={'true' if use_sim_time else 'false'}",
-                    "-p", "gt_topic:=odom/ground_truth",
-                    "-p", "corrected_topic:=corrected_odom",
-                    "-r", f"/tf:=/{robot_ns}/tf",
-                    "-r", f"/tf_static:=/{robot_ns}/tf_static",
-                ],
+                cmd=adapter_cmd,
                 name=f"fast_lio_tf_adapter_{robot_ns}",
                 output="screen",
             )
@@ -793,6 +819,15 @@ def generate_launch_description():
             # collide with a TARE-direct publication to /{ns}/way_point.
             DeclareLaunchArgument("far_goal_topic", default_value=""),
             DeclareLaunchArgument("far_way_point_out", default_value=""),
+            # Default "Odometry" (relative) is correct for sim dual where each
+            # Fast-LIO is wrapped in its own namespace. Real-robot launches set
+            # this to "/Odometry" (absolute) because their Fast-LIO is started
+            # un-namespaced. The adapter handles both forms (see fast_lio_tf_adapter.py).
+            DeclareLaunchArgument("fast_lio_input_topic", default_value="Odometry"),
+            # Sim default: adapter publishes TF (sole base_link owner). Real
+            # overrides to "false" because slam.launch.py already provides the
+            # full TF chain map→camera_init→body→base_link plus map→odom static.
+            DeclareLaunchArgument("fast_lio_publish_tf", default_value="true"),
             OpaqueFunction(function=_setup),
         ]
     )
