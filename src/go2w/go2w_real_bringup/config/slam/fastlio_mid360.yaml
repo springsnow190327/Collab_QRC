@@ -10,8 +10,14 @@
         feature_extract_enable: false
         point_filter_num: 3
         max_iteration: 3
-        filter_size_surf: 0.5
-        filter_size_map: 0.5
+        # Voxel downsample for body-frame scan keyframe (also affects the
+        # /cloud_registered_body cloud that octomap consumes). The 0.5 m
+        # vendor default voxelises a 25-30 cm obstacle to a single point per
+        # scan → octomap's filter_speckles then prunes it. 0.10 m keeps
+        # short obstacles visible while still decimating enough to keep
+        # Fast-LIO real-time at 10 Hz.
+        filter_size_surf: 0.10
+        filter_size_map: 0.10
         cube_side_length: 1000.0
         runtime_pos_log_enable: false
         map_file_path: ""
@@ -25,7 +31,14 @@
         preprocess:
             lidar_type: 1           # Livox series
             scan_line: 4
-            blind: 0.5
+            # Min slant-range filter. Mid-360 spec min range is 0.10 m; the
+            # vendor default 0.5 m rejects every return inside a 0.5 m ball
+            # around the sensor. With Mid-360 at ~0.57 m on Go2W, a 25-30 cm
+            # obstacle within ~42 cm horizontally has its top inside that
+            # ball and is fully blind-filtered before Fast-LIO sees it.
+            # 0.20 m reopens the near-field band (clearing the robot's own
+            # body which is masked by the body filter / extrinsic anyway).
+            blind: 0.20
             timestamp_unit: 3
             scan_rate: 10
 
