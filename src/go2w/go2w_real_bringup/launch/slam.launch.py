@@ -91,6 +91,34 @@ def _launch_setup(context):
                 output="log",
             )
         )
+        # map → odom (identity) — Nav2's local_costmap is configured with
+        # `global_frame: odom` (REP-105 convention), but Cartographer doesn't
+        # publish an `odom` frame: it produces `map → base_link` directly,
+        # then `base_link → body` is added above. controller_server's TF
+        # lookup `odom → base_link` therefore fails with `Invalid frame ID
+        # "odom"`. Same fix pattern as the fastlio_mid360 branch below
+        # (added 2026-04-30): a static identity makes odom resolvable via
+        # tree-walk through map. No multi-parenting risk — base_link stays
+        # parented to `map` via Cartographer's dynamic; odom is a separate
+        # child of map. The fast_lio_tf_adapter is not running in carto mode
+        # so CLAUDE.md golden rule 16 ("adapter is the single owner of
+        # odom→base_link TF") is preserved by scope: only relevant when
+        # slam=fastlio_mid360. Independent of CHAMP's broken state_estimation
+        # (golden rule "bypassed, not fixed" still applies — this fix
+        # doesn't touch the EKF/leg-odom path).
+        actions.append(
+            Node(
+                package="tf2_ros",
+                executable="static_transform_publisher",
+                name="map_to_odom_identity_carto",
+                arguments=[
+                    "--frame-id", "map", "--child-frame-id", "odom",
+                    "--x", "0", "--y", "0", "--z", "0",
+                    "--qx", "0", "--qy", "0", "--qz", "0", "--qw", "1",
+                ],
+                output="log",
+            )
+        )
 
     elif slam == "fastlio_mid360":
         config_path = os.path.join(bringup_share, "config", "slam")

@@ -98,6 +98,7 @@ RVIZ="true"
 RVIZ_CONFIG="autonomy.rviz"
 RVIZ_3D="true"
 CARTO_MODE="2d"
+ONBOARD="false"
 
 # ── Parse key=value args (and "stop") ─────────────────────────────────
 for arg in "$@"; do
@@ -119,6 +120,7 @@ for arg in "$@"; do
     rviz_config=*) RVIZ_CONFIG="${arg#rviz_config=}" ;;
     rviz_3d=*) RVIZ_3D="${arg#rviz_3d=}" ;;
     carto_mode=*) CARTO_MODE="${arg#carto_mode=}" ;;
+    onboard=*) ONBOARD="${arg#onboard=}" ;;
     *) echo "WARN: unknown arg '$arg'" >&2 ;;
   esac
 done
@@ -134,6 +136,11 @@ case "$EXECUTE" in true|false) ;; *) echo "ERROR: execute must be true|false" >&
 case "$RVIZ"    in true|false) ;; *) echo "ERROR: rviz must be true|false" >&2; exit 1 ;; esac
 case "$RVIZ_3D" in true|false) ;; *) echo "ERROR: rviz_3d must be true|false" >&2; exit 1 ;; esac
 case "$CARTO_MODE" in 2d|3d) ;; *) echo "ERROR: carto_mode must be 2d|3d" >&2; exit 1 ;; esac
+case "$ONBOARD" in true|false) ;; *) echo "ERROR: onboard must be true|false" >&2; exit 1 ;; esac
+
+# Tell connect_ethernet.sh to add the Jetson as a CycloneDDS peer when
+# onboard SLAM is in use (sourced as env var so the function picks it up).
+[[ "$ONBOARD" == "true" ]] && export ONBOARD_SLAM=1
 
 # ── Connection (Ethernet is validated here; WebRTC path exits early) ──
 if [[ "$CONNECT" == "webrtc" ]]; then
@@ -195,6 +202,7 @@ echo "    nav     : $NAV ($NAV_BACKEND)"
 echo "    mapper  : $MAPPER"
 echo "    oa      : $OA"
 echo "    execute : $EXECUTE"
+echo "    onboard : $ONBOARD$([ "$ONBOARD" == "true" ] && echo " (laptop skips livox+fast_lio; expects Jetson @ 192.168.123.18)")"
 echo "  Launch    : go2w_real_bringup $LAUNCH"
 echo "  Stop      : Ctrl+C  or  scripts/real/real_autonomy.sh stop"
 echo "################################################"
@@ -216,7 +224,8 @@ ros2 launch go2w_real_bringup "$LAUNCH" \
   execute_controller:="$EXECUTE" \
   rviz:="$RVIZ" \
   rviz_config:="$RVIZ_CONFIG" \
-  rviz_3d:="$RVIZ_3D" &
+  rviz_3d:="$RVIZ_3D" \
+  onboard_slam:="$ONBOARD" &
 LAUNCH_PID=$!
 
 cleanup_on_signal() {

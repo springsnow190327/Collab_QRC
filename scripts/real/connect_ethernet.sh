@@ -64,6 +64,18 @@ setup_cyclonedds_ethernet() {
   export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
   export ROS_DOMAIN_ID=0
   export CONN_TYPE="cyclonedds"
+
+  # Build peer list. Always peer the Go2 main controller. When onboard SLAM
+  # is in use (real_autonomy.sh's onboard=true flag → exports ONBOARD_SLAM=1),
+  # also peer the Jetson at 192.168.123.18 so DDS discovers /Odometry +
+  # /cloud_registered_body published from there.
+  local _peers="<Peer address=\"${ROBOT_IP}\"/>"
+  if [[ "${ONBOARD_SLAM:-0}" == "1" ]]; then
+    local _jetson_ip="${GO2W_JETSON_IP:-192.168.123.18}"
+    _peers+="<Peer address=\"${_jetson_ip}\"/>"
+    echo "  CycloneDDS peer added: ${_jetson_ip} (onboard SLAM)"
+  fi
+
   export CYCLONEDDS_URI="<CycloneDDS><Domain>
     <General>
       <Interfaces>
@@ -71,7 +83,7 @@ setup_cyclonedds_ethernet() {
       </Interfaces>
     </General>
     <Discovery>
-      <Peers><Peer address=\"${ROBOT_IP}\"/></Peers>
+      <Peers>${_peers}</Peers>
       <ParticipantIndex>auto</ParticipantIndex>
       <MaxAutoParticipantIndex>200</MaxAutoParticipantIndex>
     </Discovery>
