@@ -260,7 +260,15 @@ controller_server:
         critical_weight: 8.0
         consider_footprint: true
         collision_cost: 10000.0
-        collision_margin_distance: 0.03
+        # 2026-05-01: 0.03 → 0.10 to cover swept-volume gap during in-place
+        # pivots in tight corners. ObstaclesCritic only checks the rotated
+        # footprint at discrete `model_dt`-spaced poses, not the swept arc
+        # between them; with `wz_max: 0.8` and tail radius 0.325 m, ~3 cm
+        # of arc per step slips past the per-pose check. 0.10 m of inflation
+        # padding around the rectangle absorbs that gap. Trade-off:
+        # rejects trajectories whose corner clears walls by < 10 cm —
+        # acceptable for indoor navigation.
+        collision_margin_distance: 0.10
         near_goal_distance: 0.5
       PathAlignCritic:
         enabled: true

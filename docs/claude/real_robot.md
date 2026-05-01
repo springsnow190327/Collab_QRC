@@ -238,6 +238,209 @@ When `slam=fastlio_mid360`, Cartographer isn't running — the mapper branch spa
 | `/cmd_vel` | stack → robot | Mux output → `cmd_vel_to_sport_bridge` |
 | `/api/sport/request` | stack → robot | Unitree sport API (1003 with OA, 1008 raw) |
 
+## Onboard SLAM split (shipped 2026-04-30 — Fast-LIO + Livox on Jetson)
+
+**Goal**: push Fast-LIO + Livox driver onto the Go2 Jetson (`192.168.123.18`,
+Ubuntu 20.04 + ROS 2 Foxy) so the laptop is left with planning, control,
+viz, and bridges only. Frees ~1 core on the laptop and unblocks loop closure
+(Phase 2 — SC-PGO port pending).
+
+**Component compatibility verified**: Livox-SDK2 supports Ubuntu 20.04 +
+ARM (README §2.2), livox_ros_driver2 supports ROS 2 Foxy via `./build.sh ROS2`,
+Fast-LIO 2 builds against Foxy unchanged. **No Docker needed** despite the
+laptop running Humble — cross-distro DDS works for the topic types in use
+(Twist, Odometry, PointCloud2, Path, Marker).
+
+### Topology after the split
+
+```
+ONBOARD JETSON (Foxy)                   LAPTOP (Humble)
+─────────────────────                   ────────────────
+livox_ros_driver2_node                  Nav2 (planner / controller / behaviors)
+  /livox/lidar (CustomMsg)              CFPA2 + cfpa2_to_nav2_bridge + watchdog
+fastlio_mapping                         octomap_server (consumes /cloud_registered_body
+  /Odometry ─────────────────DDS──►       over DDS from the Jetson)
+  /cloud_registered_body ────DDS──►     path_relay, robot_pose_marker
+3 static TFs (map→camera_init,          RViz × 2, supervisor_panic, joy
+  body→base_link, map→odom)             cmd_vel_activity_mux + cmd_vel_to_sport_bridge
+fast_lio_tf_adapter                     ◄──/cmd_vel──── (Sport API to robot)
+  /robot/odom/nav ───────────DDS──►
+[future] sc_pgo_node
+  /robot/corrected_odom ─────DDS──►
+```
+
+DDS bridge: both hosts on `ROS_DOMAIN_ID=0`, `rmw_cyclonedds_cpp`, peers list
+includes the other side. Multicast on the Ethernet NIC.
+
+### Files added (laptop side)
+
+| File | Role |
+|---|---|
+| [`scripts/real/deploy_to_jetson.sh`](../../scripts/real/deploy_to_jetson.sh) | rsync vendor packages + configs + helper scripts to `~/onboard_ws/` on the Jetson. Idempotent. |
+| [`scripts/real/onboard_slam.sh`](../../scripts/real/onboard_slam.sh) | runs ON THE JETSON. Brings up Mid-360 NIC bind + Livox + Fast-LIO + 3 static TFs + `fast_lio_tf_adapter` + (optional) `sc_pgo`. Ctrl+C teardown. |
+| [`scripts/real/connect_ethernet.sh:60-95`](../../scripts/real/connect_ethernet.sh) | adds Jetson `192.168.123.18` to CycloneDDS peer list when `ONBOARD_SLAM=1` env is set. |
+| [`scripts/real/real_autonomy.sh`](../../scripts/real/real_autonomy.sh) | new `onboard=true|false` flag exports `ONBOARD_SLAM` + plumbs `onboard_slam:=$ONBOARD` into the launch. |
+| [`real_single.launch.py`](../../src/go2w/go2w_real_bringup/launch/real_single.launch.py) | new `onboard_slam` arg. When true, **skips the slam.launch.py include** entirely — laptop stops spawning Livox + Fast-LIO + the static TFs + `fast_lio_tf_adapter`. |
+
+### One-time onboard build (run on the Jetson via SSH)
+
+```bash
+# From laptop:
+./scripts/real/connect_ethernet.sh   # ensure link
+./scripts/real/deploy_to_jetson.sh   # rsync source
+
+# Then SSH to Jetson:
+ssh unitree@192.168.123.18           # password: 123
+cd ~/onboard_ws
+
+# Build Livox-SDK2 (workspace-local — no /usr/local pollution)
+cd src/Livox-SDK2 && mkdir -p build && cd build
+cmake -DCMAKE_INSTALL_PREFIX=$HOME/onboard_ws/install/Livox-SDK2 \
+      -DCMAKE_POSITION_INDEPENDENT_CODE=ON ..
+make -j$(nproc) && make install
+
+# Build livox_ros_driver2 (uses its own ROS 2 build script)
+cd ~/onboard_ws/src/livox_ros_driver2 && ./build.sh ROS2
+
+# Build Fast-LIO via colcon
+cd ~/onboard_ws
+source /opt/ros/foxy/setup.bash
+colcon build --symlink-install --packages-select fast_lio \
+  --cmake-args -DLivox-SDK2_DIR=$HOME/onboard_ws/install/Livox-SDK2/lib/cmake/Livox-SDK2
+```
+
+### Day-to-day operation
+
+```bash
+# On Jetson (run from laptop via SSH):
+ssh unitree@192.168.123.18 "cd ~/onboard_ws && ./scripts/onboard_slam.sh"
+
+# On laptop (in another terminal):
+./scripts/real/real_autonomy_go2.sh onboard=true oa=false
+```
+
+The laptop banner now reads `onboard : true (laptop skips livox+fast_lio; expects Jetson @ 192.168.123.18)`.
+
+### Verification
+
+After both sides come up, from the laptop:
+
+```bash
+# These were previously published locally; now they come from the Jetson over DDS:
+ros2 topic hz /Odometry                  # 10 Hz expected
+ros2 topic hz /cloud_registered_body     # 10 Hz expected
+ros2 topic hz /robot/odom/nav            # 10 Hz from fast_lio_tf_adapter onboard
+
+# TF chain still resolves end-to-end:
+ros2 run tf2_ros tf2_echo map base_link  # non-empty translation
+
+# Local Fast-LIO is NOT running:
+pgrep -fa fastlio_mapping                # should be empty on the laptop
+```
+
+### Foxy compatibility patches (one-time, all forward-compatible to Humble)
+
+Five source patches were needed to build + run on Foxy that aren't needed
+on Humble. All are mechanical and stay valid on Humble — no rollback.
+
+1. **`livox_ros_driver2/src/comm/pub_handler.cpp:135`** —
+   `kLivoxLidarTypeMid360s` (an `s` variant) doesn't exist in our Livox-SDK2.
+   Patched out: `sed -i 's@||dev_type==LivoxLidarDeviceType::kLivoxLidarTypeMid360s@@'`.
+
+2. **`fast_lio/src/laserMapping.cpp:1124`** — uses `Trigger::Request::ConstSharedPtr`
+   (a Humble-only alias). Foxy expects plain `Request::SharedPtr`. Build error
+   without it: `enable_if<false, void>::type does not exist` in rclcpp's
+   `AnyServiceCallback::set` overload.
+   `sed -i 's@Trigger::Request::ConstSharedPtr@Trigger::Request::SharedPtr@'`.
+
+3. **CycloneDDS XML schema** — Foxy 0.7.x:
+   `<NetworkInterfaceAddress>auto</NetworkInterfaceAddress>` + `<AllowMulticast>`.
+   Humble 0.10+: `<Interfaces><NetworkInterface .../></Interfaces>`. Schema
+   mismatch → `unknown element` → `rmw_handle invalid` → all nodes crash.
+   Branched in `onboard_slam.sh` based on `$ROS_DISTRO`. (We chose FastDDS on
+   Foxy anyway — see #5; CycloneDDS segfaults in `spin()` regardless of XML.)
+
+4. **`static_transform_publisher` arg syntax** — Humble takes `--frame-id parent
+   --child-frame-id child --x ...`. Foxy is positional: `x y z qx qy qz qw parent child`
+   OR `x y z yaw pitch roll parent child` (note: yaw-pitch-roll order, not
+   roll-pitch-yaw). Wrong syntax → `not having the right number of arguments`.
+
+5. **Foxy parameter parser rejects empty `-p key:=`** — quotes required:
+   `-p lvx_file_path:='""'`. Without quotes: `Couldn't parse parameter override rule`.
+
+6. **rclpy 0.9.x segfaults on this Tegra Foxy** — `fast_lio_tf_adapter.py`
+   (the laptop's adapter) segfaults instantly. So does a 30-line minimal
+   relay. C++ rclcpp is fine. Workaround: have Fast-LIO itself remap
+   `/Odometry` → `/<ns>/odom/nav` via `-r` arg at launch (no Python relay).
+   Re-enable the full adapter on Humble for SC-PGO bootstrap-from-GT logic.
+
+### The 13-GB-per-node bloat — and the `ulimit -v` fix
+
+The hard one. Every C++ ROS 2 node on this Tegra Foxy mmap'd a single
+**14.5 GB anonymous region** at startup, then lazy-faulted ~13 GB of it
+resident as 8 threads each touched their share. Five SLAM nodes ×
+13 GB = OOM kill within 8 seconds. Symptoms: continual
+`bad_alloc caught: std::bad_alloc` log spam, then `Out of memory: Killed
+process … (fastlio_mapping)` in `dmesg`.
+
+**Methodically ruled out**: CUDA / sanitizers / `MALLOC_ARENA_MAX` /
+jemalloc preload / tcmalloc preload / FastDDS shared-memory transport /
+`MALLOC_MMAP_THRESHOLD_` / FastDDS dynamic-pool XML profile / CycloneDDS
+(segfaults instead of bloating) / `taskset -c 0` (still spawns 8 threads).
+None reduced the 13 GB.
+
+**The fix is one line**: `ulimit -v 1500000` (1.5 GB virtual cap) in
+`onboard_slam.sh` before spawning children. The speculative `mmap` *fails*
+because it can't reserve 14.5 GB inside a 1.5 GB cap; the library catches
+`std::bad_alloc` (the "harmless" log spam), falls back to bounded
+buffers, and the process runs in **22 MB resident**. Same observable
+behavior, 500× less memory.
+
+| Metric | Before fix | After `ulimit -v 1500000` |
+|---|---|---|
+| Per-node RSS | 13 GB | 22 MB |
+| 5-node total | OOM | 333 MB |
+| /robot/odom/nav rate (cross-host) | n/a | 26.78 Hz |
+| /livox/lidar discovery | OOM before publish | discovered cross-host |
+
+**Why this works** — Foxy's rclcpp + FastDDS pre-reserves a single huge
+anonymous mapping at participant init (likely a per-thread message-pool
+sized off `/proc/meminfo` total RAM). On Tegra Orin's 15 GB UMA, the
+"available" calculation produces ~14.5 GB. The kernel grants the virtual
+mapping happily; pages are committed lazily as threads write. Cap virtual
+memory → speculative reservation fails → fallback path uses bounded
+small buffers → same publishing/subscribing behavior, 500× less RAM.
+
+This is a Foxy-specific bug; Humble doesn't do this (laptop runs same
+nodes in <2 GB total). Fix is forward-compatible — `ulimit` is a no-op
+on Humble.
+
+### Phase 2 — loop closure (SC-PGO) — TODO
+
+`src/vendor/sc_pgo/fast_lio_sam/` is ROS 1 catkin source. Port spec is in
+[`PORT_TO_ROS2.md`](../../src/vendor/sc_pgo/PORT_TO_ROS2.md). ~640 LOC across
+3 cpp + 4 headers, plus build files. Effort ~1-2 days focused work:
+rename package `fast_lio_sam` → `sc_pgo`, swap catkin → ament_cmake, port
+ros::* → rclcpp::*, replace message_filters synchronizer (ROS 2 has a
+different API), drop `tf_conversions` (gone in ROS 2 — use tf2_eigen),
+verify GTSAM links (`apt install libgtsam-dev` on Foxy). The `loop_closure:=true`
+launch toggle already exists end-to-end; once `sc_pgo` builds + installs,
+the toggle picks it up via topic-name contract documented in PORT_TO_ROS2.md.
+
+Tighten the LC threshold during the port: radius 5.0 → 3.0 m, ICP fitness
+0.3 → 0.15 (per `PORT_TO_ROS2.md` §7) — empirical for indoor demo3.
+
+### Future: Jetson Orin Super migration
+
+When the Orin Super arrives (JetPack 6 / Ubuntu 22.04 / native Humble):
+1. Re-run `deploy_to_jetson.sh` against the new IP — script is idempotent.
+2. Onboard build switches `./build.sh ROS2` → `./build.sh humble`.
+3. SC-PGO port carries over unchanged (rclcpp API is identical Foxy↔Humble
+   for this surface area).
+4. Cross-distro DDS caveat goes away — both sides on Humble.
+
+The deploy + onboard launcher are deliberately distro-portable.
+
 ## Common failure modes
 
 | Symptom | Likely cause | Fix |

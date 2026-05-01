@@ -94,15 +94,54 @@ def _launch_setup(context):
         max_linear_speed = "0.30"
         far_max_speed = "0.30"
 
-    actions = [
-        # ── SLAM (Cartographer + L1  OR  Fast-LIO + Mid360) ──
-        IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(slam_launch),
-            launch_arguments={
-                "slam": slam,
-                "carto_mode": carto_mode,
-            }.items(),
-        ),
+    # ── octomap occupancy_min_z (MAP frame, not world!) ──
+    # Map's z=0 is at the sensor's *initial* pose (Fast-LIO `camera_init`
+    # convention; Cartographer publishes map pinned to base_link's initial
+    # pose, similar effect). Mid-360 sits ~0.57 m above ground on Go2W and
+    # ~0.39 m on Go2. A literal-looking value like `0.05` therefore drops
+    # every voxel below ~0.62 m / 0.44 m above ground — which silently
+    # filters chair legs, curbs, low pillars (0.10–0.25 m world height) out
+    # of /robot/map even though they show up in /livox/lidar and the 3D
+    # voxel grid. Symptom: "obstacles seen as scans but leave no trace on
+    # the occupancy grid" (2026-05-01).
+    # Bias to keep ~0.05 m above ground:
+    #   occupancy_min_z_map = world_target - sensor_height_world
+    #   Go2W (sensor 0.57 m): 0.05 - 0.57 = -0.52
+    #   Go2  (sensor 0.39 m): 0.05 - 0.39 = -0.34
+    # RANSAC ground-plane filter inside octomap_server already drops the
+    # actual floor, so a low occupancy_min_z does not re-introduce ground
+    # noise.
+    occupancy_min_z = -0.52 if robot_model == "go2w" else -0.34
+
+    # When onboard_slam=true the Jetson runs livox + fast_lio + static TFs +
+    # fast_lio_tf_adapter (see scripts/real/onboard_slam.sh). The laptop side
+    # then skips the entire slam.launch.py block, since duplicating those
+    # nodes would compete for /Odometry, /tf, etc. Cross-host DDS pulls the
+    # Jetson's topics into the laptop's nav stack transparently.
+    onboard_slam = _as_bool(_get(context, "onboard_slam"))
+
+    actions = []
+    if not onboard_slam:
+        # ── SLAM (Cartographer + L1  OR  Fast-LIO + Mid360) on laptop ──
+        actions.append(
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(slam_launch),
+                launch_arguments={
+                    "slam": slam,
+                    "carto_mode": carto_mode,
+                }.items(),
+            )
+        )
+    else:
+        # Sanity nudge in the launch log so the operator notices.
+        from launch.actions import LogInfo
+        actions.append(LogInfo(msg=(
+            "[real_single] onboard_slam=true → laptop is NOT spawning livox + "
+            "fast_lio + slam.launch.py static TFs. Expecting them on the "
+            "Jetson at 192.168.123.18 via cross-host DDS."
+        )))
+
+    actions += [
         # ── Real-only core (transform_everything, bridges, mux, sport) ──
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(core_launch),
@@ -225,12 +264,11 @@ def _launch_setup(context):
     elif slam == "fastlio_mid360":
         # Fast-LIO publishes /cloud_registered (world-frame) but no OccupancyGrid.
         # octomap_server builds a voxel grid and projects to 2D → /robot/map.
-        # Ground-return rejection is critical: Mid-360 at ~0.57m on Go2W,
-        # ~0.39m on Go2; a z-band filter is the last line of defense against
-        # rays sweeping the floor.
+        # Ground-return rejection is via the RANSAC plane filter below
+        # (filter_ground_plane=True). occupancy_min_z is computed at the
+        # top of _launch_setup (MAP-frame value, robot-model-dependent).
         # Also serves as the 3D voxel grid source when rviz_3d=true
         # (octomap_server publishes /robot/octomap_{binary,full,point_cloud_centers}).
-        octo_min_z = 0.20 if robot_model == "go2w" else 0.30
         actions.append(
             Node(
                 package="octomap_server",
@@ -247,17 +285,15 @@ def _launch_setup(context):
                     "sensor_model.miss": 0.35,
                     "sensor_model.min": 0.12,
                     "sensor_model.max": 0.97,
-                    # Widened z-band: we now let RANSAC segment ground rather
-                    # than rejecting it with a world-frame z-filter. The
-                    # z-band just prevents absurdly low / high points (under
-                    # the floor, above the ceiling) from reaching the octree
-                    # and confusing RANSAC.
+                    # Widened z-band: RANSAC segments ground rather than
+                    # using a flat z-filter. The z-band only prevents absurdly
+                    # low / high points (under the floor, above the ceiling)
+                    # from reaching the octree and confusing RANSAC.
                     "point_cloud_min_z": -0.50,
                     "point_cloud_max_z":  2.00,
-                    # Safety net AFTER ground filter runs — anything still
-                    # below ground level in world frame is noise.
-                    "occupancy_min_z":  0.05,
-                    "occupancy_max_z":  1.80,
+                    # 2D-projection band — see derivation in comment above.
+                    "occupancy_min_z":   occupancy_min_z,
+                    "occupancy_max_z":   1.80,
                     # ── RANSAC ground-plane removal (fixes ramp littering) ──
                     # On a slope, a flat-z filter can't distinguish "ramp
                     # surface above 0.30 m in world" from "wall at 0.30 m".
@@ -331,10 +367,15 @@ def _launch_setup(context):
                     "sensor_model.miss": 0.35,
                     "sensor_model.min": 0.12,
                     "sensor_model.max": 0.97,
+
                     # Wider z-band so RANSAC can see the ground to segment it.
                     "point_cloud_min_z": -0.50,
                     "point_cloud_max_z":  2.00,
-                    "occupancy_min_z":   0.05,
+                    # See main octomap (octomap_map_gen) for the full
+                    # derivation of occupancy_min_z — it's in MAP frame,
+                    # NOT world frame. 0.05 (the previous value) silently
+                    # cropped every voxel below ~sensor_height + 5 cm.
+                    "occupancy_min_z":   occupancy_min_z,
                     "occupancy_max_z":   1.80,
                     # Same ramp-aware ground removal as the Fast-LIO octomap —
                     # viz octomap also needs to drop ramp surfaces so the 3D
@@ -463,6 +504,13 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("manual_linear_threshold", default_value="0.02"),
             DeclareLaunchArgument("manual_angular_threshold", default_value="0.05"),
             DeclareLaunchArgument("joy_dev", default_value="/dev/input/js0"),
+            # Onboard SLAM split: when "true", the laptop side skips Livox +
+            # Fast-LIO + the slam.launch.py static TFs + fast_lio_tf_adapter
+            # (they all run on the Jetson via scripts/real/onboard_slam.sh).
+            # Cross-host DDS makes /Odometry, /cloud_registered_body, and
+            # /<ns>/odom/nav appear on the laptop transparently.
+            DeclareLaunchArgument("onboard_slam", default_value="false",
+                                   description="If true, skip laptop-side SLAM block — expect it on the Go2 Jetson at 192.168.123.18."),
             DeclareLaunchArgument("rviz", default_value="true",
                                    description="Launch 2D top-down RViz2 with autonomy.rviz (or rviz_config override)"),
             DeclareLaunchArgument("rviz_config", default_value="autonomy.rviz",
