@@ -109,6 +109,22 @@ The peer coordination node:
 - `NegotiationRequest.msg` — proposed pairwise allocation, simplified (anti-conflict info inferred from PeerState heartbeats)
 - `NegotiationResponse.msg` — accept/reject with confirmed allocation echoed back
 
+### Request ID Strategy
+
+Negotiation requests use deterministic, human-readable request IDs of the form:
+
+`<requester_id>-<local_counter>`
+
+Each peer coordinator maintains a local monotonically increasing counter. The requester ID scopes the counter, so simultaneous requests from different robots cannot collide. This is preferred over timestamp-only IDs because robot clocks may differ or produce near-simultaneous values, and it is preferred over UUIDs because it is easier to inspect in ROS logs and debugging output.y
+
+```python
+self.request_counter = 0
+
+def _next_request_id(self) -> str:
+    self.request_counter += 1
+    return f"{self.robot_id}-{self.request_counter}"
+```
+
 ### Nodes (`cfpa2_peer_coordination`)
 - `peer_coordinator_node.py` — runs once per robot
   - Broadcasts own `PeerState` at ~2 Hz
