@@ -22,6 +22,7 @@ RACER (Zhou et al., 2022) — arxiv 2209.08533
 - Confirm scope: full Jetson deployment (a) vs nearby Jetson (b)?
 - Is "graceful degradation under comms loss" a required demo feature?
 - Cross-robot map fusion under SLAM drift — in scope or out?
+- Decentralised map fusion in this implementation works because both robots share a world frame via common-origin Fast-LIO initialisation. The system inherits the existing centralised version's vulnerability to long-run drift (which would cause ghost walls in either implementation). Proper SLAM-frame alignment via inter-robot loop closure is out of scope and listed as future work — see the CLAUDE.md co-drift property notes for the existing system's stance.
 
 ## MDVRP solver audit
 
