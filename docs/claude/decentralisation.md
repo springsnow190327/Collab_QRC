@@ -65,6 +65,8 @@ The system is considered decentralised if each robot can continue exploring usin
 
 Peer information must only be received through explicit peer messages, not by directly subscribing to the peer robot’s raw map, odometry, or status topics.
 
+To make clear: mode is a string the existing coordinator might recognise; the package is the new code.
+
 ## Proposed Architecture
 
 Each robot runs:
@@ -82,6 +84,7 @@ The peer coordination node:
 - maintains hard frontier claims with timestamps;
 - expires stale claims if communication is lost.
 
+
 ## MDVRP Solver Audit
 
 `mdvrp_solver.py` is reusable. It is pure Python and has no dependency on `rclpy` or ROS messages.
@@ -98,7 +101,7 @@ solve_mdvrp(
 ) -> dict[int, list[int]]
 
 ## Status
-- [ ] Verify centralisation in cfpa2_coordinator_node.py
+- [X] Verify centralisation in cfpa2_coordinator_node.py
 - [ ] Audit map_merge_utils.py for centralised assumptions
 - [ ] Architecture sketch
 - [ ] Jetson environment setup
