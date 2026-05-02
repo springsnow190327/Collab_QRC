@@ -1237,24 +1237,26 @@ def generate_launch_description():
         DeclareLaunchArgument("explore", default_value="true",
                               description="Enable CFPA2 autonomous frontier exploration"),
         DeclareLaunchArgument(
-            "nav_backend", default_value="far",
+            "nav_backend", default_value="nav2_mppi",
             description=(
-                "Nav backend: 'far' (default — CMU stack) | 'astar' | "
-                "'hybrid_astar' | 'nav2_hybrid_astar' | 'nav2_mppi' "
-                "(SmacPlannerHybrid + MPPI + behavior_server + "
-                "stuck_watchdog; pair with holonomic_profile=se2_holonomic "
-                "for the lattice-planner forward/pivot profile)."
+                "Nav backend (DEFAULT 'nav2_mppi'): SmacPlannerHybrid (or "
+                "SmacPlannerLattice when holonomic_profile=se2_holonomic, "
+                "the default) + MPPI + behavior_server + stuck_watchdog. "
+                "Other choices: 'far' (CMU stack), 'astar' (C++ A* + "
+                "oriented footprint check), 'hybrid_astar', "
+                "'nav2_hybrid_astar'."
             ),
         ),
         DeclareLaunchArgument(
-            "holonomic_profile", default_value="off",
+            "holonomic_profile", default_value="se2_holonomic",
             description=(
                 "Nav2 SE2-holonomic overlay (only takes effect with "
-                "nav_backend=nav2_mppi). 'off' = SmacPlannerHybrid + "
-                "DiffDrive MPPI baseline. 'se2_holonomic' = "
+                "nav_backend=nav2_mppi). DEFAULT 'se2_holonomic' = "
                 "SmacPlannerLattice (diff primitives) + yaw-align/forward "
                 "MPPI, no lateral strafe — mirrors the real-Go2W profile "
-                "shipped 2026-05-02."
+                "shipped 2026-05-02; fits the legged + wheeled-legged "
+                "kinematic model best. Pass holonomic_profile:=off to "
+                "fall back to SmacPlannerHybrid + DiffDrive MPPI baseline."
             ),
         ),
         DeclareLaunchArgument(

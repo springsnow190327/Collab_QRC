@@ -1,26 +1,36 @@
 #!/usr/bin/env bash
 # Launch heterogeneous dual-robot nav test on demo3_mixed.
-#   robot_a = Go2W (wheeled-legged, at (4, 2))  — default backend: astar
-#   robot_b = Go2  (non-wheeled, at (4, -6))    — default backend: astar
+#   robot_a = Go2W (wheeled-legged, at (4, 2))
+#   robot_b = Go2  (non-wheeled,    at (4, -6))
 # Fast-LIO2 SLAM per robot. CFPA2 coordinator partitions frontiers.
 # Inter-robot collision monitor reports any A↔B contacts.
 #
+# Defaults (post 2026-05-02): both robots on Nav2 MPPI + SE2-holonomic
+# overlay (SmacPlannerLattice w/ diff primitives + forward/pivot DiffDrive
+# MPPI, no lateral strafe). Mirrors the real-Go2W profile and fits both
+# Go2W and Go2 walking kinematics best.
+#
 # Usage:
-#   ./scripts/launch/nav_test_demo3_mixed.sh                        # Go2W=astar, Go2=astar
+#   ./scripts/launch/nav_test_demo3_mixed.sh                        # both = nav2_mppi + se2_holonomic
 #   ./scripts/launch/nav_test_demo3_mixed.sh gui:=true rviz:=true
 #   ./scripts/launch/nav_test_demo3_mixed.sh explore:=false         # manual goals only
-#   ./scripts/launch/nav_test_demo3_mixed.sh nav_backend_a:=far nav_backend_b:=far  # both FAR
-#   ./scripts/launch/nav_test_demo3_mixed.sh nav_backend_b:=far     # mixed: A=astar, B=FAR
 #
-# SE2-holonomic profile (Nav2 only — needs nav_backend_*:=nav2_mppi):
-#   Mirrors the real-Go2W profile shipped 2026-05-02 (SmacPlannerLattice +
-#   forward/pivot DiffDrive MPPI, no lateral strafe). Best for narrow
-#   passages where the diff-drive Reeds-Shepp planner struggles with
-#   anisotropic-footprint entry maneuvers.
-#     ./scripts/launch/nav_test_demo3_mixed.sh \
-#         nav_backend_a:=nav2_mppi nav_backend_b:=nav2_mppi \
-#         holonomic_profile_a:=se2_holonomic holonomic_profile_b:=se2_holonomic
-#   Per-robot opt-in is supported (set just one).
+# Go2 (robot_b) SE2-holonomic, isolated:
+#   # Go2 alone on SE2 lattice; Go2W on baseline diff-drive Hybrid for A/B comparison
+#   ./scripts/launch/nav_test_demo3_mixed.sh \
+#       holonomic_profile_a:=off holonomic_profile_b:=se2_holonomic
+#   # or with Go2W disabled / running other backend:
+#   ./scripts/launch/nav_test_demo3_mixed.sh \
+#       nav_backend_a:=astar nav_backend_b:=nav2_mppi \
+#       holonomic_profile_b:=se2_holonomic
+#
+# Legacy backends:
+#   ./scripts/launch/nav_test_demo3_mixed.sh nav_backend_a:=far nav_backend_b:=far    # both FAR
+#   ./scripts/launch/nav_test_demo3_mixed.sh nav_backend_a:=astar nav_backend_b:=astar # both A*
+#   ./scripts/launch/nav_test_demo3_mixed.sh nav_backend_b:=far                       # mixed
+#
+# Opt out of SE2 (back to SmacPlannerHybrid + diff MPPI):
+#   ./scripts/launch/nav_test_demo3_mixed.sh holonomic_profile_a:=off holonomic_profile_b:=off
 #   ./scripts/launch/nav_test_demo3_mixed.sh debug:=true            # nav-only diagnostic terminal:
 #       silences mujoco / fast_lio / octomap / champ / ekf / sensor
 #       bridges / terrain_analysis / rviz / map_merge / session_reporter
@@ -82,15 +92,14 @@ if [[ -d "${SC_PGO_PREFIX}/share/sc_pgo" ]]; then
 fi
 export FASTRTPS_DEFAULT_PROFILES_FILE="${WS_DIR}/config/fastdds_no_shm.xml"
 
-# Default: both robots on A* (Go2 on FAR was prone to wedging in demo3_mixed
-# narrow rooms — FAR's V-graph misses thin walls at >5 m grazing range and
-# pathFollower's twoWayDrive picks reverse-into-wall when the goal is behind.
-# A* with Option B oriented-footprint validation is robust in tight spaces).
-# User can override by passing nav_backend_a:=... or nav_backend_b:=... on CLI;
-# their values flatten into "$@" so the explicit args below get overridden.
+# Defaults are inherited from nav_test_mujoco_fastlio_mixed.launch.py:
+#   nav_backend_a / nav_backend_b   → nav2_mppi
+#   holonomic_profile_a / _b        → se2_holonomic
+# (the SE2 lattice + forward/pivot MPPI profile fits both Go2W and Go2
+#  walking kinematics best). To revert per-robot:
+#   nav_backend_a:=astar / =far                 # legacy A* / CMU FAR
+#   holonomic_profile_a:=off                    # SmacPlannerHybrid + diff-MPPI baseline
 exec ros2 launch go2_gazebo_sim nav_test_mujoco_fastlio_mixed.launch.py \
-  nav_backend_a:=astar \
-  nav_backend_b:=astar \
   gui:=true \
   rviz:=true \
   "$@"

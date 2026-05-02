@@ -2360,22 +2360,24 @@ def generate_launch_description():
             ),
         ),
         DeclareLaunchArgument(
-            "holonomic_profile_a", default_value="off",
+            "holonomic_profile_a", default_value="se2_holonomic",
             description=(
-                "Nav2 SE2-holonomic overlay for robot_a (Go2W). 'off' = "
-                "default SmacPlannerHybrid + DiffDrive MPPI. 'se2_holonomic' "
-                "= SmacPlannerLattice (diff primitives) + yaw-align/forward "
-                "MPPI (no strafe). Mirrors the real-Go2W profile shipped "
-                "2026-05-02. Requires nav_backend_a=nav2_mppi."
+                "Nav2 SE2-holonomic overlay for robot_a (Go2W). DEFAULT "
+                "'se2_holonomic' = SmacPlannerLattice (diff primitives) + "
+                "yaw-align/forward MPPI (no strafe). Mirrors the real-Go2W "
+                "profile shipped 2026-05-02; fits the kinematic model best. "
+                "Pass holonomic_profile_a:=off for SmacPlannerHybrid + "
+                "DiffDrive MPPI baseline. Requires nav_backend_a=nav2_mppi."
             ),
         ),
         DeclareLaunchArgument(
-            "holonomic_profile_b", default_value="off",
+            "holonomic_profile_b", default_value="se2_holonomic",
             description=(
                 "Nav2 SE2-holonomic overlay for robot_b (Go2). Same options "
                 "as holonomic_profile_a. Stock 0.5 m turning-radius diff "
-                "primitives are wider than Go2 walking can require but stay "
-                "kinematically feasible. Requires nav_backend_b=nav2_mppi."
+                "primitives are wider than Go2 walking strictly requires "
+                "but stay kinematically feasible. Requires "
+                "nav_backend_b=nav2_mppi."
             ),
         ),
         DeclareLaunchArgument(
