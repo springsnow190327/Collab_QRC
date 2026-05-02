@@ -182,3 +182,4 @@ demo3_*.log
 session_*.json
 /tmp_runtime_dumps/
 *.run.log
+realtek-r8126-dkms/

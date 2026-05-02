@@ -199,6 +199,12 @@ def _launch_setup(context):
     if holonomic_profile not in {"off", "se2_holonomic"}:
         raise ValueError(
             f"holonomic_profile must be 'off' | 'se2_holonomic'; got '{holonomic_profile}'")
+    # Optional: load a real-robot Nav2 yaml in sim instead of the sim default.
+    # Plain filename relative to go2w_config/config/nav/ (e.g.
+    # 'nav2_go2_real.yaml' or 'nav2_go2w_real.yaml'). Empty = sim default.
+    # Topic strings inside the real yaml use /robot/... which already match
+    # this launch's default robot_namespace='robot', so no rewrites needed.
+    nav2_yaml_override = _get(context, "nav2_yaml_override").strip()
     cfpa2_config_path = os.path.join(cfpa2_pkg, "config", "cfpa2_single_robot.yaml")
 
     actions = []
@@ -456,17 +462,60 @@ def _launch_setup(context):
         from nav2_common.launch import RewrittenYaml
 
         # Per-platform base yaml (same files used by the real stack).
-        _nav2_yaml_filename = (
-            "nav2_go2w_full_stack.yaml" if has_wheels
-            else "nav2_go2_full_stack.yaml"
-        )
+        # Override (nav2_yaml_override) lets us drop a real-robot yaml in
+        # for sim-vs-real unification experiments. RewrittenYaml below flips
+        # use_sim_time → true regardless of what the file says, so a real
+        # yaml (use_sim_time: false) loads cleanly.
+        if nav2_yaml_override:
+            _nav2_yaml_filename = nav2_yaml_override
+        else:
+            _nav2_yaml_filename = (
+                "nav2_go2w_full_stack.yaml" if has_wheels
+                else "nav2_go2_full_stack.yaml"
+            )
         nav2_yaml = os.path.join(
             go2w_config_pkg, "config", "nav", _nav2_yaml_filename
         )
+        if not os.path.exists(nav2_yaml):
+            raise FileNotFoundError(
+                f"Nav2 yaml not found: {nav2_yaml}. Check spelling of "
+                f"nav2_yaml_override (must be a filename under "
+                f"go2w_config/config/nav/, not a path)."
+            )
+        # The full-stack yamls were authored for dual sim:
+        #   nav2_go2w_full_stack.yaml  → /robot_a/* topics
+        #   nav2_go2_full_stack.yaml   → /robot_b/* topics, robot_base_frame=b_base_link
+        # Real yamls use /robot/* and base_link.
+        # In single sim, robot_ns defaults to "robot" and TF publishes plain
+        # base_link (no b_ prefix) regardless of platform — so without
+        # rewriting both topic prefixes AND robot_base_frame, controller_server
+        # never finishes activating (TF lookup for b_base_link → odom fails),
+        # bt_navigator stays inactive, and goals from cfpa2_to_nav2_bridge are
+        # silently dropped (root cause of the 2026-05-02 "robot stuck at spawn"
+        # bug — single Go2 sim nav2_mppi was untested before).
+        # Strategy: pre-process the yaml text to rewrite /robot_[ab]/ →
+        # /{robot_ns}/, write to a temp file, then let RewrittenYaml flip
+        # use_sim_time and force base_link for any single-sim Go2 instance.
+        import re as _re
+        import tempfile as _tempfile
+        with open(nav2_yaml) as _f:
+            _yaml_text = _f.read()
+        _yaml_text = _re.sub(r"/robot_[ab]/", f"/{robot_ns}/", _yaml_text)
+        _tmp_yaml = _tempfile.NamedTemporaryFile(
+            mode="w", suffix=f"_{robot_ns}_nav2.yaml", delete=False
+        )
+        _tmp_yaml.write(_yaml_text)
+        _tmp_yaml.close()
         rewritten_nav2 = RewrittenYaml(
-            source_file=nav2_yaml,
+            source_file=_tmp_yaml.name,
             root_key=robot_ns,
-            param_rewrites={"use_sim_time": str(use_sim_time).lower()},
+            param_rewrites={
+                "use_sim_time": str(use_sim_time).lower(),
+                # Single sim publishes plain base_link; force it across all
+                # nodes regardless of what the source yaml says (the dual-sim
+                # Go2 yaml says b_base_link, real yaml already says base_link).
+                "robot_base_frame": "base_link",
+            },
             convert_types=True,
         )
 
@@ -485,13 +534,28 @@ def _launch_setup(context):
             )
             nav2_params.append(overlay_rewritten)
 
+        # cmd_vel routing in single sim:
+        #   Go2W (has_wheels=true): go2w_hybrid_cmd_router subscribes to plain
+        #     /<ns>/cmd_vel and splits to wheel + cmd_vel_legged. Default
+        #     Nav2 publish destination is correct → no remap.
+        #   Go2 (has_wheels=false): no router; CHAMP's quadruped_controller_node
+        #     listens directly on /<ns>/cmd_vel_legged (the twist_bridge target,
+        #     used historically by default_nav/astar via cmd_vel_stamped). Nav2
+        #     publishes Twist on relative cmd_vel → /<ns>/cmd_vel which has zero
+        #     subscribers, so the robot stands still even with a healthy MPPI.
+        #     Remap controller_server + behavior_server cmd_vel to cmd_vel_legged
+        #     so CHAMP receives Nav2's commands. Discovered 2026-05-02 PM during
+        #     the real-yaml unification experiment — single Go2 sim nav2_mppi
+        #     was committed but never end-to-end tested.
+        nav2_cmd_remap = [] if has_wheels else [("cmd_vel", "cmd_vel_legged")]
+
         nav2_inner_nodes = [
             PushRosNamespace(robot_ns),
             Node(
                 package="nav2_controller", executable="controller_server",
                 name="controller_server",
                 parameters=nav2_params,
-                remappings=tf_remaps, output="screen",
+                remappings=tf_remaps + nav2_cmd_remap, output="screen",
             ),
             Node(
                 package="nav2_planner", executable="planner_server",
@@ -503,7 +567,7 @@ def _launch_setup(context):
                 package="nav2_behaviors", executable="behavior_server",
                 name="behavior_server",
                 parameters=nav2_params,
-                remappings=tf_remaps, output="screen",
+                remappings=tf_remaps + nav2_cmd_remap, output="screen",
             ),
             Node(
                 package="nav2_bt_navigator", executable="bt_navigator",
@@ -1191,6 +1255,18 @@ def generate_launch_description():
                 "SmacPlannerLattice (diff primitives) + yaw-align/forward "
                 "MPPI, no lateral strafe — mirrors the real-Go2W profile "
                 "shipped 2026-05-02."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "nav2_yaml_override", default_value="",
+            description=(
+                "Plain filename under go2w_config/config/nav/ to load as "
+                "the Nav2 base yaml instead of the sim default. Used for "
+                "sim/real unification experiments — e.g. "
+                "'nav2_go2_real.yaml' or 'nav2_go2w_real.yaml'. "
+                "RewrittenYaml flips use_sim_time → true automatically. "
+                "Sim's default robot_namespace='robot' matches the real "
+                "yaml's /robot/* topic prefixes, so no remap is needed."
             ),
         ),
         DeclareLaunchArgument("mujoco_model_path", default_value=default_scene),
