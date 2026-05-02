@@ -41,7 +41,18 @@ class FarDebugMonitor(Node):
         self.create_subscription(Odometry, "/robot/odom/nav", self._odom, 10)
         self.create_subscription(PointStamped, "/robot/way_point", self._wp, 10)
         self.create_subscription(PointStamped, "/robot/way_point_coord", self._goal, 10)
+        # cmd_vel routing varies by launch / robot platform:
+        #   - default_nav / astar   → TwistStamped on /robot/cmd_vel_stamped
+        #   - Nav2 MPPI Go2W single → plain Twist on /robot/cmd_vel
+        #     (go2w_hybrid_cmd_router consumes it to drive wheels + legs)
+        #   - Nav2 MPPI Go2 single  → plain Twist on /robot/cmd_vel_legged
+        #     (Nav2's cmd_vel is remapped → cmd_vel_legged so CHAMP receives it
+        #     directly; /robot/cmd_vel ends up with 0 publishers and the
+        #     monitor used to print +0.000 forever, giving the false impression
+        #     the robot wasn't moving)
+        # Subscribe to ALL three; whichever has traffic populates the readout.
         self.create_subscription(Twist, "/robot/cmd_vel", self._cmd, 10)
+        self.create_subscription(Twist, "/robot/cmd_vel_legged", self._cmd, 10)
         self.create_subscription(TwistStamped, "/robot/cmd_vel_stamped", self._cmd_s, 10)
         self.create_subscription(String, "/mujoco/contacts", self._contacts, qos_be)
 
