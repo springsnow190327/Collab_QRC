@@ -76,10 +76,23 @@ setup_cyclonedds_ethernet() {
     echo "  CycloneDDS peer added: ${_jetson_ip} (onboard SLAM)"
   fi
 
-  export CYCLONEDDS_URI="<CycloneDDS><Domain>
+  # 2026-05-01: switched from inline multi-line XML to file:// URI.
+  # ros2 launch was truncating the multi-line CYCLONEDDS_URI env var when
+  # spawning child node processes — the parent had the full XML, but every
+  # child saw only `<CycloneDDS><Domain></Domain></CycloneDDS>`. Result:
+  # children defaulted to multicast-only discovery on a network where the
+  # USB-Ethernet dongle's multicast doesn't reach the Go2 — Sport API
+  # subscription invisible, /api/sport/request had 0 subscribers, robot
+  # didn't move despite cmd_vel flowing through the laptop side. file://
+  # URI sidesteps the issue entirely (single-line env value, all children
+  # inherit cleanly).
+  local _xml="/tmp/cyclonedds_${USER}_eth.xml"
+  cat > "${_xml}" <<EOF
+<CycloneDDS>
+  <Domain>
     <General>
       <Interfaces>
-        <NetworkInterface name=\"${ETH_IFACE}\" priority=\"default\" multicast=\"true\" />
+        <NetworkInterface name="${ETH_IFACE}" priority="default" multicast="true" />
       </Interfaces>
     </General>
     <Discovery>
@@ -87,7 +100,10 @@ setup_cyclonedds_ethernet() {
       <ParticipantIndex>auto</ParticipantIndex>
       <MaxAutoParticipantIndex>200</MaxAutoParticipantIndex>
     </Discovery>
-  </Domain></CycloneDDS>"
+  </Domain>
+</CycloneDDS>
+EOF
+  export CYCLONEDDS_URI="file://${_xml}"
 
   (ros2 daemon stop &>/dev/null &); sleep 1
   pkill -9 -f _ros2_daemon 2>/dev/null || true

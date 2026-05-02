@@ -244,7 +244,7 @@ Visualization Manager:
     - Class: rviz_default_plugins/SetInitialPose
       Topic: { Value: /initialpose }
     - Class: rviz_default_plugins/SetGoal
-      Topic: { Value: /goal_pose }
+      Topic: { Value: /robot/goal_pose }
     - Class: rviz_default_plugins/PublishPoint
       Single click: true
       Topic: { Value: /clicked_point }

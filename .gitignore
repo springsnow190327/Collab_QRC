@@ -91,6 +91,7 @@ imu_calib_data.yaml*
 # =============================================
 # Bag / data directories
 # =============================================
+/bags/
 /balm2_data/
 /balm2_carto_data/
 /carto_balm2_data/

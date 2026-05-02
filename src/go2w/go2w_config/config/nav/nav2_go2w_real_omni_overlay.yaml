@@ -1,0 +1,63 @@
+# Holonomic overlay for REAL Go2W Nav2.
+#
+# This file is intentionally a *small layered override* on top of
+# `nav2_go2w_real.yaml`. The preserved base file keeps the existing
+# diff-drive / Reeds-Shepp profile for fallback and comparison, while this
+# overlay swaps in:
+#   - SmacPlanner2D (holonomic 8-connected A*)
+#   - MPPI Omni motion model with non-zero lateral velocity
+#   - softer angle-tracking weights so large yaw error does not dominate when
+#     the platform can simply translate sideways and keep moving
+#
+# It is only meant to be used via the launch-layer `nav2_yaml_extra_override`
+# plumbing added for real Go2W.
+
+planner_server:
+  ros__parameters:
+    GridBased:
+      plugin: "nav2_smac_planner/SmacPlanner2D"
+      tolerance: 0.4
+      downsample_costmap: false
+      downsampling_factor: 1
+      allow_unknown: true
+      max_iterations: 80000
+      max_on_approach_iterations: 1000
+      max_planning_time: 1.5
+      # 8-connected holonomic search so path geometry follows XY reachability
+      # rather than body-heading-constrained Reeds-Shepp arcs.
+      motion_model_for_search: "MOORE"
+      # Similar intent to the hybrid config's cost_penalty: prefer the center
+      # of aisles / low-cost regions without overfitting the cost field.
+      cost_travel_multiplier: 2.0
+      # For frontier exploration we do not care about matching an exact final
+      # yaw. Using the approach orientation avoids pointless "rotate to goal"
+      # behavior after the point is reached.
+      use_final_approach_orientation: true
+      smooth_path: true
+      smoother:
+        max_iterations: 2000
+        w_smooth: 0.5
+        w_data: 0.2
+        tolerance: 1.0e-10
+
+controller_server:
+  ros__parameters:
+    FollowPath:
+      # Keep forward speed budget from the wheeled platform, but unlock
+      # meaningful lateral motion so MPPI can resolve large yaw/path mismatch
+      # states by translating instead of circling.
+      vx_max: 0.50
+      vx_min: -0.10
+      vy_max: 0.35
+      ax_max: 0.50
+      ax_min: -0.50
+      ay_max: 0.35
+      wz_max: 0.70
+      motion_model: "Omni"
+      # With holonomic motion available, do not over-commit to angle matching.
+      # Let MPPI prioritize path progress and obstacle clearance over spinning
+      # the body into perfect tangent alignment at every step.
+      GoalAngleCritic:
+        cost_weight: 1.0
+      PathAngleCritic:
+        cost_weight: 0.5

@@ -1,6 +1,10 @@
-# Nav2 full-stack config for **REAL Go2 (non-wheeled, walking quadruped)**.
+# Nav2 full-stack config for **REAL Go2W (wheeled-legged quadruped)**.
 #
-# Twin of nav2_go2_full_stack.yaml (sim), retuned for the real robot.
+# Forked from nav2_go2_real.yaml on 2026-05-01 with Go2W kinematics +
+# footprint substitutions. Sim Go2W stays on nav2_go2w_full_stack.yaml
+# (its narrow-corridor demo3_mixed tuning would conflict with real-bot
+# noise tolerance). The MPPI safety + map-cleanup deltas are identical
+# to nav2_go2_real.yaml — see that file for the rationale.
 # What's different from the sim file (and why):
 #
 #   ── Time + namespace ──
@@ -60,13 +64,18 @@ local_costmap:
       publish_frequency: 2.0
       global_frame: odom
       robot_base_frame: base_link  # Real single-robot: no b_-prefix (sim convention only)
+      transform_tolerance: 0.5     # cross-host DDS TF skew headroom (2026-05-01)
       rolling_window: true
       width: 6
       height: 6
       resolution: 0.05
       # Go2 footprint: 0.65 × 0.30 m (no wheel hubs). Half-extents (0.325, 0.15).
       # See nav2_go2_full_stack.yaml comment block for the geometric derivation.
-      footprint: "[[0.325, 0.15], [0.325, -0.15], [-0.325, -0.15], [-0.325, 0.15]]"
+      # 2026-05-01 narrow-corridor pass: chassis is 0.31 m wide
+      # (Unitree Go2W spec); 3 cm sway buffer per side → 0.34 m
+      # polygon width. Original 0.40 m wide polygon left only
+      # 2.5 cm/side clearance in 0.45 m corridors → MPPI vetoed.
+      footprint: "[[0.34, 0.17], [0.34, -0.17], [-0.34, -0.17], [-0.34, 0.17]]"
       footprint_padding: 0.03
       plugins: ["obstacle_layer", "inflation_layer"]
       obstacle_layer:
@@ -100,14 +109,20 @@ global_costmap:
   global_costmap:
     ros__parameters:
       use_sim_time: false
-      # 2.0 Hz update (vs sim 1.0): real octomap arrives incrementally
-      # as Fast-LIO maps each scan; faster refresh keeps planner from
-      # replanning on a stale map and re-failing.
-      update_frequency: 2.0
-      publish_frequency: 1.0
+      # 2026-05-01: 2 → 5 Hz. Octomap publishes /robot/map at ~2 Hz
+      # but Fast-LIO drift can shift things between octomap ticks;
+      # higher costmap update rate ingests the latest map sooner so
+      # the planner doesn't replan against 500 ms-stale data.
+      update_frequency: 5.0
+      publish_frequency: 2.0
       global_frame: map
       robot_base_frame: base_link
-      footprint: "[[0.325, 0.15], [0.325, -0.15], [-0.325, -0.15], [-0.325, 0.15]]"
+      transform_tolerance: 0.5    # cross-host DDS TF skew headroom (2026-05-01)
+      # 2026-05-01 narrow-corridor pass: chassis is 0.31 m wide
+      # (Unitree Go2W spec); 3 cm sway buffer per side → 0.34 m
+      # polygon width. Original 0.40 m wide polygon left only
+      # 2.5 cm/side clearance in 0.45 m corridors → MPPI vetoed.
+      footprint: "[[0.34, 0.17], [0.34, -0.17], [-0.34, -0.17], [-0.34, 0.17]]"
       footprint_padding: 0.03
       resolution: 0.05
       track_unknown_space: true
@@ -145,24 +160,69 @@ planner_server:
       motion_model_for_search: "REEDS_SHEPP"
       angle_quantization_bins: 36
       analytic_expansion_ratio: 3.5
-      analytic_expansion_max_length: 3.0
-      # Go2 walking-gait pivots in place via CHAMP's in-place rotation.
-      minimum_turning_radius: 0.05
-      reverse_penalty: 2.0
-      change_penalty: 0.0
-      non_straight_penalty: 1.20
-      cost_penalty: 2.0
+      # 2026-05-01: 3.0 → 1.0. Long analytic Reeds-Shepp expansions
+      # near goal could thread through tight geometry, producing a
+      # single sharp curve at the path *start* that MPPI can't follow
+      # smoothly. 1.0 m keeps analytic segments short — they only
+      # kick in when robot is genuinely close to goal, not when 3 m
+      # of corridor still need lattice planning.
+      analytic_expansion_max_length: 1.0
+      # Go2W on wheels — can pivot tight but not in-place.
+      # 2026-05-01: 0.30 → 0.50 m. 0.30 m was kinematically reachable
+      # but produced sharp bends in 0.45 m corridors that MPPI couldn't
+      # track smoothly. 0.50 m forces wider, gentler arcs so the path
+      # flows. Path is still tight enough for indoor geometry; the
+      # 5 cm/side clearance in 0.45 m corridors stays valid (chassis
+      # 0.34 m + arc fits in the corridor over a longer travel).
+      minimum_turning_radius: 0.50
+      # 2026-05-01: strongly discourage reverse-oriented path starts on real.
+      # Reeds-Shepp was legally producing paths whose pose orientations point
+      # opposite the XY tangent near the start, so the robot kept hunting
+      # around yaw / circling instead of committing to a forward turn-in.
+      # Keep reverse available as an escape hatch, but make it expensive
+      # enough that forward arcs win unless reverse is genuinely necessary.
+      reverse_penalty: 8.0
+      # Non-zero direction-change penalty further suppresses "flip to reverse
+      # then flip back" path prefixes that look geometrically short but are
+      # poor matches for the Go2W's real closed-loop behavior.
+      change_penalty: 1.0
+      # 2026-05-01: 1.20 → 1.50. Higher penalty for non-straight motion
+      # discourages MPPI's downstream zigzag. Hybrid A* prefers straighter
+      # paths through the corridor; MPPI then has less geometric reason
+      # to oscillate.
+      non_straight_penalty: 1.50
+      # 2026-05-01: 2.0 → 4.0. Stronger aversion to inflated/high-cost
+      # cells (cells in the inflation_radius gradient, not lethal). With
+      # cost_penalty=2.0 the planner happily routed through near-obstacle
+      # bands when shorter; 4.0 makes it actively prefer the centerline
+      # of corridors. Lethal cells were already vetoed; this only
+      # affects the gradient zone.
+      cost_penalty: 4.0
       retrospective_penalty: 0.015
       lookup_table_size: 20.0
       # ENABLE on real: heuristic cache reuse across replans gives a
-      # huge speedup once the map stabilises (~3-5× empirical). Disabled
-      # in sim because dual-robot map churns continuously; real
-      # single-robot incremental mapping is the ideal use case.
-      cache_obstacle_heuristic: true
+      # 2026-05-01 reverted to false. Theory was sound (3-5× speedup
+      # on stable maps) but real-robot reality breaks the assumption:
+      # Fast-LIO drift continuously shifts the global frame, octomap
+      # adds/removes voxels, and any movement of a 0.31 m chassis
+      # through a 0.45 m corridor produces a different costmap each
+      # 100 ms. The cached obstacle-distance heuristic guides A* using
+      # *previous* costmap state — so the planner happily routed
+      # through cells the cache thought were free but the *current*
+      # costmap marked as occupied. Symptom: planned path visibly
+      # crossing black voxels in /robot/map.
+      # Cost of disabling: planner re-computes the obstacle heuristic
+      # each iteration. Empirical real-robot planning time stays under
+      # max_planning_time (1.5 s) for indoor scenes < 50 m².
+      cache_obstacle_heuristic: false
       smooth_path: true
       smoother:
-        max_iterations: 1000
-        w_smooth: 0.3
+        # 2026-05-01: more aggressive post-planning smoothing to iron
+        # out lattice-discretization kinks. With cost_penalty 4.0 +
+        # consider_footprint true, the smoothed path stays clear of
+        # walls; the smoother just removes corner-cutting artefacts.
+        max_iterations: 2000     # was 1000
+        w_smooth: 0.5            # was 0.3 — stronger smoothing pull
         w_data: 0.2
         tolerance: 1.0e-10
 
@@ -199,17 +259,30 @@ controller_server:
       vx_std: 0.20
       vy_std: 0.20
       wz_std: 0.40
-      vx_max: 0.30       # CHAMP walking-gait stable cap
-      vx_min: -0.10      # Go2 reverses but slow
+      vx_max: 0.50       # Go2W wheels — faster than Go2 walking
+      vx_min: -0.20      # reverse OK on wheels
       vy_max: 0.0        # diff-drive — no strafe
-      wz_max: 0.8        # gentler pivot than wheels
-      ax_max: 0.30       # softer accel for walking
-      ax_min: -0.40
+      wz_max: 1.0        # wheel-pivot can spin faster than walking
+      ax_max: 0.50       # wheels accelerate quicker than gait
+      ax_min: -0.50
       ay_max: 0.0
       az_max: 1.0
       iteration_count: 1
-      prune_distance: 1.7
-      transform_tolerance: 0.2
+      # 2026-05-01: 1.7 → 2.5 m. With sharper-bend planner output
+      # eliminated by the smoother + min_turning_radius 0.50 changes,
+      # MPPI now benefits from looking further ahead — anticipates
+      # bends earlier instead of veering at the last meter.
+      prune_distance: 2.5
+      # 2026-05-01: 0.2 → 0.5. Cross-host DDS between Jetson (Foxy) and
+      # laptop (Humble) introduces TF timestamp skew of up to ~300 ms
+      # under network jitter. Default 0.2 s caused controller_server
+      # to drop EVERY input frame as "earlier than transform cache" —
+      # silent failure mode, no cmd_vel output, robot stationary.
+      # 0.5 s buys headroom for clock skew without making MPPI track
+      # noticeably-stale poses (controller still runs at 20 Hz so a
+      # 0.5 s window is at most 10 cycles of latency, well under
+      # MPPI's 56-step / 2.8 s prediction horizon).
+      transform_tolerance: 0.5
       temperature: 0.3
       gamma: 0.015
       motion_model: "DiffDrive"
@@ -265,14 +338,26 @@ controller_server:
         # Pivot-protection margin (0.10 m) is preserved — the swept-arc
         # gap analysis for the rotated footprint hasn't changed.
         repulsion_weight: 2.5
+        # 2026-05-01 narrow-corridor pass v2: 12 → 15 made MPPI zigzag
+        # because every minor pose-noise excursion crossed the now-tight
+        # 0.03 m margin and got vetoed; sampler kept switching plans.
+        # Reverted to 12: still a strong veto inside 0.03 m (12 ×
+        # collision_cost 10000 = significant), without firing on noise.
         critical_weight: 12.0
         consider_footprint: true
         collision_cost: 10000.0
-        # 0.10 m covers the swept-arc gap during in-place pivots
-        # (wz_max 0.8 × tail radius 0.325 ≈ 3 cm per model_dt step).
-        # ObstaclesCritic only samples discrete poses; this padding
-        # turns the per-pose check into an effective swept-volume check.
-        collision_margin_distance: 0.10
+        # 0.10 → 0.03 m. Original 0.10 covered the swept-arc gap during
+        # pivots, but in 0.45 m corridors with 0.34 m polygon body the
+        # 0.10 margin engulfed the entire passable corridor (5.5 cm
+        # clearance/side < 10 cm margin → MPPI vetoed every trajectory).
+        # 0.03 m trusts the polygon for forward motion; pivot-arc
+        # protection (was wz_max × tail × dt = 1.75 cm/step for Go2W)
+        # is now covered by the margin × 1.7 safety factor instead of
+        # the original 5×.
+        # Trade-off: occasional tail brushes during max-ω pivots in
+        # tight corners. Proper fix is a mode-aware ObstaclesCritic
+        # custom plugin (separate work).
+        collision_margin_distance: 0.03
         near_goal_distance: 0.5
       PathAlignCritic:
         enabled: true
@@ -316,7 +401,7 @@ behavior_server:
       plugin: "nav2_behaviors/Wait"
     global_frame: odom
     robot_base_frame: base_link
-    transform_tolerance: 0.1
+    transform_tolerance: 0.5    # was 0.1 — same cross-host DDS skew rationale as MPPI
     simulate_ahead_time: 2.0
     max_rotational_vel: 1.0
     min_rotational_vel: 0.4
@@ -335,7 +420,15 @@ bt_navigator:
     odom_topic: /robot/odom/nav
     bt_loop_duration: 10
     default_server_timeout: 20
-    default_nav_to_pose_bt_xml: "/opt/ros/humble/share/nav2_bt_navigator/behavior_trees/navigate_to_pose_w_replanning_and_recovery.xml"
+    # 2026-05-01: switched from the basic 1 Hz blind-replan BT to the
+    # IsPathValid-aware variant. Default BT replanned every 1s regardless;
+    # if Fast-LIO drifts mid-mission or a new obstacle pops in (~10 Hz
+    # map updates), the robot follows the stale plan into the obstacle
+    # for up to 1 s before the next blind replan.
+    # The new BT runs at 2 Hz, calls IsPathValid every tick, and
+    # triggers an immediate replan if any waypoint enters a lethal
+    # cell. Path also force-replans if older than 10 s (drift safety).
+    default_nav_to_pose_bt_xml: "/opt/ros/humble/share/nav2_bt_navigator/behavior_trees/nav_to_pose_with_consistent_replanning_and_if_path_becomes_invalid.xml"
     default_nav_through_poses_bt_xml: "/opt/ros/humble/share/nav2_bt_navigator/behavior_trees/navigate_through_poses_w_replanning_and_recovery.xml"
     plugin_lib_names:
       - nav2_compute_path_to_pose_action_bt_node
@@ -366,6 +459,7 @@ bt_navigator:
       - nav2_round_robin_node_bt_node
       - nav2_transform_available_condition_bt_node
       - nav2_time_expired_condition_bt_node
+      - nav2_path_expiring_timer_condition
       - nav2_distance_traveled_condition_bt_node
       - nav2_single_trigger_bt_node
       - nav2_goal_updated_controller_bt_node

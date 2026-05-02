@@ -39,12 +39,30 @@
 #                                        slam=carto_l1)
 #   carto_mode={2d|3d}                   default: 2d      (carto_l1 only; auto-forced
 #                                        to 2d when mapper=carto_2d)
+#   manual={true|false}                  default: false   (Nav2-only operator mode:
+#                                        disable CFPA2 exploration and use RViz
+#                                        "2D Goal Pose" to publish directly to
+#                                        /robot/goal_pose)
+#   holonomic={true|false}               default: false   (legacy alias; if true
+#                                        and holonomic_profile is not set,
+#                                        selects holonomic_profile=omni_2d)
+#   holonomic_profile={off|omni_2d|se2_holonomic}
+#                                        default: off     (Go2W + nav2_mppi only)
+#                                        off            = preserved default
+#                                                         diff-drive profile
+#                                        omni_2d        = SmacPlanner2D + MPPI Omni
+#                                        se2_holonomic  = SmacPlannerLattice +
+#                                                         forward/pivot MPPI
+#                                                         (no lateral strafe)
 #
 # Examples:
 #   ./real_autonomy.sh                                         # default Go2W stack
 #   ./real_autonomy.sh robot=go2                               # Go2 (no-wheel)
 #   ./real_autonomy.sh slam=fastlio_mid360 nav=far
 #   ./real_autonomy.sh nav=tare mapper=carto_2d
+#   ./real_autonomy.sh manual=true                             # RViz click-to-nav
+#   ./real_autonomy.sh holonomic=true                          # Go2W omni_2d profile
+#   ./real_autonomy.sh holonomic_profile=se2_holonomic         # Go2W SE2 forward/pivot profile
 #   ./real_autonomy.sh stop                                    # kill everything
 
 set -e
@@ -57,10 +75,25 @@ REPO_ROOT="$( cd "$SCRIPT_DIR/../.." &> /dev/null && pwd )"
 # ExecuteProcess children (Python helpers especially linger), so we
 # explicitly walk the process tree.
 _kill_autonomy_stack() {
+  # Stop rosbag2 *first* with SIGINT so it can flush metadata.yaml and
+  # close the MCAP cleanly. SIGTERM/SIGKILL leaves an unfinalized bag.
+  if [[ -n "${BAG_PID:-}" ]] && kill -0 "$BAG_PID" 2>/dev/null; then
+    kill -INT "$BAG_PID" 2>/dev/null || true
+    # Wait up to 8s for rosbag2 to finalize. If it hangs, fall through to
+    # the pkill sweep below — corrupted bag is acceptable when we're
+    # already in panic-shutdown territory.
+    for _ in 1 2 3 4 5 6 7 8; do
+      kill -0 "$BAG_PID" 2>/dev/null || break
+      sleep 1
+    done
+  fi
   # Catch the launch wrapper itself first so it doesn't respawn children
   # while we're killing them.
   pkill -9 -f "ros2 launch go2w_real_bringup" 2>/dev/null || true
   pkill -9 -f "real_single.launch.py\|real_single_tare_real.launch.py" 2>/dev/null || true
+  # Catch rosbag2 by name as a belt-and-braces sweep (in case BAG_PID
+  # isn't set, e.g. `stop` subcommand from a separate shell).
+  pkill -INT -f "ros2 bag record" 2>/dev/null || true
   for p in \
       cartographer_node cartographer_occupancy transform_everything \
       default_nav cfpa2 carto_odom_bridge twist_bridge \
@@ -99,6 +132,12 @@ RVIZ_CONFIG="autonomy.rviz"
 RVIZ_3D="true"
 CARTO_MODE="2d"
 ONBOARD="false"
+MANUAL="false"
+HOLONOMIC="false"
+HOLONOMIC_PROFILE="off"
+RECORD="true"
+RECORD_FULL="false"
+BAG_DIR_ROOT=""
 
 # ── Parse key=value args (and "stop") ─────────────────────────────────
 for arg in "$@"; do
@@ -121,6 +160,12 @@ for arg in "$@"; do
     rviz_3d=*) RVIZ_3D="${arg#rviz_3d=}" ;;
     carto_mode=*) CARTO_MODE="${arg#carto_mode=}" ;;
     onboard=*) ONBOARD="${arg#onboard=}" ;;
+    manual=*) MANUAL="${arg#manual=}" ;;
+    holonomic=*) HOLONOMIC="${arg#holonomic=}" ;;
+    holonomic_profile=*) HOLONOMIC_PROFILE="${arg#holonomic_profile=}" ;;
+    record=*)      RECORD="${arg#record=}" ;;
+    record_full=*) RECORD_FULL="${arg#record_full=}" ;;
+    bag_dir=*)     BAG_DIR_ROOT="${arg#bag_dir=}" ;;
     *) echo "WARN: unknown arg '$arg'" >&2 ;;
   esac
 done
@@ -137,6 +182,12 @@ case "$RVIZ"    in true|false) ;; *) echo "ERROR: rviz must be true|false" >&2; 
 case "$RVIZ_3D" in true|false) ;; *) echo "ERROR: rviz_3d must be true|false" >&2; exit 1 ;; esac
 case "$CARTO_MODE" in 2d|3d) ;; *) echo "ERROR: carto_mode must be 2d|3d" >&2; exit 1 ;; esac
 case "$ONBOARD" in true|false) ;; *) echo "ERROR: onboard must be true|false" >&2; exit 1 ;; esac
+case "$MANUAL" in true|false) ;; *) echo "ERROR: manual must be true|false" >&2; exit 1 ;; esac
+case "$HOLONOMIC" in true|false) ;; *) echo "ERROR: holonomic must be true|false" >&2; exit 1 ;; esac
+case "$HOLONOMIC_PROFILE" in off|omni_2d|se2_holonomic) ;; *) echo "ERROR: holonomic_profile must be off|omni_2d|se2_holonomic" >&2; exit 1 ;; esac
+case "$RECORD"      in true|false) ;; *) echo "ERROR: record must be true|false" >&2; exit 1 ;; esac
+case "$RECORD_FULL" in true|false) ;; *) echo "ERROR: record_full must be true|false" >&2; exit 1 ;; esac
+[[ -n "$BAG_DIR_ROOT" ]] && export BAG_DIR_ROOT
 
 # Tell connect_ethernet.sh to add the Jetson as a CycloneDDS peer when
 # onboard SLAM is in use (sourced as env var so the function picks it up).
@@ -186,6 +237,44 @@ case "$NAV" in
   tare_real) LAUNCH="real_single_tare_real.launch.py"; NAV_BACKEND="far" ;;
 esac
 
+# Manual point-to-point mode is only meaningful for the Nav2 stack: CFPA2 is
+# disabled and the operator sends goals directly from RViz to /robot/goal_pose.
+EXPLORE="true"
+if [[ "$MANUAL" == "true" ]]; then
+  if [[ "$NAV" != "nav2_mppi" ]]; then
+    echo "ERROR: manual=true requires nav=nav2_mppi (RViz goal clicks target bt_navigator)." >&2
+    exit 1
+  fi
+  EXPLORE="false"
+fi
+
+# Canonical Nav2 profile selection:
+#   1) Explicit holonomic_profile wins.
+#   2) Legacy holonomic=true (with profile=off) maps to omni_2d.
+NAV2_PROFILE="$HOLONOMIC_PROFILE"
+if [[ "$NAV2_PROFILE" == "off" && "$HOLONOMIC" == "true" ]]; then
+  NAV2_PROFILE="omni_2d"
+fi
+HOLONOMIC_NAV="false"
+[[ "$NAV2_PROFILE" != "off" ]] && HOLONOMIC_NAV="true"
+
+if [[ "$HOLONOMIC_NAV" == "true" ]]; then
+  if [[ "$NAV" != "nav2_mppi" ]]; then
+    echo "ERROR: holonomic profile '$NAV2_PROFILE' requires nav=nav2_mppi." >&2
+    exit 1
+  fi
+  if [[ "$ROBOT" != "go2w" ]]; then
+    echo "ERROR: holonomic profile '$NAV2_PROFILE' is currently only wired for robot=go2w." >&2
+    exit 1
+  fi
+fi
+NAV2_PROFILE_NOTE=" (default diff-drive / Reeds-Shepp profile)"
+if [[ "$NAV2_PROFILE" == "omni_2d" ]]; then
+  NAV2_PROFILE_NOTE=" (SmacPlanner2D + MPPI Omni profile)"
+elif [[ "$NAV2_PROFILE" == "se2_holonomic" ]]; then
+  NAV2_PROFILE_NOTE=" (SmacPlannerLattice + forward/pivot MPPI, no strafe)"
+fi
+
 BANNER_MODE="LIVE"
 [[ "$EXECUTE" == "false" ]] && BANNER_MODE="DRY-RUN (sport API disconnected)"
 
@@ -202,11 +291,32 @@ echo "    nav     : $NAV ($NAV_BACKEND)"
 echo "    mapper  : $MAPPER"
 echo "    oa      : $OA"
 echo "    execute : $EXECUTE"
+echo "    manual  : $MANUAL$([ "$MANUAL" == "true" ] && echo " (CFPA2 OFF; RViz 2D Goal Pose -> /robot/goal_pose)")"
+echo "    holonomic: $HOLONOMIC (legacy alias)"
+echo "    nav2_profile: $NAV2_PROFILE$NAV2_PROFILE_NOTE"
 echo "    onboard : $ONBOARD$([ "$ONBOARD" == "true" ] && echo " (laptop skips livox+fast_lio; expects Jetson @ 192.168.123.18)")"
+if [[ "$RECORD" == "true" ]]; then
+  echo "    record  : $([[ "$RECORD_FULL" == "true" ]] && echo "full (incl. /livox/lidar)" || echo "essential")"
+else
+  echo "    record  : OFF"
+fi
 echo "  Launch    : go2w_real_bringup $LAUNCH"
 echo "  Stop      : Ctrl+C  or  scripts/real/real_autonomy.sh stop"
+[[ "$MANUAL" == "true" ]] && echo "  RViz goal : click '2D Goal Pose' in RViz to send /robot/goal_pose"
 echo "################################################"
 echo ""
+
+# Auto-record. Started before `ros2 launch` so the bag captures the
+# full startup sequence (and any early-launch crashes). Helper sets
+# BAG_PID + BAG_DIR; _kill_autonomy_stack SIGINTs BAG_PID first to
+# finalize the MCAP cleanly before the global pkill sweep.
+if [[ "$RECORD" == "true" ]]; then
+  source "$REPO_ROOT/scripts/common_logging.sh"
+  setup_rosbag_recording \
+    "$ROBOT" "$SLAM" "$NAV" \
+    "$([[ "$RECORD_FULL" == "true" ]] && echo full || echo essential)" \
+    "robot"
+fi
 
 # Run launch as a background child so we can intercept Ctrl+C.
 # Without this trap, a Ctrl+C only kills the foreground ros2 launch wrapper
@@ -219,12 +329,15 @@ ros2 launch go2w_real_bringup "$LAUNCH" \
   slam:="$SLAM" \
   carto_mode:="$CARTO_MODE" \
   nav_backend:="$NAV_BACKEND" \
+  explore:="$EXPLORE" \
   map_backend:="$MAPPER" \
   obstacle_avoidance:="$OA" \
   execute_controller:="$EXECUTE" \
   rviz:="$RVIZ" \
   rviz_config:="$RVIZ_CONFIG" \
   rviz_3d:="$RVIZ_3D" \
+  holonomic_nav:="$HOLONOMIC_NAV" \
+  holonomic_nav_profile:="$NAV2_PROFILE" \
   onboard_slam:="$ONBOARD" &
 LAUNCH_PID=$!
 
@@ -243,4 +356,18 @@ trap cleanup_on_signal INT TERM
 wait "$LAUNCH_PID"
 EXIT_CODE=$?
 trap - INT TERM
+
+# If launch exited on its own (not via Ctrl+C), the trap didn't run —
+# finalize the bag here so we don't leave it open.
+if [[ -n "${BAG_PID:-}" ]] && kill -0 "$BAG_PID" 2>/dev/null; then
+  kill -INT "$BAG_PID" 2>/dev/null || true
+  wait "$BAG_PID" 2>/dev/null || true
+fi
+
+if [[ -n "${BAG_DIR:-}" && -d "$BAG_DIR" ]]; then
+  echo ""
+  echo "  Recorded:  $BAG_DIR"
+  echo "  Replay:    ./scripts/real/replay_bag.sh \"$BAG_DIR\""
+fi
+
 exit "$EXIT_CODE"

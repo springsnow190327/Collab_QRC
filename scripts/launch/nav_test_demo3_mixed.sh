@@ -11,6 +11,16 @@
 #   ./scripts/launch/nav_test_demo3_mixed.sh explore:=false         # manual goals only
 #   ./scripts/launch/nav_test_demo3_mixed.sh nav_backend_a:=far nav_backend_b:=far  # both FAR
 #   ./scripts/launch/nav_test_demo3_mixed.sh nav_backend_b:=far     # mixed: A=astar, B=FAR
+#
+# SE2-holonomic profile (Nav2 only — needs nav_backend_*:=nav2_mppi):
+#   Mirrors the real-Go2W profile shipped 2026-05-02 (SmacPlannerLattice +
+#   forward/pivot DiffDrive MPPI, no lateral strafe). Best for narrow
+#   passages where the diff-drive Reeds-Shepp planner struggles with
+#   anisotropic-footprint entry maneuvers.
+#     ./scripts/launch/nav_test_demo3_mixed.sh \
+#         nav_backend_a:=nav2_mppi nav_backend_b:=nav2_mppi \
+#         holonomic_profile_a:=se2_holonomic holonomic_profile_b:=se2_holonomic
+#   Per-robot opt-in is supported (set just one).
 #   ./scripts/launch/nav_test_demo3_mixed.sh debug:=true            # nav-only diagnostic terminal:
 #       silences mujoco / fast_lio / octomap / champ / ekf / sensor
 #       bridges / terrain_analysis / rviz / map_merge / session_reporter

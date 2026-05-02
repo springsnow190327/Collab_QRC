@@ -4,6 +4,8 @@ Real-robot operation: connection modes, SLAM selection, nav backends, common fai
 
 **Robots supported**: Unitree Go2W (wheeled-legged) and Unitree Go2 (no-wheel, spherical feet). Same network, same DDS, same Unitree sport API — only nav tuning differs.
 
+**Latest session update (2026-05-02):** Go2W real Nav2 now has explicit runtime profile selection `holonomic_profile={off|omni_2d|se2_holonomic}`; the final tuned `se2_holonomic` mode keeps SE2 planning but executes as forward+pivot (no crab-walk). See [`CLAUDE.md` → "Active state (2026-05-02)"](../../CLAUDE.md#active-state-2026-05-02).
+
 ## Entry points
 
 ```bash
@@ -15,7 +17,11 @@ scripts/real/real_autonomy.sh \
   nav={cfpa2|tare|far} \
   mapper={scan|carto_binary|carto_2d} \
   oa={true|false} \
-  carto_mode={2d|3d}
+  carto_mode={2d|3d} \
+  onboard={true|false} \
+  record={true|false}        # default true — auto-record bag for diagnosis
+  record_full={true|false}   # default false — set true for raw point clouds
+  bag_dir=<path>             # default $REPO_ROOT/bags
 
 # Convenience shim for Go2 (one-liner → real_autonomy.sh robot=go2 "$@")
 scripts/real/real_autonomy_go2.sh [same flags]
@@ -27,6 +33,7 @@ scripts/real/connect_ethernet.sh               # Ethernet + CycloneDDS preflight
 scripts/real/connect_webrtc.sh                 # WiFi + go2_ros2_sdk WebRTC
 scripts/real/monitor.sh                        # topic echo + optional cmd_vel pub
 scripts/real/calibrate_imu.sh                  # two-phase IMU calib → imu_calib.yaml
+scripts/real/replay_bag.sh <BAG_DIR>           # offline replay of a recorded run + RViz
 ```
 
 Defaults: `robot=go2w + ethernet + carto_l1 + cfpa2 + scan + oa=true`.
@@ -440,6 +447,68 @@ When the Orin Super arrives (JetPack 6 / Ubuntu 22.04 / native Humble):
 4. Cross-distro DDS caveat goes away — both sides on Humble.
 
 The deploy + onboard launcher are deliberately distro-portable.
+
+## Recording & replay (auto, default ON)
+
+Every real-robot run is recorded by default. A bag without an opt-in is
+useless when you didn't realise something was about to break — so the
+default is record-on, opt-out via flag.
+
+**Where bags live:** `bags/realrun_<robot>_<slam>_<nav>_<YYYYMMDD_HHMMSS>/`
+under the repo root. The `bags/` directory is gitignored
+(`.gitignore` line ~95). Inside each bag directory:
+
+- `manifest.txt` — git SHA + branch + dirty flag, hostname, all CLI args,
+  ISO date. Diff-able context for the run.
+- `metadata.yaml` + `realrun_*_0.mcap` — rosbag2 native files. MCAP storage,
+  2 GB max per file (rosbag2 splits into `_1.mcap`, `_2.mcap`, … as needed).
+- `record.log` — stderr+stdout of `ros2 bag record` itself; check this
+  if a topic isn't appearing.
+
+**Two modes** (set via `record_full=true`):
+
+| Mode | Topics | Storage | Use when |
+|---|---|---|---|
+| `essential` (default) | cmd_vel × 6, plan/local_plan, costmaps, map, frontier markers, BT log, transitions, joy, TF, IMU | ~50 KB/s, ~30 MB / 10 min | Default for every run — diagnoses planner / mux / footprint / yaw issues |
+| `full` (`record_full=true`) | essential + `/livox/lidar`, `/cloud_registered_body`, `/cloud_registered`, `/Laser_map`, `/<ns>/octomap_*` | ~5 MB/s, ~3 GB / 10 min | Re-running SLAM offline, debugging point-cloud filtering, octomap z-clipping |
+
+The full topic list lives in [`scripts/common_logging.sh`](../../scripts/common_logging.sh)
+(function `_bag_topics_for`) — diff-reviewable in one place, templated on
+robot namespace so multi-robot real runs work without code edits.
+
+**Flags on `real_autonomy.sh`:**
+
+```bash
+record={true|false}        default: true
+record_full={true|false}   default: false   (essential set; switch on for raw clouds)
+bag_dir=<path>             default: $REPO_ROOT/bags
+```
+
+**Replay:**
+
+```bash
+./scripts/real/replay_bag.sh <BAG_DIR> [rate=1.0] [rviz=true|false] [loop=true|false] [start=SEC]
+
+# Examples
+./scripts/real/replay_bag.sh bags/realrun_go2w_fastlio_mid360_nav2_mppi_20260501_143055
+./scripts/real/replay_bag.sh bags/realrun_*_20260501_143055 rate=2.0 loop=true
+./scripts/real/replay_bag.sh bags/realrun_*_20260501_143055 rviz=false   # bag stream only
+./scripts/real/replay_bag.sh bags/realrun_*_20260501_143055 start=120    # skip first 2 minutes
+```
+
+The script prints `manifest.txt` first (so you see what you're replaying),
+then plays with `--clock` so any nodes you launch alongside (with
+`use_sim_time:=true`) follow recorded time. RViz comes up with
+`autonomy.rviz` and `use_sim_time:=true` by default.
+
+**Why SIGINT matters:** `ros2 bag record` finalizes `metadata.yaml` only on
+SIGINT; SIGTERM/SIGKILL leaves an unfinalized bag that `ros2 bag play`
+refuses. The cleanup hook in `real_autonomy.sh:_kill_autonomy_stack` sends
+SIGINT to the bag process *first*, waits up to 8 s, *then* runs the global
+`pkill -9` sweep. Ctrl+C and the `stop` subcommand both go through this.
+
+**Disk hygiene.** No auto-rotation; clean `bags/` manually when full.
+At ~30 MB/run essential mode, hundreds of runs fit in a few GB.
 
 ## Common failure modes
 

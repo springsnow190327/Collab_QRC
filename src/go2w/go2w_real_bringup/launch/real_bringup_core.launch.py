@@ -4,7 +4,7 @@
 Provides:
   - transform_everything: /utlidar/{cloud,imu} → /utlidar/transformed_{cloud,raw_imu,imu}
   - static TF body → base_link (identity; body is the frame Cartographer tracks)
-  - carto_odom_bridge: map→base_link TF → /<ns>/odom/nav Odometry
+  - carto_odom_bridge: cartographer-only TF → /<ns>/odom/nav Odometry
   - pointcloud_to_laserscan + scan_rear_filter: cloud → /<ns>/scan_3d
   - probability_grid_binarizer (only when map_backend ∈ {carto_binary, carto_2d})
   - twist_bridge: cmd_vel_stamped → cmd_vel_auto
@@ -87,25 +87,32 @@ def _launch_setup(context):
     # two parents (camera_init and base_link), breaking the TF tree.
 
     # ── Cartographer TF → Odometry ──
-    actions.append(
-        Node(
-            package="go2w_perception",
-            executable="carto_odom_bridge.py",
-            namespace=robot_ns,
-            name="carto_odom_bridge",
-            parameters=[
-                {
-                    "parent_frame": "map",
-                    "child_frame": "body",
-                    "output_topic": f"/{robot_ns}/odom/nav",
-                    "output_frame_id": "map",
-                    "output_child_frame_id": "base_link",
-                    "rate": 50.0,
-                }
-            ],
-            output="screen",
+    # Fast-LIO + nav2_mppi already publishes /<ns>/odom/nav via
+    # fast_lio_tf_adapter. Leaving carto_odom_bridge alive in fastlio mode
+    # creates a dual-publisher race on the same topic, with mismatched
+    # frame_ids (`map` from carto_odom_bridge vs `odom` from the adapter).
+    # That pollutes CFPA2 / bt_navigator / stuck_watchdog even when TF and RViz
+    # still look sane. Keep this bridge strictly cartographer-only.
+    if slam == "carto_l1":
+        actions.append(
+            Node(
+                package="go2w_perception",
+                executable="carto_odom_bridge.py",
+                namespace=robot_ns,
+                name="carto_odom_bridge",
+                parameters=[
+                    {
+                        "parent_frame": "map",
+                        "child_frame": "body",
+                        "output_topic": f"/{robot_ns}/odom/nav",
+                        "output_frame_id": "map",
+                        "output_child_frame_id": "base_link",
+                        "rate": 50.0,
+                    }
+                ],
+                output="screen",
+            )
         )
-    )
 
     # ── PointCloud → LaserScan ──
     # Source cloud depends on SLAM backend:

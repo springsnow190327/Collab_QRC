@@ -8,7 +8,14 @@
 /**:
     ros__parameters:
         feature_extract_enable: false
-        point_filter_num: 3
+        # 2026-05-01: dropped 3 → 1 so every Mid-360 return is processed.
+        # Mid-360 is already sparse on thin obstacles (tripod legs ~5 cm
+        # wide get 1–2 returns per sweep at 1 m); skipping 2 of every 3
+        # returns made them invisible to octomap once filter_speckles was
+        # on. Now that speckles is off and we keep all returns, thin
+        # posts persist in /cloud_registered_body across scans and reach
+        # the octree.
+        point_filter_num: 1
         max_iteration: 3
         # Voxel downsample for body-frame scan keyframe (also affects the
         # /cloud_registered_body cloud that octomap consumes). The 0.5 m
