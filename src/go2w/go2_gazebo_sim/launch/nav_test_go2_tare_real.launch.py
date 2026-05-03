@@ -46,6 +46,11 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
+_ws_root = os.path.abspath(os.path.join(
+    os.path.dirname(os.path.realpath(__file__)), "..", "..", "..", ".."
+))
+
+
 def _get(ctx, name: str) -> str:
     return LaunchConfiguration(name).perform(ctx)
 
@@ -153,9 +158,7 @@ def _launch_setup(ctx):
     #     LiDAR can't see through walls so terrain_map is empty there,
     #     but the projected 2D grid inflates the wall's full footprint).
     # Either triggers Empty() on /reset_waypoint → TARE skips that goal.
-    watchdog_script = os.path.expanduser(
-        "~/Collab_QRC/scripts/runtime/tare_waypoint_watchdog.py"
-    )
+    watchdog_script = os.path.join(_ws_root, "scripts/runtime/tare_waypoint_watchdog.py")
     watchdog_proc = ExecuteProcess(
         cmd=[
             "python3", "-u", watchdog_script,

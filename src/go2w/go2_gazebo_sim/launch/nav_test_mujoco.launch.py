@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+_ws_root = os.path.abspath(os.path.join(
+    os.path.dirname(os.path.realpath(__file__)), "..", "..", "..", ".."
+))
+
 """Minimal MuJoCo nav test: Cartographer SLAM + CFPA2 + A*/FAR + RViz waypoint.
 
 No VLM stack — just sim + SLAM + navigation for debugging.
@@ -652,9 +657,7 @@ def _launch_setup(context):
         # the cmd_vel source there; astar branch would need a separate
         # hookup on astar_nav_node's output.
         if enable_velocity_supervisor:
-            supervisor_script = os.path.expanduser(
-                "~/Collab_QRC/scripts/runtime/velocity_safety_supervisor.py"
-            )
+            supervisor_script = os.path.join(_ws_root, "scripts/runtime/velocity_safety_supervisor.py")
             supervisor_proc = ExecuteProcess(
                 cmd=[
                     "python3", "-u", supervisor_script,
@@ -698,9 +701,7 @@ def _launch_setup(context):
     # Integrated into launch — prints 1-line/sec summary of FAR I/O
     # with color-coded STUCK/REVERSE/OSCILLATE/CONTACT warnings.
     # Silences non-FAR nodes to keep the terminal readable.
-    far_debug_script = os.path.expanduser(
-        "~/Collab_QRC/scripts/debug/far_debug_monitor.py"
-    )
+    far_debug_script = os.path.join(_ws_root, "scripts/debug/far_debug_monitor.py")
     actions.append(
         TimerAction(
             period=nav_delay + 5.0,
@@ -722,9 +723,7 @@ def _launch_setup(context):
     # Disabled via `enable_wall_checker:=false` for benchmark runs that
     # want to measure contact count without the launch dying on first hit.
     if enable_wall_checker:
-        wall_checker_script = os.path.expanduser(
-            "~/Collab_QRC/scripts/runtime/far_wall_checker.py"
-        )
+        wall_checker_script = os.path.join(_ws_root, "scripts/runtime/far_wall_checker.py")
         wall_checker_proc = ExecuteProcess(
             cmd=["python3", "-u", wall_checker_script],
             name="far_wall_checker",
@@ -760,9 +759,7 @@ def _launch_setup(context):
     if session_duration_sec > 0.0:
         if not session_output_path:
             session_output_path = "/tmp/session_reports/latest.json"
-        session_script = os.path.expanduser(
-            "~/Collab_QRC/scripts/bench/session_reporter.py"
-        )
+        session_script = os.path.join(_ws_root, "scripts/bench/session_reporter.py")
         session_proc = ExecuteProcess(
             cmd=[
                 "python3", "-u", session_script,

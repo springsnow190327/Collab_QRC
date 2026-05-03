@@ -862,9 +862,7 @@ def _build_fastlio_nav_stack(
     #    own occupancy representation, peer contributions arrive via
     #    /merged_map (or whatever swarm-comm channel replaces it on
     #    real hardware) and get reconciled into the local map.
-    map_augmenter_script = os.path.expanduser(
-        "~/Collab_QRC/scripts/runtime/map_augmenter.py"
-    )
+    map_augmenter_script = os.path.join(_ws_root, "scripts/runtime/map_augmenter.py")
     actions.append(
         TimerAction(
             period=slam_delay + 2.0,  # after octomap is up
@@ -2123,9 +2121,7 @@ def _launch_setup(context):
     #    planner-stuck, plus the legacy inter-robot collision pair tracker.
     #    Same script name kept for backward-compatible launch wiring; see
     #    dual_robot_collision_monitor.py for the expanded checker stack.
-    collision_monitor_script = os.path.expanduser(
-        "~/Collab_QRC/scripts/runtime/dual_robot_collision_monitor.py"
-    )
+    collision_monitor_script = os.path.join(_ws_root, "scripts/runtime/dual_robot_collision_monitor.py")
     collision_args = [
         "python3", "-u", collision_monitor_script,
         "--robots", "robot_a", "robot_b",
@@ -2152,9 +2148,7 @@ def _launch_setup(context):
     # Per-robot reporter if session_duration_sec > 0 and output dir given.
     if session_duration_sec > 0 and session_output_dir:
         os.makedirs(session_output_dir, exist_ok=True)
-        reporter_script = os.path.expanduser(
-            "~/Collab_QRC/scripts/bench/session_reporter.py"
-        )
+        reporter_script = os.path.join(_ws_root, "scripts/bench/session_reporter.py")
         last_reporter = None
         for ns in ("robot_a", "robot_b"):
             out_path = os.path.join(session_output_dir, f"{ns}.json")
@@ -2195,9 +2189,7 @@ def _launch_setup(context):
     # message from each, writes a params YAML, and exits. An OnProcessExit
     # handler chains the map_merge node onto that exit.
     if map_merge_enabled:
-        bootstrap_script = os.path.expanduser(
-            "~/Collab_QRC/scripts/runtime/bootstrap_map_merge_poses.py"
-        )
+        bootstrap_script = os.path.join(_ws_root, "scripts/runtime/bootstrap_map_merge_poses.py")
         merge_params_path = "/tmp/map_merge_params.yaml"
         bootstrap_proc = ExecuteProcess(
             cmd=[

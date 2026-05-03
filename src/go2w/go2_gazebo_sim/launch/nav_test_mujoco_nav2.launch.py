@@ -47,6 +47,11 @@ from launch_ros.descriptions import ParameterFile
 from nav2_common.launch import RewrittenYaml
 
 
+_ws_root = os.path.abspath(os.path.join(
+    os.path.dirname(os.path.realpath(__file__)), "..", "..", "..", ".."
+))
+
+
 def _as_bool(value: str) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
@@ -214,9 +219,7 @@ def _launch_setup(context):
     if session_duration_sec > 0.0:
         if not session_output_path:
             session_output_path = "/tmp/session_reports/latest.json"
-        session_script = os.path.expanduser(
-            "~/Collab_QRC/scripts/bench/session_reporter.py"
-        )
+        session_script = os.path.join(_ws_root, "scripts/bench/session_reporter.py")
         session_proc = ExecuteProcess(
             cmd=[
                 "python3", "-u", session_script,
