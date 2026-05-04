@@ -43,6 +43,11 @@ from modules.slam import build_slam_odom_relay_node
 from go2_nav_algorithms.pipeline_components import build_pointcloud_to_laserscan_node
 
 
+_ws_root = os.path.abspath(os.path.join(
+    os.path.dirname(os.path.realpath(__file__)), "..", "..", "..", ".."
+))
+
+
 def _as_bool(value: str) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
@@ -422,9 +427,7 @@ def _launch_setup(context):
                 output="screen",
             )
         )
-        rl_node_path = os.path.expanduser(
-            "~/Collab_QRC/scripts/runtime/go2_rl_policy_node.py"
-        )
+        rl_node_path = os.path.join(_ws_root, "scripts/runtime/go2_rl_policy_node.py")
         # Give the effort controller time to spawn and joint_states to flow,
         # then start the node. Its internal ``stand_up_sec=4.0`` holds the
         # target at home pose before policy takes over, so we don't need to

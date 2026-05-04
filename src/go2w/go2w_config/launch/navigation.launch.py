@@ -163,6 +163,10 @@ def _setup(context):
         # SmacPlanner iteration cap, smaller MPPI batch, softer obstacle
         # critic, etc. Sim launches leave it empty and get the auto-pick.
         _yaml_override = _get(context, "nav2_yaml_override").strip()
+        # Optional second-layer override for small profile deltas on top of the
+        # base yaml (e.g. holonomic Go2W Nav2 profile while preserving the
+        # default diff-drive real config file unchanged).
+        _yaml_extra_override = _get(context, "nav2_yaml_extra_override").strip()
         if _yaml_override:
             _nav2_yaml_name = _yaml_override
         else:
@@ -202,6 +206,18 @@ def _setup(context):
             param_rewrites={"use_sim_time": str(use_sim_time).lower()},
             convert_types=True,
         )
+        _nav2_parameters = [_rewritten]
+        if _yaml_extra_override:
+            _overlay_path = os.path.join(
+                _go2w_config_pkg, "config", "nav", _yaml_extra_override
+            )
+            _overlay_rewritten = RewrittenYaml(
+                source_file=_overlay_path,
+                root_key=robot_ns,
+                param_rewrites={"use_sim_time": str(use_sim_time).lower()},
+                convert_types=True,
+            )
+            _nav2_parameters.append(_overlay_rewritten)
 
         # Nav2 publishes plain Twist on `cmd_vel` (relative → /<ns>/cmd_vel
         # under PushRosNamespace). The real-bringup cmd chain expects the
@@ -221,21 +237,21 @@ def _setup(context):
             Node(
                 package="nav2_controller", executable="controller_server",
                 name="controller_server",
-                parameters=[_rewritten],
+                parameters=_nav2_parameters,
                 remappings=(tf_remaps if remap_tf else []) + cmd_vel_remap,
                 output="screen",
             ),
             Node(
                 package="nav2_planner", executable="planner_server",
                 name="planner_server",
-                parameters=[_rewritten],
+                parameters=_nav2_parameters,
                 remappings=tf_remaps if remap_tf else [],
                 output="screen",
             ),
             Node(
                 package="nav2_behaviors", executable="behavior_server",
                 name="behavior_server",
-                parameters=[_rewritten],
+                parameters=_nav2_parameters,
                 # spin/backup/wait recovery primitives also publish cmd_vel —
                 # remap them too so recoveries actually drive the robot.
                 remappings=(tf_remaps if remap_tf else []) + cmd_vel_remap,
@@ -244,14 +260,14 @@ def _setup(context):
             Node(
                 package="nav2_bt_navigator", executable="bt_navigator",
                 name="bt_navigator",
-                parameters=[_rewritten],
+                parameters=_nav2_parameters,
                 remappings=tf_remaps if remap_tf else [],
                 output="screen",
             ),
             Node(
                 package="nav2_lifecycle_manager", executable="lifecycle_manager",
                 name="lifecycle_manager_navigation",
-                parameters=[_rewritten],
+                parameters=_nav2_parameters,
                 output="screen",
             ),
         ]
@@ -897,6 +913,9 @@ def generate_launch_description():
             # in a yaml retuned for the laptop's CPU + Mid-360 noise. Sim
             # leaves empty and gets nav2_go2{,w}_full_stack.yaml by robot_model.
             DeclareLaunchArgument("nav2_yaml_override", default_value=""),
+            # Optional layered profile override on top of nav2_yaml_override,
+            # used for small deltas like the holonomic Go2W real profile.
+            DeclareLaunchArgument("nav2_yaml_extra_override", default_value=""),
             # Sim default: adapter publishes TF (sole base_link owner). Real
             # overrides to "false" because slam.launch.py already provides the
             # full TF chain map→camera_init→body→base_link plus map→odom static.

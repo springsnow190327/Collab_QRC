@@ -372,6 +372,7 @@ def _build_fastlio_nav_stack(
     has_wheels: bool = True,
     peer_namespaces: list | None = None,
     loop_closure: bool = False,
+    holonomic_profile: str = "off",
 ):
     """Per-robot Fast-LIO + octomap + FAR nav stack.
 
@@ -381,6 +382,71 @@ def _build_fastlio_nav_stack(
       T=slam_delay+0.5    — pointcloud_frame_bridge (body → map)
       T=nav_delay         — FAR stack (terrain_analysis × 2, far_planner,
                             localPlanner, pathFollower)
+
+    ═══════════════════════════════════════════════════════════════════
+    TF CHAIN — SIM mixed demo (per-robot ns: robot_a or robot_b)
+    ═══════════════════════════════════════════════════════════════════
+    Intentionally different from real (`real_single.launch.py`). Cleaner
+    REP-105 split: adapter is the sole owner of `odom→base_link`. No
+    `body→base_link` mount-offset chain — Fast-LIO's `body` frame is
+    PARENTED off base_link here (phantom static), used only by the
+    body-frame point cloud topic consumers.
+
+        world ──[static identity]──> map
+                                       │
+                            [static identity]
+                                       │
+                                       ▼
+                                     odom
+                                       │
+                       [fast_lio_tf_adapter dynamic, ~50 Hz, publish_tf=true]
+                                       │
+                                       ▼
+                                 base_link ──[RSP]──> URDF tree
+                                       │
+                               [static identity]
+                                       │
+                                       ▼
+                                     body  (Fast-LIO body-frame cloud lookup;
+                                            consumed by pointcloud_frame_bridge)
+
+    Edge owners (this file):
+      world → map           static_transform_publisher block at line ~562
+      map → odom            static_transform_publisher block at line ~562
+      odom → base_link      fast_lio_tf_adapter at line ~615 (publish_tf=true,
+                            sourced from /<ns>/Odometry which Fast-LIO renames
+                            from camera_init→body to /<ns>/odom/nav internally
+                            via this adapter; map→base_link pose written here)
+      base_link → body      static_transform_publisher block at line ~562
+      base_link → URDF      robot_state_publisher (Go2W xacro for robot_a;
+                            Go2 xacro with `b_` prefix for robot_b)
+
+    mujoco_odom_bridge.publish_tf MUST stay False (this file:331) — would
+    compete with adapter on the same odom→base_link edge. See CLAUDE.md
+    golden rule #16.
+
+    Diagnostic:
+      ros2 run tf2_ros tf2_echo map base_link \
+          --ros-args -r /tf:=/robot_a/tf -r /tf_static:=/robot_a/tf_static
+      ros2 run tf2_tools view_frames \
+          --ros-args -r /tf:=/robot_a/tf -r /tf_static:=/robot_a/tf_static
+
+    Symptom of break: nav2 controller_server logs
+      "Could not find a connection between 'odom' and 'base_link'
+       because they are not part of the same tree."
+    Diagnose top-down (each step gates the next):
+      1. ros2 topic hz /mujoco_sim/[b_]mujoco_lidar_sensor/registered_scan
+         → MuJoCo lidar plugin alive? site present in MJCF?
+      2. ros2 topic hz /<ns>/imu/data
+         → IMU bridge alive? sensor site present in MJCF?
+      3. ros2 topic hz /<ns>/velodyne_points
+         → pointcloud_adapter / robot_self_filter producing data?
+      4. ros2 topic hz /<ns>/Odometry
+         → fastlio_mapping running? (most common: insufficient IMU samples
+            before first scan; see fast_lio config blind/scan_rate)
+      5. ros2 topic hz /<ns>/odom/nav
+         → fast_lio_tf_adapter alive? publish_tf accidentally false?
+    ═══════════════════════════════════════════════════════════════════
     """
     tf_remaps = [("/tf", f"/{ns}/tf"), ("/tf_static", f"/{ns}/tf_static")]
     actions = []
@@ -796,9 +862,7 @@ def _build_fastlio_nav_stack(
     #    own occupancy representation, peer contributions arrive via
     #    /merged_map (or whatever swarm-comm channel replaces it on
     #    real hardware) and get reconciled into the local map.
-    map_augmenter_script = os.path.expanduser(
-        "~/Collab_QRC/scripts/runtime/map_augmenter.py"
-    )
+    map_augmenter_script = os.path.join(_ws_root, "scripts/runtime/map_augmenter.py")
     actions.append(
         TimerAction(
             period=slam_delay + 2.0,  # after octomap is up
@@ -1036,36 +1100,55 @@ def _build_fastlio_nav_stack(
             convert_types=True,
         )
 
+        # Optional second-layer SE2-holonomic overlay. Default "off" keeps
+        # the diff-drive SmacPlannerHybrid baseline. "se2_holonomic" swaps
+        # the global planner to SmacPlannerLattice (with diff primitives)
+        # and biases MPPI toward yaw-align + forward motion (no strafe).
+        # See nav2_se2_holonomic_overlay_sim.yaml for the deltas.
+        nav2_params = [rewritten_nav2]
+        if holonomic_profile == "se2_holonomic":
+            overlay_path = os.path.join(
+                go2w_config_pkg, "config", "nav",
+                "nav2_se2_holonomic_overlay_sim.yaml",
+            )
+            overlay_rewritten = RewrittenYaml(
+                source_file=overlay_path,
+                root_key=ns,
+                param_rewrites={"use_sim_time": str(use_sim_time).lower()},
+                convert_types=True,
+            )
+            nav2_params.append(overlay_rewritten)
+
         nav2_inner_nodes = [
             PushRosNamespace(ns),
             Node(
                 package="nav2_controller", executable="controller_server",
                 name="controller_server",
-                parameters=[rewritten_nav2],
+                parameters=nav2_params,
                 remappings=tf_remaps, output="screen",
             ),
             Node(
                 package="nav2_planner", executable="planner_server",
                 name="planner_server",
-                parameters=[rewritten_nav2],
+                parameters=nav2_params,
                 remappings=tf_remaps, output="screen",
             ),
             Node(
                 package="nav2_behaviors", executable="behavior_server",
                 name="behavior_server",
-                parameters=[rewritten_nav2],
+                parameters=nav2_params,
                 remappings=tf_remaps, output="screen",
             ),
             Node(
                 package="nav2_bt_navigator", executable="bt_navigator",
                 name="bt_navigator",
-                parameters=[rewritten_nav2],
+                parameters=nav2_params,
                 remappings=tf_remaps, output="screen",
             ),
             Node(
                 package="nav2_lifecycle_manager", executable="lifecycle_manager",
                 name="lifecycle_manager_navigation",
-                parameters=[rewritten_nav2],
+                parameters=nav2_params,
                 output="screen",
             ),
         ]
@@ -1729,6 +1812,17 @@ def _launch_setup(context):
     # Accepted values: "far" | "astar".
     nav_backend_a = (_get(context, "nav_backend_a").strip().lower() or "far")
     nav_backend_b = (_get(context, "nav_backend_b").strip().lower() or "far")
+    # Optional Nav2 SE2-holonomic profile overlay (per-robot). Only takes
+    # effect when the corresponding nav_backend is "nav2_mppi".
+    holonomic_profile_a = (_get(context, "holonomic_profile_a").strip().lower() or "off")
+    holonomic_profile_b = (_get(context, "holonomic_profile_b").strip().lower() or "off")
+    _holonomic_allowed = {"off", "se2_holonomic"}
+    if holonomic_profile_a not in _holonomic_allowed:
+        raise ValueError(
+            f"holonomic_profile_a must be one of {_holonomic_allowed}, got '{holonomic_profile_a}'")
+    if holonomic_profile_b not in _holonomic_allowed:
+        raise ValueError(
+            f"holonomic_profile_b must be one of {_holonomic_allowed}, got '{holonomic_profile_b}'")
     # Back-compat aliases from the removed planners.
     # `hybrid` → our v0.1 Hybrid A* + Ceres-smoothed planner.
     # `nav2`   → B-route: nav2_smac_planner library integration.
@@ -1938,6 +2032,7 @@ def _launch_setup(context):
             has_wheels=True,  # robot_a = Go2W
             peer_namespaces=["robot_b"],
             loop_closure=loop_closure_on,
+            holonomic_profile=holonomic_profile_a,
         )
     )
     actions.extend(
@@ -1964,6 +2059,7 @@ def _launch_setup(context):
             has_wheels=False,  # robot_b = Go2 (no wheels)
             peer_namespaces=["robot_a"],
             loop_closure=loop_closure_on,
+            holonomic_profile=holonomic_profile_b,
         )
     )
 
@@ -2025,9 +2121,7 @@ def _launch_setup(context):
     #    planner-stuck, plus the legacy inter-robot collision pair tracker.
     #    Same script name kept for backward-compatible launch wiring; see
     #    dual_robot_collision_monitor.py for the expanded checker stack.
-    collision_monitor_script = os.path.expanduser(
-        "~/Collab_QRC/scripts/runtime/dual_robot_collision_monitor.py"
-    )
+    collision_monitor_script = os.path.join(_ws_root, "scripts/runtime/dual_robot_collision_monitor.py")
     collision_args = [
         "python3", "-u", collision_monitor_script,
         "--robots", "robot_a", "robot_b",
@@ -2054,9 +2148,7 @@ def _launch_setup(context):
     # Per-robot reporter if session_duration_sec > 0 and output dir given.
     if session_duration_sec > 0 and session_output_dir:
         os.makedirs(session_output_dir, exist_ok=True)
-        reporter_script = os.path.expanduser(
-            "~/Collab_QRC/scripts/bench/session_reporter.py"
-        )
+        reporter_script = os.path.join(_ws_root, "scripts/bench/session_reporter.py")
         last_reporter = None
         for ns in ("robot_a", "robot_b"):
             out_path = os.path.join(session_output_dir, f"{ns}.json")
@@ -2097,9 +2189,7 @@ def _launch_setup(context):
     # message from each, writes a params YAML, and exits. An OnProcessExit
     # handler chains the map_merge node onto that exit.
     if map_merge_enabled:
-        bootstrap_script = os.path.expanduser(
-            "~/Collab_QRC/scripts/runtime/bootstrap_map_merge_poses.py"
-        )
+        bootstrap_script = os.path.join(_ws_root, "scripts/runtime/bootstrap_map_merge_poses.py")
         merge_params_path = "/tmp/map_merge_params.yaml"
         bootstrap_proc = ExecuteProcess(
             cmd=[
@@ -2259,6 +2349,27 @@ def generate_launch_description():
                 "(uses nav2_go2_full_stack.yaml: 0.65×0.30 m footprint, "
                 "vx_max 0.30, in-place pivot via min_turning_radius=0.05). "
                 "Other options: 'far' | 'astar' | 'none'."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "holonomic_profile_a", default_value="se2_holonomic",
+            description=(
+                "Nav2 SE2-holonomic overlay for robot_a (Go2W). DEFAULT "
+                "'se2_holonomic' = SmacPlannerLattice (diff primitives) + "
+                "yaw-align/forward MPPI (no strafe). Mirrors the real-Go2W "
+                "profile shipped 2026-05-02; fits the kinematic model best. "
+                "Pass holonomic_profile_a:=off for SmacPlannerHybrid + "
+                "DiffDrive MPPI baseline. Requires nav_backend_a=nav2_mppi."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "holonomic_profile_b", default_value="se2_holonomic",
+            description=(
+                "Nav2 SE2-holonomic overlay for robot_b (Go2). Same options "
+                "as holonomic_profile_a. Stock 0.5 m turning-radius diff "
+                "primitives are wider than Go2 walking strictly requires "
+                "but stay kinematically feasible. Requires "
+                "nav_backend_b=nav2_mppi."
             ),
         ),
         DeclareLaunchArgument(

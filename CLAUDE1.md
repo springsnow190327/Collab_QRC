@@ -258,6 +258,58 @@ The LiDAR was moved from an external Python node (`mujoco_lidar_node_multiray`) 
 - **Sim**: MuJoCo 3.6.0 (pip, `~/.local/lib/python3.10/site-packages/mujoco/`) + DFKI mujoco_ros2_control
 - **VLM API**: xAI (Grok-4-1-fast-non-reasoning), key in `.env.xai`
 
+## Phase 3 Archive — Notes moved from CLAUDE.md (2026-05-02)
+
+Detailed 2026-04 operational narratives were moved here to keep `CLAUDE.md`
+as a short index/current-state file while preserving the technical memory.
+
+### Archive 2026-04-30 — Onboard SLAM split (Fast-LIO + Livox on Jetson)
+
+- Objective: offload SLAM from laptop to Jetson (`192.168.123.18`) to reduce
+  MPPI planning latency and runtime contention.
+- Cross-host Humble↔Foxy DDS worked, but required strict config discipline
+  (`ROS_DOMAIN_ID`, XML schema differences, interface binding).
+- Foxy compatibility tax encountered in practice:
+  - source-level patches in Livox/Fast-LIO codepaths,
+  - `static_transform_publisher` CLI syntax differences,
+  - Foxy parameter parsing differences (empty-string overrides),
+  - broken Foxy `rclpy` on this target (worked around via C++ remaps).
+- Main blocker was extreme per-process memory growth (~13 GB RSS / node);
+  root cause traced to speculative large virtual mapping.
+- Session-saving fix: `ulimit -v 1500000` forced bounded fallback allocator
+  behavior; stack dropped to low hundreds of MB total and became stable.
+- Canonical runbook: [docs/claude/real_robot.md](docs/claude/real_robot.md#onboard-slam-split-shipped-2026-04-30--fast-lio--livox-on-jetson).
+
+### Archive 2026-04-29 — Dual-robot Nav2 MPPI migration
+
+- A* and stacked FAR safety patches were no longer sufficient for the narrow
+  dual-robot geometry; migrated to Nav2 MPPI + SmacHybrid as production path.
+- Key correctness fixes:
+  - MPPI footprint trap resolved (`consider_footprint: true` + polygon footprint),
+  - vendored `mujoco_ros2_control` brake caching bug fixed,
+  - legged-mode freewheel policy added to avoid wheel drag torque.
+- Added outer-loop recovery (`stuck_watchdog`) for planner/controller states
+  that report success while outputting near-zero motion.
+- Unified odom/TF data path with `fast_lio_tf_adapter`; removed sim-only TF
+  privilege from `mujoco_odom_bridge` to align sim and real behavior.
+- Residual strategic gap remained loop-closure correction (SC-PGO ROS1→ROS2
+  porting), tracked separately.
+- Deep technical chronology: [docs/claude/nav2_mppi_journey.md](docs/claude/nav2_mppi_journey.md).
+
+### Archive 2026-04-26 — Dual-robot FAR + 3-tier safety stack
+
+- A* retired for dual-robot because 2D footprint reasoning could not reliably
+  capture real contact envelopes in constrained mixed geometry.
+- FAR became base planner with three runtime safety layers:
+  `CFPA2 pivot-lock`, `path_safety_filter`, `cmd_vel_safety_shield`.
+- Critical lesson: TF remaps were mandatory; missing remaps can silently make
+  safety layers inert (appearing healthy but effectively passthrough).
+- Tuning stabilized behavior but introduced deadlock risks across layers;
+  timeout/escape valves were identified as required design elements.
+- This phase documented the transition rationale that directly enabled the
+  later Nav2 MPPI migration.
+- Related docs: [docs/claude/nav_benchmarks.md](docs/claude/nav_benchmarks.md), [docs/claude/debug_notes.md](docs/claude/debug_notes.md).
+
 ---
 
 # Phase 2 Archive — Door Task FSM Era (deleted 2026-04-14)

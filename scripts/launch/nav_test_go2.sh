@@ -3,9 +3,16 @@
 # Fast-LIO2 + FAR planner. Scene is demo1_go2 (12×8m).
 #
 # Usage:
-#   ./scripts/nav_test_go2.sh                       # headless
+#   ./scripts/nav_test_go2.sh                       # headless (FAR default)
 #   ./scripts/nav_test_go2.sh gui:=true             # with MuJoCo GUI
 #   ./scripts/nav_test_go2.sh gui:=true rviz:=true  # + RViz
+#
+# Nav2 MPPI stack (added 2026-05-02 PM):
+#   ./scripts/nav_test_go2.sh gui:=true rviz:=true nav_backend:=nav2_mppi
+#   ./scripts/nav_test_go2.sh gui:=true rviz:=true nav_backend:=nav2_mppi \
+#       holonomic_profile:=se2_holonomic
+#       # SmacPlannerLattice + yaw-align/forward DiffDrive MPPI (no strafe).
+#       # Mirrors the real-Go2W profile shipped 2026-05-02.
 set -u -o pipefail
 
 # Kill any stale nav/sim processes from a prior launch (see _preflight_kill.sh).

@@ -20,6 +20,11 @@ import sys
 
 # sys.path must be amended BEFORE the `from modules.*` imports below — when
 # ros2 launch loads this file it doesn't add the launch dir to sys.path.
+
+_ws_root = os.path.abspath(os.path.join(
+    os.path.dirname(os.path.realpath(__file__)), "..", "..", "..", ".."
+))
+
 _here = os.path.dirname(os.path.abspath(__file__))
 if _here not in sys.path:
     sys.path.insert(0, _here)
@@ -883,9 +888,7 @@ def _launch_setup(context):
         )
 
     # ── Inter-robot collision monitor (shared) ──
-    collision_monitor_script = os.path.expanduser(
-        "~/Collab_QRC/scripts/runtime/dual_robot_collision_monitor.py"
-    )
+    collision_monitor_script = os.path.join(_ws_root, "scripts/runtime/dual_robot_collision_monitor.py")
     collision_args = ["python3", "-u", collision_monitor_script]
     if collision_output:
         collision_args += ["--output", collision_output]
@@ -906,9 +909,7 @@ def _launch_setup(context):
     # Per-robot reporter if session_duration_sec > 0 and output dir given.
     if session_duration_sec > 0 and session_output_dir:
         os.makedirs(session_output_dir, exist_ok=True)
-        reporter_script = os.path.expanduser(
-            "~/Collab_QRC/scripts/bench/session_reporter.py"
-        )
+        reporter_script = os.path.join(_ws_root, "scripts/bench/session_reporter.py")
         last_reporter = None
         for ns in ("robot_a", "robot_b"):
             out_path = os.path.join(session_output_dir, f"{ns}.json")

@@ -12,6 +12,12 @@ Nav backends (nav_backend:=):
   hybrid             — alias for hybrid_astar
   nav2_hybrid_astar  — go2w_nav nav2_hybrid_astar_nav_node (nav2_smac_planner lib + Smoother)
   nav2               — alias for nav2_hybrid_astar
+  nav2_mppi          — Full Nav2 stack: SmacPlannerHybrid + MPPI controller +
+                       behavior_server + bt_navigator + lifecycle_manager,
+                       plus cfpa2_to_nav2_bridge + path_relay + stuck_watchdog.
+                       Pair with holonomic_profile:=se2_holonomic for the
+                       lattice-planner forward/pivot profile shipped on real
+                       Go2W 2026-05-02.
 
 Modes:
   - Default: CFPA2 frontier exploration drives the robot autonomously.
@@ -47,6 +53,11 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
+_ws_root = os.path.abspath(os.path.join(
+    os.path.dirname(os.path.realpath(__file__)), "..", "..", "..", ".."
+))
+
+
 def _as_bool(value: str) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
@@ -72,6 +83,54 @@ def _load_yaml_params(yaml_path: str) -> dict:
 
 
 def _launch_setup(context):
+    # ═══════════════════════════════════════════════════════════════════
+    # TF CHAIN — SINGLE-ROBOT SIM (Go2W or Go2, ns=robot)
+    # ═══════════════════════════════════════════════════════════════════
+    # NOTE: this is a 3rd TF pattern, distinct from both real (legacy
+    # body-mount chain in real_single.launch.py) and mixed sim (adapter-
+    # owned in nav_test_mujoco_fastlio_mixed.launch.py). Unification
+    # candidate — see CLAUDE.md 2026-05-02 active-state entry.
+    #
+    #     world ──[static identity]──> map
+    #                                    │
+    #                         [static identity]
+    #                                    │
+    #                                    ▼
+    #                                  odom
+    #                                    │
+    #                   [mujoco_odom_bridge dynamic, MuJoCo GT-driven]
+    #                                    │
+    #                                    ▼
+    #                              base_link ──[RSP]──> URDF tree
+    #
+    # Edge owners:
+    #   world → map           static_transform_publisher in this file (line ~302)
+    #   map → odom            static_transform_publisher in this file (line ~302)
+    #   odom → base_link      mujoco_odom_bridge (in single_go2w_mujoco_cfpa2.
+    #                         launch.py base launch). Gated by the
+    #                         odom_bridge_publish_tf flag passed into the
+    #                         IncludeLaunchDescription at line ~159 — set TRUE
+    #                         here on purpose (the OPPOSITE of the mixed-sim
+    #                         contract, where mujoco_odom_bridge.publish_tf
+    #                         must be False).
+    #   base_link → URDF      robot_state_publisher
+    #
+    # When nav_backend=nav2_mppi (added 2026-05-02 PM): the new nav2_mppi
+    # branch in this launch does NOT spawn fast_lio_tf_adapter — it relies
+    # on the mujoco_odom_bridge edge above. SmacPlannerHybrid + MPPI work
+    # fine against this chain; only the source of TF differs from mixed.
+    #
+    # Diagnostic:
+    #   ros2 run tf2_ros tf2_echo map base_link \
+    #       --ros-args -r /tf:=/robot/tf -r /tf_static:=/robot/tf_static
+    #   ros2 topic hz /mujoco_sim/mujoco_lidar_sensor/registered_scan
+    #   ros2 topic hz /robot/Odometry        # Fast-LIO, validates SLAM separately
+    #
+    # Symptom of break: "Could not find a connection between 'odom' and
+    # 'base_link'" → mujoco_odom_bridge not publishing TF. Check that
+    # odom_bridge_publish_tf=true is propagating from this file's
+    # IncludeLaunchDescription into single_go2w_mujoco_cfpa2.launch.py.
+    # ═══════════════════════════════════════════════════════════════════
     use_sim_time = True
     robot_ns = _get(context, "robot_namespace").strip().strip("/") or "robot"
     gui = _get(context, "gui")
@@ -131,10 +190,26 @@ def _launch_setup(context):
         nav_backend = "hybrid_astar"
     if nav_backend == "nav2":
         nav_backend = "nav2_hybrid_astar"
-    if nav_backend not in {"astar", "hybrid_astar", "nav2_hybrid_astar", "far"}:
+    if nav_backend not in {"astar", "hybrid_astar", "nav2_hybrid_astar",
+                           "nav2_mppi", "far"}:
         raise ValueError(
-            f"nav_backend must be 'astar' | 'hybrid_astar' | 'nav2_hybrid_astar' | 'far'; "
-            f"got '{nav_backend}'")
+            f"nav_backend must be 'astar' | 'hybrid_astar' | 'nav2_hybrid_astar' | "
+            f"'nav2_mppi' | 'far'; got '{nav_backend}'")
+    # Optional Nav2 SE2-holonomic profile overlay. Only meaningful when
+    # nav_backend=nav2_mppi. Mirrors the real-Go2W profile from 2026-05-02:
+    #   off            → SmacPlannerHybrid + DiffDrive MPPI (default)
+    #   se2_holonomic  → SmacPlannerLattice (diff primitives) + yaw-align/
+    #                    forward MPPI, no lateral strafe
+    holonomic_profile = (_get(context, "holonomic_profile").strip().lower() or "off")
+    if holonomic_profile not in {"off", "se2_holonomic"}:
+        raise ValueError(
+            f"holonomic_profile must be 'off' | 'se2_holonomic'; got '{holonomic_profile}'")
+    # Optional: load a real-robot Nav2 yaml in sim instead of the sim default.
+    # Plain filename relative to go2w_config/config/nav/ (e.g.
+    # 'nav2_go2_real.yaml' or 'nav2_go2w_real.yaml'). Empty = sim default.
+    # Topic strings inside the real yaml use /robot/... which already match
+    # this launch's default robot_namespace='robot', so no rewrites needed.
+    nav2_yaml_override = _get(context, "nav2_yaml_override").strip()
     cfpa2_config_path = os.path.join(cfpa2_pkg, "config", "cfpa2_single_robot.yaml")
 
     actions = []
@@ -335,9 +410,7 @@ def _launch_setup(context):
                     ExecuteProcess(
                         cmd=[
                             "python3", "-u",
-                            os.path.expanduser(
-                                "~/Collab_QRC/scripts/runtime/cloud_world_offset_bridge.py"
-                            ),
+                            os.path.join(_ws_root, "scripts/runtime/cloud_world_offset_bridge.py"),
                             "--ros-args",
                             "-r", f"__ns:=/{robot_ns}",
                             "-p", "use_sim_time:=true",
@@ -383,7 +456,222 @@ def _launch_setup(context):
         )
 
     # ── 4. Navigation backend ──
-    if nav_backend in ("astar", "hybrid_astar", "nav2_hybrid_astar"):
+    if nav_backend == "nav2_mppi":
+        # Full Nav2 stack: SmacPlannerHybrid (or Lattice via SE2 overlay) +
+        # MPPI controller + behavior_server + bt_navigator + lifecycle_manager.
+        # Mirrors the heterogeneous mixed-demo setup but for one robot.
+        from launch_ros.actions import PushRosNamespace
+        from launch.actions import GroupAction
+        from nav2_common.launch import RewrittenYaml
+
+        # Per-platform base yaml (same files used by the real stack).
+        # Override (nav2_yaml_override) lets us drop a real-robot yaml in
+        # for sim-vs-real unification experiments. RewrittenYaml below flips
+        # use_sim_time → true regardless of what the file says, so a real
+        # yaml (use_sim_time: false) loads cleanly.
+        if nav2_yaml_override:
+            _nav2_yaml_filename = nav2_yaml_override
+        else:
+            _nav2_yaml_filename = (
+                "nav2_go2w_full_stack.yaml" if has_wheels
+                else "nav2_go2_full_stack.yaml"
+            )
+        nav2_yaml = os.path.join(
+            go2w_config_pkg, "config", "nav", _nav2_yaml_filename
+        )
+        if not os.path.exists(nav2_yaml):
+            raise FileNotFoundError(
+                f"Nav2 yaml not found: {nav2_yaml}. Check spelling of "
+                f"nav2_yaml_override (must be a filename under "
+                f"go2w_config/config/nav/, not a path)."
+            )
+        # The full-stack yamls were authored for dual sim:
+        #   nav2_go2w_full_stack.yaml  → /robot_a/* topics
+        #   nav2_go2_full_stack.yaml   → /robot_b/* topics, robot_base_frame=b_base_link
+        # Real yamls use /robot/* and base_link.
+        # In single sim, robot_ns defaults to "robot" and TF publishes plain
+        # base_link (no b_ prefix) regardless of platform — so without
+        # rewriting both topic prefixes AND robot_base_frame, controller_server
+        # never finishes activating (TF lookup for b_base_link → odom fails),
+        # bt_navigator stays inactive, and goals from cfpa2_to_nav2_bridge are
+        # silently dropped (root cause of the 2026-05-02 "robot stuck at spawn"
+        # bug — single Go2 sim nav2_mppi was untested before).
+        # Strategy: pre-process the yaml text to rewrite /robot_[ab]/ →
+        # /{robot_ns}/, write to a temp file, then let RewrittenYaml flip
+        # use_sim_time and force base_link for any single-sim Go2 instance.
+        import re as _re
+        import tempfile as _tempfile
+        with open(nav2_yaml) as _f:
+            _yaml_text = _f.read()
+        _yaml_text = _re.sub(r"/robot_[ab]/", f"/{robot_ns}/", _yaml_text)
+        _tmp_yaml = _tempfile.NamedTemporaryFile(
+            mode="w", suffix=f"_{robot_ns}_nav2.yaml", delete=False
+        )
+        _tmp_yaml.write(_yaml_text)
+        _tmp_yaml.close()
+        rewritten_nav2 = RewrittenYaml(
+            source_file=_tmp_yaml.name,
+            root_key=robot_ns,
+            param_rewrites={
+                "use_sim_time": str(use_sim_time).lower(),
+                # Single sim publishes plain base_link; force it across all
+                # nodes regardless of what the source yaml says (the dual-sim
+                # Go2 yaml says b_base_link, real yaml already says base_link).
+                "robot_base_frame": "base_link",
+            },
+            convert_types=True,
+        )
+
+        # Optional SE2-holonomic overlay — same file as mixed sim.
+        nav2_params = [rewritten_nav2]
+        if holonomic_profile == "se2_holonomic":
+            overlay_path = os.path.join(
+                go2w_config_pkg, "config", "nav",
+                "nav2_se2_holonomic_overlay_sim.yaml",
+            )
+            overlay_rewritten = RewrittenYaml(
+                source_file=overlay_path,
+                root_key=robot_ns,
+                param_rewrites={"use_sim_time": str(use_sim_time).lower()},
+                convert_types=True,
+            )
+            nav2_params.append(overlay_rewritten)
+
+        # cmd_vel routing in single sim:
+        #   Go2W (has_wheels=true): go2w_hybrid_cmd_router subscribes to plain
+        #     /<ns>/cmd_vel and splits to wheel + cmd_vel_legged. Default
+        #     Nav2 publish destination is correct → no remap.
+        #   Go2 (has_wheels=false): no router; CHAMP's quadruped_controller_node
+        #     listens directly on /<ns>/cmd_vel_legged (the twist_bridge target,
+        #     used historically by default_nav/astar via cmd_vel_stamped). Nav2
+        #     publishes Twist on relative cmd_vel → /<ns>/cmd_vel which has zero
+        #     subscribers, so the robot stands still even with a healthy MPPI.
+        #     Remap controller_server + behavior_server cmd_vel to cmd_vel_legged
+        #     so CHAMP receives Nav2's commands. Discovered 2026-05-02 PM during
+        #     the real-yaml unification experiment — single Go2 sim nav2_mppi
+        #     was committed but never end-to-end tested.
+        nav2_cmd_remap = [] if has_wheels else [("cmd_vel", "cmd_vel_legged")]
+
+        nav2_inner_nodes = [
+            PushRosNamespace(robot_ns),
+            Node(
+                package="nav2_controller", executable="controller_server",
+                name="controller_server",
+                parameters=nav2_params,
+                remappings=tf_remaps + nav2_cmd_remap, output="screen",
+            ),
+            Node(
+                package="nav2_planner", executable="planner_server",
+                name="planner_server",
+                parameters=nav2_params,
+                remappings=tf_remaps, output="screen",
+            ),
+            Node(
+                package="nav2_behaviors", executable="behavior_server",
+                name="behavior_server",
+                parameters=nav2_params,
+                remappings=tf_remaps + nav2_cmd_remap, output="screen",
+            ),
+            Node(
+                package="nav2_bt_navigator", executable="bt_navigator",
+                name="bt_navigator",
+                parameters=nav2_params,
+                remappings=tf_remaps, output="screen",
+            ),
+            Node(
+                package="nav2_lifecycle_manager", executable="lifecycle_manager",
+                name="lifecycle_manager_navigation",
+                parameters=nav2_params,
+                output="screen",
+            ),
+        ]
+
+        # _ws_root is module-level (declared near the imports) so every
+        # ExecuteProcess in this file can pick up the auto-resolved repo
+        # root without redefining it.
+
+        # CFPA2 → Nav2 goal bridge: way_point_coord (PointStamped) → goal_pose
+        # (PoseStamped, BEST_EFFORT to match bt_navigator). When explore=false
+        # the bridge is a no-op (CFPA2 isn't running) and RViz "2D Goal Pose"
+        # is the goal source — but the bridge is harmless to leave running.
+        bridge_node = ExecuteProcess(
+            cmd=[
+                "python3", "-u",
+                os.path.join(_ws_root, "scripts/runtime/cfpa2_to_nav2_bridge.py"),
+                "--ros-args",
+                "-p", f"namespace:={robot_ns}",
+                "-p", f"use_sim_time:={'true' if use_sim_time else 'false'}",
+                "-p", "waypoint_topic:=way_point_coord",
+            ],
+            name=f"cfpa2_to_nav2_bridge_{robot_ns}",
+            output="screen",
+        )
+
+        # Nav2 /plan → /planned_path so existing RViz config catches it.
+        path_relay_node = ExecuteProcess(
+            cmd=[
+                "python3", "-u",
+                os.path.join(_ws_root, "scripts/runtime/path_relay.py"),
+                "--ros-args",
+                "-p", f"namespace:={robot_ns}",
+                "-p", f"use_sim_time:={'true' if use_sim_time else 'false'}",
+            ],
+            name=f"path_relay_{robot_ns}",
+            output="screen",
+        )
+
+        # stuck_watchdog: see CLAUDE.md golden rule #18 — MPPI rarely reports
+        # failure in pivot-stuck cases (emits v≈ω≈0 with status=happy), so
+        # Nav2's BT recovery never fires. This watchdog detects 10 s of
+        # no-motion under an active goal and fires a BackUp action.
+        stuck_watchdog_node = ExecuteProcess(
+            cmd=[
+                "python3", "-u",
+                os.path.join(_ws_root, "scripts/runtime/stuck_watchdog.py"),
+                "--ros-args",
+                "-p", f"namespace:={robot_ns}",
+                "-p", f"use_sim_time:={'true' if use_sim_time else 'false'}",
+            ],
+            name=f"stuck_watchdog_{robot_ns}",
+            output="screen",
+        )
+
+        # hybrid_cmd_router: only Go2W needs it (splits cmd_vel into
+        # wheel + legged components based on curvature). Go2 (no wheels)
+        # has CHAMP listening to /<ns>/cmd_vel directly.
+        if has_wheels:
+            router_node = Node(
+                package="go2w_control",
+                executable="go2w_hybrid_cmd_router.py",
+                namespace=robot_ns,
+                name="go2w_hybrid_cmd_router",
+                parameters=[
+                    os.path.join(go2w_config_pkg, "config", "control",
+                                 "go2w_hybrid_motion.yaml"),
+                    {
+                        "use_sim_time": use_sim_time,
+                        "wheel_command_topic":
+                            f"/mujoco_sim/{robot_ns}_wheel_velocity_controller/commands",
+                    },
+                ],
+                output="screen",
+            )
+        else:
+            router_node = None
+
+        _nav2_actions = [
+            GroupAction(actions=nav2_inner_nodes),
+            bridge_node,
+            path_relay_node,
+            stuck_watchdog_node,
+        ]
+        if router_node is not None:
+            _nav2_actions.append(router_node)
+        actions.append(
+            TimerAction(period=nav_delay, actions=_nav2_actions)
+        )
+
+    elif nav_backend in ("astar", "hybrid_astar", "nav2_hybrid_astar"):
         # All three share the same I/O contract and supporting infra
         # (octomap_server + map_merger). They differ only in the nav
         # executable + yaml config:
@@ -777,9 +1065,7 @@ def _launch_setup(context):
         # the cmd_vel source there; astar branch would need a separate
         # hookup on astar_nav_node's output.
         if enable_velocity_supervisor:
-            supervisor_script = os.path.expanduser(
-                "~/Collab_QRC/scripts/runtime/velocity_safety_supervisor.py"
-            )
+            supervisor_script = os.path.join(_ws_root, "scripts/runtime/velocity_safety_supervisor.py")
             supervisor_proc = ExecuteProcess(
                 cmd=[
                     "python3", "-u", supervisor_script,
@@ -823,9 +1109,7 @@ def _launch_setup(context):
     # Integrated into launch — prints 1-line/sec summary of FAR I/O
     # with color-coded STUCK/REVERSE/OSCILLATE/CONTACT warnings.
     # Silences non-FAR nodes to keep the terminal readable.
-    far_debug_script = os.path.expanduser(
-        "~/Collab_QRC/scripts/debug/far_debug_monitor.py"
-    )
+    far_debug_script = os.path.join(_ws_root, "scripts/debug/far_debug_monitor.py")
     actions.append(
         TimerAction(
             period=nav_delay + 5.0,
@@ -847,9 +1131,7 @@ def _launch_setup(context):
     # Disabled via `enable_wall_checker:=false` for benchmark runs that
     # want to measure contact count without the launch dying on first hit.
     if enable_wall_checker:
-        wall_checker_script = os.path.expanduser(
-            "~/Collab_QRC/scripts/runtime/far_wall_checker.py"
-        )
+        wall_checker_script = os.path.join(_ws_root, "scripts/runtime/far_wall_checker.py")
         wall_checker_proc = ExecuteProcess(
             cmd=["python3", "-u", wall_checker_script],
             name="far_wall_checker",
@@ -885,9 +1167,7 @@ def _launch_setup(context):
     if session_duration_sec > 0.0:
         if not session_output_path:
             session_output_path = "/tmp/session_reports/latest.json"
-        session_script = os.path.expanduser(
-            "~/Collab_QRC/scripts/bench/session_reporter.py"
-        )
+        session_script = os.path.join(_ws_root, "scripts/bench/session_reporter.py")
         session_proc = ExecuteProcess(
             cmd=[
                 "python3", "-u", session_script,
@@ -953,8 +1233,41 @@ def generate_launch_description():
         DeclareLaunchArgument("rviz", default_value="true"),
         DeclareLaunchArgument("explore", default_value="true",
                               description="Enable CFPA2 autonomous frontier exploration"),
-        DeclareLaunchArgument("nav_backend", default_value="far",
-                              description="Nav backend: astar or far (default)"),
+        DeclareLaunchArgument(
+            "nav_backend", default_value="nav2_mppi",
+            description=(
+                "Nav backend (DEFAULT 'nav2_mppi'): SmacPlannerHybrid (or "
+                "SmacPlannerLattice when holonomic_profile=se2_holonomic, "
+                "the default) + MPPI + behavior_server + stuck_watchdog. "
+                "Other choices: 'far' (CMU stack), 'astar' (C++ A* + "
+                "oriented footprint check), 'hybrid_astar', "
+                "'nav2_hybrid_astar'."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "holonomic_profile", default_value="se2_holonomic",
+            description=(
+                "Nav2 SE2-holonomic overlay (only takes effect with "
+                "nav_backend=nav2_mppi). DEFAULT 'se2_holonomic' = "
+                "SmacPlannerLattice (diff primitives) + yaw-align/forward "
+                "MPPI, no lateral strafe — mirrors the real-Go2W profile "
+                "shipped 2026-05-02; fits the legged + wheeled-legged "
+                "kinematic model best. Pass holonomic_profile:=off to "
+                "fall back to SmacPlannerHybrid + DiffDrive MPPI baseline."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "nav2_yaml_override", default_value="",
+            description=(
+                "Plain filename under go2w_config/config/nav/ to load as "
+                "the Nav2 base yaml instead of the sim default. Used for "
+                "sim/real unification experiments — e.g. "
+                "'nav2_go2_real.yaml' or 'nav2_go2w_real.yaml'. "
+                "RewrittenYaml flips use_sim_time → true automatically. "
+                "Sim's default robot_namespace='robot' matches the real "
+                "yaml's /robot/* topic prefixes, so no remap is needed."
+            ),
+        ),
         DeclareLaunchArgument("mujoco_model_path", default_value=default_scene),
         DeclareLaunchArgument("spawn_x", default_value="4.0"),
         DeclareLaunchArgument("spawn_y", default_value="0.0"),

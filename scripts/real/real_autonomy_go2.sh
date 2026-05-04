@@ -7,6 +7,7 @@
 #   ./real_autonomy_go2.sh slam=fastlio_mid360 nav=far
 #   ./real_autonomy_go2.sh nav=tare
 #   ./real_autonomy_go2.sh nav=cfpa2               # legacy default_nav.py
+#   ./real_autonomy_go2.sh manual=true             # RViz click-to-nav on Nav2
 #   ./real_autonomy_go2.sh stop
 set -e
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"

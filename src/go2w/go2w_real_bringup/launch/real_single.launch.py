@@ -35,8 +35,72 @@ def _get(context, name: str) -> str:
 
 
 def _launch_setup(context):
+    # ═══════════════════════════════════════════════════════════════════
+    # TF CHAIN — REAL (Go2W / Go2, slam=fastlio_mid360, single namespace)
+    # ═══════════════════════════════════════════════════════════════════
+    # Intentionally different from sim — see nav_test_mujoco_fastlio_mixed.
+    # launch.py for the sim shape. Unification candidate; legacy reasons
+    # below.
+    #
+    #     map ──[static, calibrated mount tilt]──> camera_init
+    #                                                │
+    #                            [Fast-LIO dynamic, ~50 Hz]
+    #                                                │
+    #                                                ▼
+    #                                              body
+    #                                                │
+    #                                [static, inverse mount tilt]
+    #                                                │
+    #                                                ▼
+    #                                            base_link ──[RSP]──> URDF tree
+    #
+    #     map ──[static identity]──> odom    # for Nav2 costmap global_frame=odom
+    #                                          (resolves base_link via tree walk
+    #                                           odom → map (inv) → camera_init →
+    #                                           body → base_link)
+    #
+    # Edge owners (file:line):
+    #   map → camera_init   slam.launch.py:202  (Mid-360 mount tilt baked in,
+    #                                            NOT identity — see calibration
+    #                                            comment at slam.launch.py:213)
+    #   camera_init → body  Fast-LIO laserMapping.cpp:654 (hardcoded names;
+    #                                            Fast-LIO's /tf is sinked at
+    #                                            /<ns>/fastlio_tf_sink to avoid
+    #                                            multi-parenting)
+    #   body → base_link    slam.launch.py:230  (inverse mount tilt; puts
+    #                                            base_link level w.r.t. gravity)
+    #   map → odom          slam.launch.py:255  (identity; will get replaced by
+    #                                            SC-PGO dynamic once ported)
+    #   base_link → tree    robot_state_publisher (xacro; full URDF chain)
+    #
+    # fast_lio_tf_adapter on real: fast_lio_publish_tf=false (this file:237).
+    # It publishes ONLY the /<ns>/odom/nav topic, NOT TF — TF would multi-
+    # parent base_link (body→base_link static is already its parent).
+    #
+    # Diagnostic:
+    #   ros2 run tf2_ros tf2_echo map base_link
+    #   ros2 run tf2_tools view_frames     # writes frames.pdf
+    #   ros2 topic hz /Odometry            # Fast-LIO output (un-namespaced
+    #                                        on real — see slam.launch.py)
+    #
+    # Symptom of break: "Could not find a connection between 'odom' and
+    # 'base_link' because they are not part of the same tree." Diagnose
+    # top-down: /Odometry silent → Fast-LIO down → check /livox/lidar +
+    # /livox/imu hz, then check fastlio_mapping log for crash. See
+    # CLAUDE.md golden rule #16 for the wider TF/odom contract.
+    # ═══════════════════════════════════════════════════════════════════
     robot_ns = _get(context, "robot_namespace").strip().strip("/") or "robot"
     robot_model = _get(context, "robot_model").strip().lower() or "go2w"
+    holonomic_nav = _as_bool(_get(context, "holonomic_nav"))
+    holonomic_nav_profile = (_get(context, "holonomic_nav_profile").strip().lower() or "off")
+    if holonomic_nav and holonomic_nav_profile == "off":
+        # Backward compatibility for existing callers that only pass holonomic_nav:=true.
+        holonomic_nav_profile = "omni_2d"
+    if holonomic_nav_profile not in {"off", "omni_2d", "se2_holonomic"}:
+        raise ValueError(
+            "holonomic_nav_profile must be one of: off | omni_2d | se2_holonomic"
+        )
+    holonomic_nav_enabled = holonomic_nav_profile != "off"
     slam = _get(context, "slam").strip().lower() or "carto_l1"
     carto_mode = _get(context, "carto_mode").strip().lower() or "2d"
     nav_backend = _get(context, "nav_backend").strip().lower() or "nav2_mppi"
@@ -57,6 +121,10 @@ def _launch_setup(context):
 
     if robot_model not in {"go2w", "go2"}:
         raise ValueError(f"Unsupported robot_model '{robot_model}' (expected go2w or go2)")
+    if holonomic_nav_enabled and nav_backend != "nav2_mppi":
+        raise ValueError("holonomic_nav_profile requires nav_backend=nav2_mppi")
+    if holonomic_nav_enabled and robot_model != "go2w":
+        raise ValueError("holonomic_nav_profile is currently supported only for robot_model=go2w")
 
     # Consistency: carto_2d mapper needs Cartographer in 2D mode.
     # Other combos are fine (carto_binary + 3d projects 3D submaps to 2D grid).
@@ -104,14 +172,28 @@ def _launch_setup(context):
     # of /robot/map even though they show up in /livox/lidar and the 3D
     # voxel grid. Symptom: "obstacles seen as scans but leave no trace on
     # the occupancy grid" (2026-05-01).
-    # Bias to keep ~0.05 m above ground:
-    #   occupancy_min_z_map = world_target - sensor_height_world
-    #   Go2W (sensor 0.57 m): 0.05 - 0.57 = -0.52
-    #   Go2  (sensor 0.39 m): 0.05 - 0.39 = -0.34
-    # RANSAC ground-plane filter inside octomap_server already drops the
-    # actual floor, so a low occupancy_min_z does not re-introduce ground
-    # noise.
-    occupancy_min_z = -0.52 if robot_model == "go2w" else -0.34
+    #
+    # 2026-05-01 retune (ground-leak vs low-obstacle balance):
+    #   First pass kept everything ≥ 5 cm world (occupancy_min_z = sensor − 5
+    #   cm = -0.52 / -0.34). RANSAC + that band still let ground points
+    #   leak through whenever the robot pitched during gait or floor was
+    #   uneven (carpet/transitions/concrete cracks > 6 cm RANSAC tolerance).
+    #
+    #   Bias raised to ~12 cm above ground:
+    #     occupancy_min_z_map = 0.12 - sensor_height_world
+    #     Go2W (sensor 0.57 m): 0.12 - 0.57 = -0.45
+    #     Go2  (sensor 0.39 m): 0.12 - 0.39 = -0.27
+    #
+    #   Net effect: 99 % of ground leak gone; 15–20 cm obstacles (tripod
+    #   legs, curbs, kickplates) keep their top 3–8 cm in /robot/map and
+    #   remain detectable to the planner.
+    #
+    #   2026-05-01 quick experiment: raise the cutoff by 2 voxels (10 cm)
+    #   for BOTH the 3D octree input and the 2D occupancy projection to
+    #   suppress the persistent walking-induced bottom-layer residue.
+    #     Go2W: -0.45 → -0.35
+    #     Go2 : -0.27 → -0.17
+    occupancy_min_z = -0.35 if robot_model == "go2w" else -0.17
 
     # When onboard_slam=true the Jetson runs livox + fast_lio + static TFs +
     # fast_lio_tf_adapter (see scripts/real/onboard_slam.sh). The laptop side
@@ -207,13 +289,29 @@ def _launch_setup(context):
                 # would multi-parent it. Adapter still publishes the topic
                 # /robot/odom/nav, just not TF.
                 "fast_lio_publish_tf": "false",
-                # Pick the real-tuned yaml when one exists for this platform.
-                # Real tunings: 80k iter cap, 1.5s plan budget, MPPI batch 1000,
-                # softer obstacle critic, tighter inflation. Falls back to the
-                # sim full-stack yaml on platforms where a real yaml doesn't
-                # exist yet (currently only go2 has nav2_go2_real.yaml).
+                # Pick the real-tuned yaml per platform. Real tunings:
+                # 80k iter cap, 1.5s plan budget, MPPI batch 1000, softer
+                # obstacle critic, tighter inflation gradient, RANSAC-clean
+                # map assumptions. Sim full-stack yamls aren't suitable
+                # (their narrow-corridor demo3 tuning conflicts with
+                # real-bot Mid-360 noise tolerance).
                 "nav2_yaml_override": (
-                    "nav2_go2_real.yaml" if robot_model == "go2" else ""
+                    "nav2_go2_real.yaml" if robot_model == "go2"
+                    else "nav2_go2w_real.yaml"
+                ),
+                # Optional second-layer override for Go2W Nav2 profile variants.
+                # Keep the base diff-drive/Reeds-Shepp yaml untouched and apply
+                # one of the profile overlays at runtime:
+                #   - omni_2d: SmacPlanner2D + MPPI Omni
+                #   - se2_holonomic: SmacPlannerLattice + forward/pivot MPPI
+                #                    (no lateral strafe)
+                "nav2_yaml_extra_override": (
+                    {
+                        "omni_2d": "nav2_go2w_real_omni_overlay.yaml",
+                        "se2_holonomic": "nav2_go2w_real_se2_holonomic_overlay.yaml",
+                    }.get(holonomic_nav_profile, "")
+                    if (robot_model == "go2w" and holonomic_nav_enabled)
+                    else ""
                 ),
             }.items(),
         ),
@@ -289,7 +387,10 @@ def _launch_setup(context):
                     # using a flat z-filter. The z-band only prevents absurdly
                     # low / high points (under the floor, above the ceiling)
                     # from reaching the octree and confusing RANSAC.
-                    "point_cloud_min_z": -0.50,
+                    # 2026-05-01 quick experiment: raise the low-end cutoff by
+                    # 2 voxels (10 cm) to suppress the persistent bottom-layer
+                    # ground residue seen in the 3D octree while walking.
+                    "point_cloud_min_z": -0.40,
                     "point_cloud_max_z":  2.00,
                     # 2D-projection band — see derivation in comment above.
                     "occupancy_min_z":   occupancy_min_z,
@@ -302,12 +403,24 @@ def _launch_setup(context):
                     # tilts with the robot's chassis via Fast-LIO → body →
                     # base_link TF chain). Ground points are dropped entirely.
                     "filter_ground_plane": True,
-                    "ground_filter.distance": 0.06,       # 6 cm inlier tolerance (a bit looser than default 4 cm — Mid-360 noisy at range)
-                    "ground_filter.angle": 0.262,         # 15° max plane tilt (safety margin vs base_link; default 8.6° can miss on ramp-to-flat transitions)
+                    # 2026-05-01 retune: tighter inlier band so the bottom of
+                    # low obstacles (curbs, tripod-leg base) doesn't get
+                    # absorbed as ground; wider angle gate to stay robust to
+                    # gait-induced base_link pitch (5–8° during walking).
+                    "ground_filter.distance": 0.04,       # was 0.06 — back to upstream default; 6 cm absorbed low-obstacle bases as ground
+                    "ground_filter.angle": 0.30,          # was 0.262 — 17.2° absorbs gait pitch + ramp-to-flat transitions
                     "ground_filter.plane_distance": 0.10, # 10 cm — max ground-plane offset from sensor z baseline
-                    # Isolated voxel removal — kills outlier speckles from
-                    # specular reflections / moving props. No speckles = no
-                    # phantom obstacles from transient reflections.
+                    # Speckle filter on. The thin-post problem it was
+                    # blamed for is solved upstream by point_filter_num=1
+                    # in fastlio_mid360.yaml (every Livox return processed
+                    # → real posts get ≥2 neighboring voxels per scan and
+                    # survive). A first attempt to disable speckle filter
+                    # carpeted /robot/map with isolated noise voxels from
+                    # specular reflections off shiny floor / glass bodies
+                    # (one return per cycle, never neighbored) — the
+                    # planner repeatedly hit "Starting point in lethal
+                    # space" because the noise spawned at the robot's
+                    # own pose.
                     "filter_speckles": True,
                     # latch=True → octomap publishers use TRANSIENT_LOCAL QoS,
                     # matching reactive_nav + frontier_3d_markers + RViz Map
@@ -382,8 +495,9 @@ def _launch_setup(context):
                     # voxel view isn't littered with false-positive ground
                     # obstacles when robot is on a slope.
                     "filter_ground_plane": True,
-                    "ground_filter.distance": 0.06,
-                    "ground_filter.angle": 0.262,
+                    # See octomap_map_gen above for retune rationale.
+                    "ground_filter.distance": 0.04,
+                    "ground_filter.angle": 0.30,
                     "ground_filter.plane_distance": 0.10,
                     "filter_speckles": True,
                     # latch=True → octomap publishers use TRANSIENT_LOCAL QoS,
@@ -482,6 +596,10 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("robot_namespace", default_value="robot"),
             DeclareLaunchArgument("robot_model", default_value="go2w",
                                    description="go2w (wheeled-legged) or go2 (no-wheel)"),
+            DeclareLaunchArgument("holonomic_nav", default_value="false",
+                                   description="Legacy bool alias. If true and holonomic_nav_profile is left 'off', auto-selects holonomic_nav_profile='omni_2d'."),
+            DeclareLaunchArgument("holonomic_nav_profile", default_value="off",
+                                   description="off | omni_2d | se2_holonomic. Applies a Go2W Nav2 overlay on top of nav2_go2w_real.yaml for nav2_mppi only."),
             DeclareLaunchArgument("slam", default_value="carto_l1",
                                    description="carto_l1 or fastlio_mid360"),
             DeclareLaunchArgument("carto_mode", default_value="2d",

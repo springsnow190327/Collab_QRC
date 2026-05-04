@@ -379,9 +379,21 @@ def build_dual_robot_stack(
     # a configurable (default 60 s) per-call timeout and treats
     # "already-loaded" as benign. See docs/claude/go2_integration.md:385.
     import os
-    _ROBUST_SPAWNER = os.path.expanduser(
-        "~/Collab_QRC/scripts/runtime/robust_controller_spawner.py"
+    # Resolve repo root from this file's location: launch/modules/assets.py
+    # → ../../../../.. = repo root. Falls back to env override for unusual
+    # layouts.
+    _ws_root = os.environ.get(
+        "COLLAB_QRC_RUNTIME_DIR",
+        os.path.abspath(os.path.join(
+            os.path.dirname(os.path.realpath(__file__)),
+            "..", "..", "..", "..", "..",
+        )),
     )
+    # Sanity: env override may point at scripts/runtime directly. If so
+    # back out one level so the joins below stay generic.
+    if os.path.basename(_ws_root) == "runtime":
+        _ws_root = os.path.dirname(os.path.dirname(_ws_root))
+    _ROBUST_SPAWNER = os.path.join(_ws_root, "scripts/runtime/robust_controller_spawner.py")
 
     def _robust_spawner_cmd(controller_name: str) -> list:
         cmd = [

@@ -55,6 +55,14 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
+# Resolve repo root from this file's location: launch/ → ../../../../..
+# (go2w_real_bringup/launch is 4 levels deep from repo root, same as
+# go2_gazebo_sim/launch).
+_ws_root = os.path.abspath(os.path.join(
+    os.path.dirname(os.path.realpath(__file__)), "..", "..", "..", ".."
+))
+
+
 def _get(context, name: str) -> str:
     return LaunchConfiguration(name).perform(context)
 
@@ -157,9 +165,7 @@ def _launch_setup(context):
 
     # --- Sensor-derived waypoint watchdog: terrain + occgrid + OOB + stall
     # + persistent nogo blacklist. Same node as sim.
-    watchdog_script = os.path.expanduser(
-        "~/Collab_QRC/scripts/runtime/tare_waypoint_watchdog.py"
-    )
+    watchdog_script = os.path.join(_ws_root, "scripts/runtime/tare_waypoint_watchdog.py")
     watchdog_proc = ExecuteProcess(
         cmd=[
             "python3", "-u", watchdog_script,

@@ -91,6 +91,7 @@ imu_calib_data.yaml*
 # =============================================
 # Bag / data directories
 # =============================================
+/bags/
 /balm2_data/
 /balm2_carto_data/
 /carto_balm2_data/
@@ -181,3 +182,4 @@ demo3_*.log
 session_*.json
 /tmp_runtime_dumps/
 *.run.log
+realtek-r8126-dkms/
