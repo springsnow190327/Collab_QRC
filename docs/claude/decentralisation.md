@@ -12,13 +12,13 @@ The goal is to replace the current centralised CFPA2 frontier coordination with 
 ## Reference
 RACER (Zhou et al., 2022) — arxiv 2209.08533
 
-## Current centralisation (to verify) - DONE
+## Current centralisation (to verify) - DONE 30/04/2026
 - cfpa2_coordinator_node.py — single node sees both robots
 - mdvrp_solver.py — multi-depot VRP across all frontiers × all robots
 - (need to check map_merge_utils.py — is fusion centralised or per-robot?)
 - Verified centralisation pattern: single node, namespace-parametric, dispatches via goal_pubs[ns].
 
-## Open questions for supervisor (5-day meeting)
+## Open questions for Dimitrios (5-day meeting)
 - Confirm scope: full Jetson deployment (a) vs nearby Jetson (b)?
 - Is "graceful degradation under comms loss" a required demo feature?
 - Cross-robot map fusion under SLAM drift — in scope or out?
@@ -103,7 +103,7 @@ The peer coordination node:
 - Both live in `src/collaborative_exploration/` alongside `cfpa2_collaborative_autonomy/`
 - Self-contained — teammates can copy the two folders across to the upstream repo
 
-### Custom messages (`cfpa2_peer_coordination_msgs`)
+### Custom messages (`cfpa2_peer_coordination_msgs`) - DONE 01/05/2026
 - `ClaimedFrontier.msg` — single frontier owned by a robot (position-only identity, no string ID, no expiry stamp — local timeout policy)
 - `PeerState.msg` — periodic heartbeat (~2 Hz) carrying pose, claimed frontiers, interaction timestamps for RACER-style anti-conflict
 - `NegotiationRequest.msg` — proposed pairwise allocation, simplified (anti-conflict info inferred from PeerState heartbeats)
