@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import Optional
 
 import rclpy
+from std_msgs.msg import String
 
 from .cfpa2_coordinator_node import CFPA2Coordinator
 
@@ -22,6 +23,12 @@ class CFPA2SingleRobotNode(CFPA2Coordinator):
         default_ns = self.namespaces[0] if self.namespaces else "robot"
         self.declare_parameter("robot_namespace", default_ns)
         self.robot_namespace = str(self.get_parameter("robot_namespace").value).strip().strip("/") or default_ns
+
+        # verbose_logs: gates the loud throttled debug logs (per-tick reasons,
+        # full summary). When False (default), only state-change events are
+        # logged so the operator can see what's happening at a glance.
+        self.declare_parameter("verbose_logs", False)
+        self.verbose_logs = bool(self.get_parameter("verbose_logs").value)
 
         if len(self.namespaces) != 1:
             raise ValueError(
@@ -46,9 +53,50 @@ class CFPA2SingleRobotNode(CFPA2Coordinator):
             )
             self.output_mode = "waypoint_coord"
 
+        # Single source of truth for exploration state; consumed by
+        # exploration_metrics_logger to emit structured event lines and to
+        # decide when to fire exploration_complete + cancel Nav2.
+        ns = self.namespaces[0]
+        self._status_pub = self.create_publisher(
+            String, f"/{ns}/exploration_status", 10)
+        self._last_status: str = ""
+
+        # Pause flag set by exploration_metrics_logger via /<ns>/exploration_complete.
+        # When set, _tick_impl returns early and stops publishing goals.
+        self._paused: bool = False
+        self.create_subscription(
+            String, f"/{ns}/exploration_complete",
+            self._on_exploration_complete, 10)
+
+    def _publish_status(self, status: str) -> None:
+        """Publish a state change. No-op when status unchanged (avoids spam)."""
+        if status == self._last_status:
+            return
+        self._last_status = status
+        msg = String()
+        msg.data = status
+        self._status_pub.publish(msg)
+        self.get_logger().info(f"[exploration_status] {status}")
+
+    def _on_exploration_complete(self, msg: String) -> None:
+        if self._paused:
+            return
+        self._paused = True
+        reason = msg.data or "unspecified"
+        self.get_logger().warn(
+            f"[exploration_complete] reason={reason} — pausing CFPA2 "
+            f"goal publication. Send empty or 'resume' on /<ns>/exploration_complete "
+            f"to re-enable.")
+        self._publish_status("paused")
+
     def _tick_impl(self) -> None:
         now_ns = self.get_clock().now().nanoseconds
         ns = self.namespaces[0]
+
+        # Honour pause flag from exploration_metrics_logger / operator.
+        if self._paused:
+            self._publish_status("paused")
+            return
 
         if ns not in self.maps:
             if now_ns - self._last_prereq_warn_ns > int(2e9):
@@ -76,12 +124,14 @@ class CFPA2SingleRobotNode(CFPA2Coordinator):
         targets = self._extract_frontiers(planning_map)
         per_ns_targets = {ns: targets}
         if not targets:
-            self._log_no_goal_debug(
-                now_ns=now_ns,
-                reason="no_frontiers_after_extract",
-                planning_map=planning_map,
-                per_ns_targets=per_ns_targets,
-            )
+            self._publish_status("no_frontiers")
+            if self.verbose_logs:
+                self._log_no_goal_debug(
+                    now_ns=now_ns,
+                    reason="no_frontiers_after_extract",
+                    planning_map=planning_map,
+                    per_ns_targets=per_ns_targets,
+                )
             return
 
         odom = self.odoms[ns]
@@ -107,14 +157,16 @@ class CFPA2SingleRobotNode(CFPA2Coordinator):
                 utilities[goal] = score
 
         if not utilities:
-            self._log_no_goal_debug(
-                now_ns=now_ns,
-                reason="cfpa2_no_reachable_utilities",
-                planning_map=planning_map,
-                per_ns_targets=per_ns_targets,
-                dist_maps=dist_maps,
-                utilities_sizes={ns: 0},
-            )
+            self._publish_status("no_reachable")
+            if self.verbose_logs:
+                self._log_no_goal_debug(
+                    now_ns=now_ns,
+                    reason="cfpa2_no_reachable_utilities",
+                    planning_map=planning_map,
+                    per_ns_targets=per_ns_targets,
+                    dist_maps=dist_maps,
+                    utilities_sizes={ns: 0},
+                )
 
         candidate_goal: Optional[tuple[float, float]] = None
         assignment_score = 0.0
@@ -151,16 +203,18 @@ class CFPA2SingleRobotNode(CFPA2Coordinator):
         if candidate_goal is None:
             if held_goal is None:
                 self._set_policy_reason(ns, "hold/cfpa2_no_candidate")
-                self._log_no_goal_debug(
-                    now_ns=now_ns,
-                    reason="cfpa2_no_assignment_published",
-                    planning_map=planning_map,
-                    per_ns_targets=per_ns_targets,
-                    dist_maps=dist_maps,
-                    utilities_sizes={ns: len(utilities)},
-                    candidate_goals={},
-                    per_ns_assigned={},
-                )
+                self._publish_status("searching")
+                if self.verbose_logs:
+                    self._log_no_goal_debug(
+                        now_ns=now_ns,
+                        reason="cfpa2_no_assignment_published",
+                        planning_map=planning_map,
+                        per_ns_targets=per_ns_targets,
+                        dist_maps=dist_maps,
+                        utilities_sizes={ns: len(utilities)},
+                        candidate_goals={},
+                        per_ns_assigned={},
+                    )
                 return
 
             if self._is_blacklisted(ns, held_goal, now_ns):
@@ -197,20 +251,23 @@ class CFPA2SingleRobotNode(CFPA2Coordinator):
                 )
 
         if goal is None:
-            self._log_no_goal_debug(
-                now_ns=now_ns,
-                reason="cfpa2_no_assignment_published",
-                planning_map=planning_map,
-                per_ns_targets=per_ns_targets,
-                dist_maps=dist_maps,
-                utilities_sizes={ns: len(utilities)},
-                candidate_goals={ns: candidate_goal} if candidate_goal is not None else {},
-                per_ns_assigned={},
-            )
+            self._publish_status("searching")
+            if self.verbose_logs:
+                self._log_no_goal_debug(
+                    now_ns=now_ns,
+                    reason="cfpa2_no_assignment_published",
+                    planning_map=planning_map,
+                    per_ns_targets=per_ns_targets,
+                    dist_maps=dist_maps,
+                    utilities_sizes={ns: len(utilities)},
+                    candidate_goals={ns: candidate_goal} if candidate_goal is not None else {},
+                    per_ns_assigned={},
+                )
             return
 
         self._set_active_goal(ns, goal, now_ns)
         self._publish_goal(ns, planning_map, goal)
+        self._publish_status("executing")
 
         reachable = 0
         for frontier in targets:
@@ -221,13 +278,14 @@ class CFPA2SingleRobotNode(CFPA2Coordinator):
             if self._goal_reachable(planning_map, dist_map, frontier):
                 reachable += 1
 
-        self._maybe_log_summary(
-            targets_total=len(targets),
-            per_ns_frontiers={ns: len(targets)},
-            per_ns_reachable={ns: reachable},
-            per_ns_assigned={ns: goal},
-            per_ns_utilities={ns: utilities},
-        )
+        if self.verbose_logs:
+            self._maybe_log_summary(
+                targets_total=len(targets),
+                per_ns_frontiers={ns: len(targets)},
+                per_ns_reachable={ns: reachable},
+                per_ns_assigned={ns: goal},
+                per_ns_utilities={ns: utilities},
+            )
 
 
 def main(args=None) -> None:

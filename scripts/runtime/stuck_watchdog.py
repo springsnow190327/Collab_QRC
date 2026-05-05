@@ -54,6 +54,7 @@ from rclpy.qos import (
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
 from nav2_msgs.action import BackUp
+from std_msgs.msg import String
 
 
 def _split_ros_argv(argv):
@@ -135,6 +136,13 @@ class StuckWatchdog(Node):
         # Republish goal on the same topic Nav2 listens on, with the
         # same RELIABLE QoS bt_navigator actually expects.
         self._goal_pub = self.create_publisher(PoseStamped, goal_topic, nav2_goal_qos)
+        # Recovery event stream — single canonical source for "what did the
+        # outer-loop watchdog do?". Consumed by exploration_metrics_logger
+        # for the structured event log, instead of grepping log strings.
+        # Values: "stuck_detected" | "backup_started" | "backup_done" |
+        #         "backup_aborted" | "backup_unavailable".
+        self._recovery_pub = self.create_publisher(
+            String, f"/{ns}/recovery_event", 10)
         self._backup_client = ActionClient(self, BackUp, backup_action)
         self.create_timer(check_period, self._check_stuck)
 
@@ -216,7 +224,13 @@ class StuckWatchdog(Node):
             f"in {self.window_sec:.0f} s, goal at ({gx:+.2f},{gy:+.2f}) "
             f"d2g={d2g:.2f} m — triggering BackUp + replan"
         )
+        self._emit_recovery("stuck_detected")
         self._trigger_recovery()
+
+    def _emit_recovery(self, kind: str) -> None:
+        msg = String()
+        msg.data = kind
+        self._recovery_pub.publish(msg)
 
     def _trigger_recovery(self) -> None:
         if not self._backup_client.wait_for_server(timeout_sec=2.0):
@@ -224,11 +238,13 @@ class StuckWatchdog(Node):
                 f"BackUp action server '{self._backup_action_name}' not "
                 f"available — is behavior_server running? skipping recovery."
             )
+            self._emit_recovery("backup_unavailable")
             self._last_recovery_t = self._now_sec()  # arm cooldown anyway
             return
 
         self._recovery_in_flight = True
         self._last_recovery_t = self._now_sec()
+        self._emit_recovery("backup_started")
         goal = BackUp.Goal()
         # Nav2 BackUp action: target.x is signed distance from current
         # pose along robot's body frame x-axis (forward = +). Negative
@@ -261,6 +277,12 @@ class StuckWatchdog(Node):
         except Exception as exc:
             self.get_logger().warn(f"BackUp result error: {exc}")
             status = None
+
+        # GoalStatus codes: 4=SUCCEEDED, 5=CANCELED, 6=ABORTED.
+        if status == 4:
+            self._emit_recovery("backup_done")
+        else:
+            self._emit_recovery("backup_aborted")
 
         # Whether backup succeeded or aborted (collision check rejected
         # halfway), we still want to nudge Nav2 to replan from the new

@@ -157,6 +157,18 @@ class CFPA2Coordinator(Node):
         self.declare_parameter("relocation_goal_topic_suffix", "/goal_point")
         self.declare_parameter("grid_world_status_topic_suffix", "/grid_world_status")
         self.declare_parameter("nav_status_topic_suffix", "/nav_status")
+        # Map source for frontier extraction + BFS reachability. Two practical choices:
+        #   "/map"                       — raw octomap projection (legacy default).
+        #                                  BFS is "inflation-blind"; can mark frontiers
+        #                                  reachable that Nav2 actually can't path to.
+        #   "/global_costmap/costmap"    — Nav2's inflated global costmap (recommended).
+        #                                  BFS walks the same cost field the planner
+        #                                  uses, so CFPA2's reachability matches Nav2's
+        #                                  plannability. Inflation gradient cells (cost
+        #                                  ≥ occ_thresh, default 50) are blocked.
+        # Either way the message type is OccupancyGrid; only the cell-value semantics
+        # differ. unknown_value (-1) is the same in both.
+        self.declare_parameter("planning_map_topic_suffix", "/map")
         self.declare_parameter("use_shared_map", False)
         self.declare_parameter("shared_map_topic", "/disco_slam/global_map")
         self.declare_parameter("shared_map_wait_sec", 8.0)
@@ -310,6 +322,13 @@ class CFPA2Coordinator(Node):
             self.output_mode = "waypoint_coord"
         self.tare_goal_topic_suffix = str(self.get_parameter("tare_goal_topic_suffix").value)
         self.relocation_goal_topic_suffix = str(self.get_parameter("relocation_goal_topic_suffix").value)
+        # Validate planning_map_topic_suffix: must start with '/' and be non-empty
+        # (we concatenate with /<ns>{suffix}). Empty / malformed values silently
+        # fall back to the legacy /map topic.
+        _pm = str(self.get_parameter("planning_map_topic_suffix").value).strip()
+        if not _pm.startswith("/"):
+            _pm = "/" + _pm if _pm else "/map"
+        self.planning_map_topic_suffix = _pm
         self.grid_world_status_topic_suffix = str(
             self.get_parameter("grid_world_status_topic_suffix").value
         )
@@ -674,7 +693,11 @@ class CFPA2Coordinator(Node):
             MarkerArray, self.frontier_markers_topic, 10
         )
         for ns in self.namespaces:
-            self.create_subscription(OccupancyGrid, f"/{ns}/map", lambda m, n=ns: self._map_cb(m, n), 1)
+            map_topic = f"/{ns}{self.planning_map_topic_suffix}"
+            self.create_subscription(OccupancyGrid, map_topic, lambda m, n=ns: self._map_cb(m, n), 1)
+            self.get_logger().info(
+                f"[{ns}] planning map ← {map_topic} "
+                f"(occ_thresh={self.occ_thresh}, unknown={self.unknown_value})")
             self.create_subscription(Odometry, f"/{ns}/odom/nav", lambda m, n=ns: self._odom_cb(m, n), 10)
             if GridWorldStatus is not None:
                 self.create_subscription(

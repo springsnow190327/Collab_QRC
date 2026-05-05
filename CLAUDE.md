@@ -4,6 +4,33 @@ Multi-robot autonomy with Unitree Go2W wheeled-legged quadrupeds on ROS 2 Humble
 
 For Phase 1 (single-robot VLM exploration) background, Phase 2 FSM-era archive, and archived 2026-04 operational notes, see [CLAUDE1.md](CLAUDE1.md).
 
+## Active state (2026-05-05) — SE2-only direction + observability + lidar_range
+
+- **SE2 holonomic is now the canonical and only navigation profile we tune for.**
+  After 2026-05-02 validated `se2_holonomic` (SmacPlannerLattice + diff primitives + no-strafe MPPI) as the operator-preferred behavior, all subsequent tuning effort (frontier reachability, costmap inflation, MPPI critics, exploration metrics, stop conditions) targets THIS profile and no other. The legacy `holonomic_profile=off` (diff-drive Reeds-Shepp) and `omni_2d` (SmacPlanner2D + MPPI Omni) remain in [`real_single.launch.py`](src/go2w/go2w_real_bringup/launch/real_single.launch.py) and [`real_autonomy.sh`](scripts/real/real_autonomy.sh) as **escape hatches only** — not maintained for daily nav and not recipients of new tuning. New operators / sessions should default to SE2.
+
+- **Streamlined entry: [`scripts/real/real_autonomy_se2.sh`](scripts/real/real_autonomy_se2.sh).**
+  Thin wrapper over `real_autonomy.sh` that bakes in `holonomic_profile=se2_holonomic` and forwards a curated subset of flags (`robot, slam, oa, execute, lidar_range, manual, record`). Daily ops should call this; profile-selection complexity stays out of operator memory. The full surface (off / omni_2d / etc.) remains accessible via `real_autonomy.sh` for ad-hoc comparison runs.
+
+- **`lidar_range` launch param (default 8.0 m).**
+  Threaded through `real_autonomy.sh → real_single.launch.py → real_bringup_core.launch.py`; controls octomap_server raytrace + `pointcloud_to_laserscan` `range_max` simultaneously. Lower (e.g. 4.0 m) for cluttered indoor scenes where far-range obstacles introduce noise; raise for open spaces. Independent of Fast-LIO's `det_range: 100.0` (SLAM odometry quality, not perception).
+
+- **Exploration observability + explicit stop condition shipped.**
+  [`exploration_metrics_logger.py`](src/go2w/go2w_observability/scripts/exploration_metrics_logger.py) is now the central event aggregator. Adds:
+  1. **Structured event log** to stdout + `$ROS_LOG_SESSION_DIR/exploration_events_*.log` — one line per significant event with absolute timestamp + Δ from previous event. Sources: `/<ns>/exploration_status`, `/<ns>/goal_pose`, `/<ns>/behavior_tree_log` (plan timing via BT-internal timestamps, dedupes recovery-branch `ComputePathToPose` duplicates), `/<ns>/recovery_event`, `/cmd_vel`.
+  2. **30 s rolling summary** — `plan_ms[p50/p95/max]`, `plan_ok=N/M (P%)`, `goals[done/abort_p/abort_c]`, `ttm_avg`, `coverage Δ%`, `status`.
+  3. **Stop trigger** — publishes latched `/<ns>/exploration_complete` (with reason) + cancels `navigate_to_pose` action + zero-cmd_vel pulse, when either:
+     - `consec_no_reachable_threshold=3` ticks of CFPA2's `no_reachable` status, or
+     - coverage Δ < `coverage_stagnant_threshold_pct=0.5%` over `coverage_stagnant_window_sec=30s`.
+
+  CFPA2 ([`cfpa2_single_robot_node.py`](src/collaborative_exploration/cfpa2_collaborative_autonomy/cfpa2_collaborative_autonomy/cfpa2_single_robot_node.py)) gained a `_status_pub` on `/<ns>/exploration_status` (states: `searching | executing | no_reachable | no_frontiers | paused`) and a subscriber to `/<ns>/exploration_complete` that latches a `_paused` flag. `verbose_logs: false` (default) suppresses the per-tick `_log_no_goal_debug` / `_maybe_log_summary` spam — only state-change INFO lines remain. [`stuck_watchdog.py`](scripts/runtime/stuck_watchdog.py) publishes `/<ns>/recovery_event` (`stuck_detected | backup_started | backup_done | backup_aborted | backup_unavailable`) so recovery activity threads through the same event stream.
+
+- **CFPA2 ↔ Nav2 threshold alignment fix.**
+  Discovered a 0.40–0.60 m dead band where Nav2's `xy_goal_tolerance: 0.40` declared SUCCEEDED but CFPA2's `switch_min_dist: 0.60` still considered the goal "in flight" — same goal got republished, bridge filtered it as unchanged, robot sat idle. Fix: [`cfpa2_single_robot.yaml`](src/collaborative_exploration/cfpa2_collaborative_autonomy/config/cfpa2_single_robot.yaml) `switch_min_dist: 0.60 → 0.45` and added `reached_blacklist_dist: 0.45` so CFPA2's notion of "reached" sits above Nav2's. Long-term fix (action-status listener for ground-truth SUCCEEDED/ABORTED) is documented but not yet implemented.
+
+- **CFPA2 reachability uses an inflation-blind BFS** ([`cfpa2_coordinator_node.py:1208`](src/collaborative_exploration/cfpa2_collaborative_autonomy/cfpa2_collaborative_autonomy/cfpa2_coordinator_node.py#L1208)).
+  `_distance_transform` walks 4-connected through cells where `_is_free()` is True (i.e. `0 ≤ v < occ_thresh` AND `v != -1`). It does NOT account for inflation, footprint, or kinematics — so it can mark a frontier reachable that Nav2 then cannot path through. For now this is documented as a known gap; the planned fix is to feed CFPA2 from `/{ns}/global_costmap/costmap` (inflated) instead of `/{ns}/map` (raw octomap projection).
+
 ## Active state (2026-05-02)
 
 - **Go2W real Nav2 profile split + SE2 footprint debugging (2026-05-01 → 2026-05-02)** — session started from persistent yaw-hunting / stop-go behavior in narrow passages, moved through "enable holonomic behavior", and converged on a 3-profile runtime matrix with explicit planner/controller semantics.
@@ -122,18 +149,20 @@ NUM_TRIALS=10 DURATION_SEC=120 OUT_DIR=/tmp/cfgA_10 ./scripts/bench/benchmark_fa
 # RL policy (experimental, robot saturates — see go2_integration.md)
 ./scripts/launch/nav_test_go2.sh gui:=true rviz:=true rl_policy:=true
 
-# Real robot (Go2W) — Ethernet, Cartographer + L1 LiDAR, **nav2_mppi** (default since 2026-04-29)
-./scripts/real/real_autonomy.sh
-# Real robot (Go2W) — Livox Mid-360 + Fast-LIO2, nav2_mppi (default)
+# Real robot (Go2W) — RECOMMENDED entry as of 2026-05-05:
+#   SE2 holonomic baked in, oa=false (sport API direct), curated flag surface.
+./scripts/real/real_autonomy_se2.sh                                  # default Go2W SE2
+./scripts/real/real_autonomy_se2.sh slam=fastlio_mid360               # Mid-360 + Fast-LIO
+./scripts/real/real_autonomy_se2.sh slam=fastlio_mid360 lidar_range=4.0
+./scripts/real/real_autonomy_se2.sh stop                              # kill everything
+
+# Legacy multi-profile launcher (still supported for ad-hoc comparison runs):
+./scripts/real/real_autonomy.sh                                       # Cartographer + L1 default
 ./scripts/real/real_autonomy.sh slam=fastlio_mid360
-# Real robot (Go2W) — Nav2 profile matrix (2026-05-02)
-./scripts/real/real_autonomy.sh oa=false holonomic_profile=off
-./scripts/real/real_autonomy.sh oa=false holonomic_profile=omni_2d
-./scripts/real/real_autonomy.sh oa=false holonomic_profile=se2_holonomic
-# Legacy alias (maps to omni_2d)
-./scripts/real/real_autonomy.sh oa=false holonomic=true
-# Real robot (Go2W) — legacy backends still available
-./scripts/real/real_autonomy.sh nav=cfpa2                # Python default_nav.py
+./scripts/real/real_autonomy.sh oa=false holonomic_profile=off        # diff-drive Reeds-Shepp
+./scripts/real/real_autonomy.sh oa=false holonomic_profile=omni_2d    # SmacPlanner2D + MPPI Omni
+./scripts/real/real_autonomy.sh oa=false holonomic=true               # legacy alias for omni_2d
+./scripts/real/real_autonomy.sh nav=cfpa2                             # Python default_nav.py
 ./scripts/real/real_autonomy.sh slam=fastlio_mid360 nav=far
 # Real robot (Go2, no-wheel) — same stack, walking-gait nav tuning
 ./scripts/real/real_autonomy_go2.sh                       # nav2_mppi default
