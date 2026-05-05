@@ -43,6 +43,7 @@ def _launch_setup(context):
     run_transform_everything = _as_bool(_get(context, "run_transform_everything"))
     execute_controller = _as_bool(_get(context, "execute_controller"))
     imu_calib_yaml = _get(context, "imu_calib_yaml").strip()
+    lidar_range = float(_get(context, "lidar_range"))
 
     bringup_share = get_package_share_directory("go2w_real_bringup")
     go2w_config_pkg = get_package_share_directory("go2w_config")
@@ -142,7 +143,7 @@ def _launch_setup(context):
                     "angle_increment": 0.006135923151543,
                     "scan_time": 0.1,
                     "range_min": 0.10,
-                    "range_max": 8.0,
+                    "range_max": lidar_range,
                     "use_inf": True,
                 }
             ],
@@ -300,6 +301,9 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("execute_controller", default_value="true",
                                    description="false = dry-run; publish /cmd_vel but DON'T forward to sport API"),
             DeclareLaunchArgument("imu_calib_yaml", default_value=""),
+            DeclareLaunchArgument(
+                "lidar_range", default_value="8.0",
+                description="Perception range cap (m) for pointcloud_to_laserscan."),
             DeclareLaunchArgument("enable_manual_fallback", default_value="true"),
             DeclareLaunchArgument("joy_dev", default_value="/dev/input/js0"),
             DeclareLaunchArgument("joy_deadzone", default_value="0.12"),

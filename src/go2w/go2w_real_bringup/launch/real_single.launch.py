@@ -195,6 +195,14 @@ def _launch_setup(context):
     #     Go2 : -0.27 → -0.17
     occupancy_min_z = -0.35 if robot_model == "go2w" else -0.17
 
+    # ── lidar_range: perception range cap for nav (octomap raytrace +
+    #    pointcloud_to_laserscan). Independent of Fast-LIO's det_range
+    #    (which governs SLAM odometry quality). Lower this when you want
+    #    the costmap to ignore far obstacles (clutter, glass, dynamic objects)
+    #    and only react to close-in geometry. 8.0 m default matches Mid-360
+    #    indoor reliability; tighten to 4–5 m for narrow corridors / busy scenes.
+    lidar_range = float(_get(context, "lidar_range"))
+
     # When onboard_slam=true the Jetson runs livox + fast_lio + static TFs +
     # fast_lio_tf_adapter (see scripts/real/onboard_slam.sh). The laptop side
     # then skips the entire slam.launch.py block, since duplicating those
@@ -240,6 +248,7 @@ def _launch_setup(context):
                 "manual_linear_threshold": _get(context, "manual_linear_threshold"),
                 "manual_angular_threshold": _get(context, "manual_angular_threshold"),
                 "joy_dev": _get(context, "joy_dev"),
+                "lidar_range": _get(context, "lidar_range"),
             }.items(),
         ),
         # ── Planner (default | astar | far) + CFPA2 frontier picker ──
@@ -378,7 +387,7 @@ def _launch_setup(context):
                     "resolution": 0.05,
                     "frame_id": "map",
                     "base_frame_id": "base_link",
-                    "sensor_model.max_range": 8.0,
+                    "sensor_model.max_range": lidar_range,
                     "sensor_model.hit": 0.8,
                     "sensor_model.miss": 0.35,
                     "sensor_model.min": 0.12,
@@ -475,7 +484,7 @@ def _launch_setup(context):
                     "resolution": 0.05,
                     "frame_id": "map",
                     "base_frame_id": "base_link",
-                    "sensor_model.max_range": 8.0,
+                    "sensor_model.max_range": lidar_range,
                     "sensor_model.hit": 0.8,
                     "sensor_model.miss": 0.35,
                     "sensor_model.min": 0.12,
@@ -622,6 +631,12 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("manual_linear_threshold", default_value="0.02"),
             DeclareLaunchArgument("manual_angular_threshold", default_value="0.05"),
             DeclareLaunchArgument("joy_dev", default_value="/dev/input/js0"),
+            DeclareLaunchArgument(
+                "lidar_range", default_value="8.0",
+                description="Perception range cap (m) for octomap raytracing "
+                            "and pointcloud_to_laserscan. Lower this (e.g. 4.0) "
+                            "to ignore far obstacles in cluttered/dynamic scenes. "
+                            "Independent of Fast-LIO's SLAM det_range."),
             # Onboard SLAM split: when "true", the laptop side skips Livox +
             # Fast-LIO + the slam.launch.py static TFs + fast_lio_tf_adapter
             # (they all run on the Jetson via scripts/real/onboard_slam.sh).
