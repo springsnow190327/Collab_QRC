@@ -22,8 +22,8 @@ PROTOCOL_VERSION = 1   # bump when message formats change incompatibly
 
 # Topic naming convention
 PEER_STATE_TOPIC = "cfpa2_peer_coordination/peer_state"
-NEGOTIATION_REQUEST_TOPIC = "cfpa2_peer_coordination/negotiation_request"
-NEGOTIATION_RESPONSE_TOPIC = "cfpa2_peer_coordination/negotiation_response"
+NEGOTIATION_REQUEST_TOPIC = "cfpa2_peer_coordination/inbox/negotiation_request"
+NEGOTIATION_RESPONSE_TOPIC = "cfpa2_peer_coordination/inbox/negotiation_response"
 
 
 class PeerCoordinatorNode(Node):
