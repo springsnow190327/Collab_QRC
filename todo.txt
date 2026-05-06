@@ -1,0 +1,68 @@
+Collab_QRC — TODO
+Last updated: 2026-05-06
+
+1. Moving-obstacle removal for SLAM
+   - Evaluate ERASOR (Egocentric RAtio of pSeudo Occupancy-based dynamic
+     Object Removal) and Dynamic-LIO. Both are post-processing approaches
+     that strip moving objects from the LiDAR map.
+   - Goal: stop people walking through demos from leaving permanent
+     ghost-voxels in /robot/map.
+   - Candidate hook point: between Fast-LIO output and octomap input.
+
+2. Decentralisation of dual-robot architecture (RACER-inspired)
+   - Current dual stack still has implicit coordinator coupling via CFPA2
+     allocator. RACER (FAST-Lab, 2023) demonstrates fully decentralised
+     multi-UAV exploration: each robot plans independently and exchanges
+     only frontier views + intent.
+   - Action: read the RACER paper, identify the minimal decentralised
+     contract for our setup (frontier sharing protocol, conflict resolution
+     without a central allocator), prototype on demo3_mixed.
+
+3. Map merging from unknown initial poses
+   - Haichen is investigating. Before reinventing: survey open-source
+     options (multirobot_map_merge already vendored; look at MR-SLAM,
+     DiSCo-SLAM, Kimera-Multi for cross-robot loop-closure-based merging).
+   - Goal: drop the requirement that robots start in a known relative pose.
+
+4. Teammate-filtering
+   - Self-filter currently relies on /<ns>/peer_pose feeds with strict TTL.
+   - Add a vision-side filter (after #5 lands) so the LiDAR ray from a
+     teammate's chassis is also classified as "robot" via YOLO bbox and
+     stripped from the SLAM/perception pipelines.
+
+5. Semantic injection via YOLO + accumulative local dictionary
+   - After Jetson Orin Nano Super migration, run YOLO on the camera feed.
+   - LiDAR-camera alignment: project YOLO bboxes back into the registered
+     pointcloud and tag voxels with class IDs.
+   - Accumulate a per-robot "local semantic dictionary" (object → list of
+     world poses) that persists across map ticks.
+   - Use case: door-task and frontier prioritisation by semantic class.
+
+6. SE2 holonomic + MPPI on Jetson Orin Nano Super (perf optimisation)
+   - Current MPPI batch_size=1000 / time_steps=56 is laptop-CPU sized; the
+     Orin Nano Super has a weaker 6-core A78AE CPU but 1024-core Ampere GPU.
+   - Investigate:
+     - GPU-accelerated MPPI (mppi-generic, autorally-style CUDA backend)
+       with a Nav2 controller adapter shim.
+     - Tighten batch_size / time_steps to fit Orin Nano Super CPU budget
+       as the immediate fallback (no rewrite required).
+     - Whether SmacPlannerLattice's heuristic cache benefits from
+       GPU-side parallel A*.
+   - Decide: full standalone-on-Jetson vs keep current laptop+Jetson
+     split (onboard_slam=true is already the architectural prep).
+
+7. Report framing — what we did beyond gluing wheels together
+   - Articulate the original work, not the integrations. First pass:
+     - SE2 holonomic profile design + per-namespace tuning (no_strafe MPPI
+       on top of SmacPlannerLattice — not a stock combination).
+     - CFPA2 utility/hysteresis tuning + reachability-on-inflated-costmap
+       fix (this branch).
+     - 3-tier safety stack (pivot-lock + path_safety_filter +
+       cmd_vel_safety_shield) and the deadlock analysis from 2026-04-26.
+     - stuck_watchdog as outer-loop recovery for the silent-zero-cmd_vel
+       failure mode upstream nav2 doesn't report (golden rule #18).
+     - Exploration observability + explicit stop condition (this branch).
+     - 5-bug fast-lio chain and per-platform real-robot bring-up.
+     - Sim/real parity via fast_lio_tf_adapter as single TF owner.
+   - Decide presentation order: incident → diagnosis → fix → general lesson
+     reads better than a feature list.
