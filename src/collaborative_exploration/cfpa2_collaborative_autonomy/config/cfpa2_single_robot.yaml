@@ -5,6 +5,11 @@
     algorithm_mode: cfpa2
     publish_rate: 2.0
     output_mode: waypoint_coord
+    # Set true to restore the previous loud throttled debug logs (every
+    # ~2 s, full per-ns target/utility/distance dumps). Default false:
+    # only state-change INFO lines come through, leaving exploration_metrics_logger
+    # to emit the structured event stream.
+    verbose_logs: false
     tare_goal_topic_suffix: /way_point_tare
     relocation_goal_topic_suffix: /goal_point
     grid_world_status_topic_suffix: /grid_world_status
@@ -13,12 +18,36 @@
     shared_map_wait_sec: 8.0
     shared_map_local_patch_radius_m: 2.5
     goal_topic_suffix: /way_point_coord
+    # 2026-05-05: switch CFPA2's planning_map source from /robot/map (raw
+    # octomap projection) to /robot/global_costmap/costmap (Nav2's inflated
+    # global costmap). The BFS in _distance_transform now walks the same
+    # cost field SmacPlannerLattice plans against, so any frontier CFPA2
+    # marks "reachable" is one Nav2 can actually path to. Cells in the
+    # inflation gradient (cost ≥ occ_thresh=50) get rejected — no more
+    # picking goals that look topologically reachable but lie in a wall's
+    # inflation halo.
+    # Caveats:
+    #   - global_costmap appears AFTER Nav2 lifecycle activates (~2 s);
+    #     CFPA2's "Waiting for map topic" warning will fire briefly at boot.
+    #   - global_costmap mirrors /robot/map's coverage (StaticLayer source),
+    #     so frontier visibility area is unchanged.
+    planning_map_topic_suffix: /global_costmap/costmap
     marker_frame_override: map
     frontier_stride: 2
     max_targets: 180
     switch_hysteresis: 0.50
-    switch_min_dist: 0.60
+    # 2026-05-05: 0.60 → 0.45m. Must be ≥ Nav2's xy_goal_tolerance (0.40m
+    # in nav2_go2w_real.yaml) so CFPA2's "held goal reached?" check fires
+    # the moment Nav2 declares SUCCEEDED. Previously a dead band 0.40–0.60m:
+    # Nav2 stopped issuing cmd_vel, CFPA2 kept the same goal, bridge
+    # filtered duplicates, robot stuck idle. The +0.05m margin avoids
+    # racing tick-by-tick around the boundary.
+    switch_min_dist: 0.45
     min_assign_distance: 0.30
+    # Same alignment for reached-blacklist (default 0.30m left a similar
+    # dead band). Now any goal that lands within Nav2's tolerance window
+    # gets blacklisted after 3 ticks, forcing CFPA2 to pick a new frontier.
+    reached_blacklist_dist: 0.45
     overlap_weight: 1.0
     cfpa2_w_ig: 1.0
     cfpa2_w_c: 0.3

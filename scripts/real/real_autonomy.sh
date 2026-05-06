@@ -134,10 +134,11 @@ CARTO_MODE="2d"
 ONBOARD="false"
 MANUAL="false"
 HOLONOMIC="false"
-HOLONOMIC_PROFILE="off"
+HOLONOMIC_PROFILE="se2_holonomic"
 RECORD="true"
 RECORD_FULL="false"
 BAG_DIR_ROOT=""
+LIDAR_RANGE="8.0"
 
 # ── Parse key=value args (and "stop") ─────────────────────────────────
 for arg in "$@"; do
@@ -166,6 +167,7 @@ for arg in "$@"; do
     record=*)      RECORD="${arg#record=}" ;;
     record_full=*) RECORD_FULL="${arg#record_full=}" ;;
     bag_dir=*)     BAG_DIR_ROOT="${arg#bag_dir=}" ;;
+    lidar_range=*) LIDAR_RANGE="${arg#lidar_range=}" ;;
     *) echo "WARN: unknown arg '$arg'" >&2 ;;
   esac
 done
@@ -338,7 +340,8 @@ ros2 launch go2w_real_bringup "$LAUNCH" \
   rviz_3d:="$RVIZ_3D" \
   holonomic_nav:="$HOLONOMIC_NAV" \
   holonomic_nav_profile:="$NAV2_PROFILE" \
-  onboard_slam:="$ONBOARD" &
+  onboard_slam:="$ONBOARD" \
+  lidar_range:="$LIDAR_RANGE" &
 LAUNCH_PID=$!
 
 cleanup_on_signal() {
