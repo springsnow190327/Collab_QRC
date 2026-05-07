@@ -47,7 +47,7 @@ class PeerCoordinatorNode(Node):
 
         self.declare_parameter("odom_topic_suffix", "/odom/nav")
 
-
+        # Read parameters into fields for easy access.
         self.robot_id: str = self.get_parameter("robot_id").value
         self.robot_namespace: str = (
             self.get_parameter("robot_namespace").value.strip().strip("/")
@@ -83,8 +83,8 @@ class PeerCoordinatorNode(Node):
         )
 
         # Timers (stubs only for now)
-        peer_state_period = 1.0 / max(self.get_parameter("peer_state_rate_hz").value, 1e-6)
-        negotiation_period = 1.0 / max(self.get_parameter("negotiation_rate_hz").value, 1e-6)
+        peer_state_period = 1.0 / max(self.peer_state_rate_hz, 1e-6)
+        negotiation_period = 1.0 / max(self.negotiation_rate_hz, 1e-6)
 
         self.peer_state_timer = self.create_timer(
             peer_state_period, self._publish_peer_state

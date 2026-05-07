@@ -171,7 +171,7 @@ def _next_request_id(self) -> str:
 ## Status
 - [X] Verify centralisation in cfpa2_coordinator_node.py
 - [X] Audit map_merge_utils.py for centralised assumptions
-- [ ] Architecture sketch
+- [X] Architecture sketch
 - [ ] Jetson environment setup
 - [ ] Implement peer map sync
 - [ ] Implement pairwise frontier negotiation
