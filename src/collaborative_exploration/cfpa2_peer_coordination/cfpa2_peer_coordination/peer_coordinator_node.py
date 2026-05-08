@@ -9,17 +9,19 @@ This is the skeleton; protocol logic is not yet implemented.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSReliabilityPolicy, QoSProfile
+
 from std_msgs.msg import Header
+from geometry_msgs.msg import Pose
+from nav_msgs.msg import Odometry
 
 from cfpa2_peer_coordination_msgs.msg import (
-    ClaimedFrontier,
-    NegotiationRequest,
-    NegotiationResponse,
+    ClaimedFrontier,         # noqa: F401 
+    NegotiationRequest,      # noqa: F401
+    NegotiationResponse,     # noqa: F401
     PeerState,
 )
 
@@ -68,7 +70,7 @@ class PeerCoordinatorNode(Node):
         self.declare_parameter("robot_id", "robot_a")
         self.declare_parameter("robot_namespace", "robot_a")
 
-        # v1 assumption: peer_id == peer_namespace. Used for both protocol identity and topic addressing. Split into separate parameters if this assumption ever needs to break
+        # assumption: peer_id == peer_namespace. Used for both protocol identity and topic addressing. Split into separate parameters if this assumption ever needs to break
         self.declare_parameter("peer_namespaces", ["robot_b"])
 
         self.declare_parameter("peer_timeout_sec", 5.0)
@@ -107,11 +109,13 @@ class PeerCoordinatorNode(Node):
 
         self.odom_topic_suffix: str = self.get_parameter("odom_topic_suffix").value
 
-        # Per-peer storage. Initialised with a placeholder for every known peer.
-        # Updated by _peer_state_received(), read by negotiation logic (later).
+        # Per-peer storage. Initialised with a placeholder for every known peer. Updated by _peer_state_received(), read by negotiation logic (later).
         self.peer_info: dict[str, PeerInfo] = {
             peer_id: PeerInfo() for peer_id in self.peer_ids
         }
+
+        # Local pose storage. Updated by _odom_received(), published in PeerState
+        self._latest_pose: Pose | None = None
 
         # Topic names
         self.own_peer_state_topic = f"/{self.robot_namespace}/{PEER_STATE_TOPIC}"
@@ -135,6 +139,17 @@ class PeerCoordinatorNode(Node):
             peer_id: f"/{peer_ns}/{NEGOTIATION_RESPONSE_TOPIC}"
             for peer_id, peer_ns in zip(self.peer_ids, self.peer_namespaces)
         }
+
+        self.own_odom_topic = f"/{self.robot_namespace}{self.odom_topic_suffix}"
+
+        # Local odometry subscriber
+        self.odom_sub = self.create_subscription(
+            Odometry,
+            self.own_odom_topic,
+            self._odom_received,
+            10,
+        )
+        self.get_logger().info(f"Subscribed to own odometry on {self.own_odom_topic}")
 
         # PeerState publisher/subscribers
         self.peer_state_pub = self.create_publisher(
@@ -195,25 +210,38 @@ class PeerCoordinatorNode(Node):
             f"Peer response inbox publishers planned: {self.peer_response_inbox_topics}"
         )
     
-    # Timer callbacks
+    # Function for making message headers
     def _make_header(self) -> Header:
         header = Header()
         header.stamp = self.get_clock().now().to_msg()
         header.frame_id = "map"
         return header
 
+    # Function for receiving odom 
+    def _odom_received(self, msg: Odometry) -> None:
+        """Store this robot's latest pose for inclusion in PeerState heartbeats."""
+        self._latest_pose = msg.pose.pose
+
+    # Function for publishing PeerState   
     def _publish_peer_state(self) -> None:
         """Broadcast this robot's current PeerState heartbeat."""
         msg = PeerState()
         msg.header = self._make_header()
         msg.robot_id = self.robot_id
 
-        # Pose is left as the default zero pose for this milestone
-        # It will be filled from /odom/nav in a later step
+        if self._latest_pose is not None:
+            msg.pose = self._latest_pose
+        else:
+            # Not yet received any odom; default zero pose is left in place.
+            # Log periodically to surface the issue without spamming.
+            self.get_logger().warn(
+                f"Publishing heartbeat with no odom yet on {self.own_peer_state_topic}",
+                throttle_duration_sec=2.0,
+            )
+
         msg.claimed_frontiers = []
 
-        # These become meaningful once negotiation is implemented
-        # For now, use zero/default timesteps
+        # These become meaningful once negotiation is implemented. For now, use zero/default timesteps
         msg.last_interaction_attempt_stamp.sec = 0
         msg.last_interaction_attempt_stamp.nanosec = 0
         msg.last_successful_interaction_stamp.sec = 0
@@ -228,6 +256,7 @@ class PeerCoordinatorNode(Node):
         #     f"v{msg.protocol_version}"
         # )
 
+    # Function for receiving PeerState messages from peers
     def _peer_state_received(self, msg: PeerState, peer_id: str) -> None:
         """Store an incoming PeerState heartbeat from a configured peer."""
         if peer_id not in self.peer_info:
@@ -258,6 +287,7 @@ class PeerCoordinatorNode(Node):
             f"Received PeerState from {peer_id} at ns={info.last_received_ns}"
         )
 
+    # Function for checking peer freshness and deciding whether to negotiate
     def _peer_is_fresh(self, peer_id: str) -> bool:
         """Check if the last received PeerState from a peer is still fresh (i.e. within timeout)
 
@@ -273,21 +303,35 @@ class PeerCoordinatorNode(Node):
         ) / 1e9
         return age_sec <= self.peer_timeout_sec
 
-    def _decide_negotiation(self) -> None:
-        """Decide whether to initiate negotiation with a peer. Stub"""
-        fresh_peers = [
+    # Helper functions
+    def _fresh_peer_ids(self) -> list[str]:
+        """Return configured peers whose latest heartbeat is still fresh."""
+        return [
             peer_id for peer_id in self.peer_ids if self._peer_is_fresh(peer_id)
         ]
+
+    def _stale_peer_ids(self) -> list[str]:
+        """Return configured peers with missing or expired heartbeats."""
+        return [
+            peer_id for peer_id in self.peer_ids if not self._peer_is_fresh(peer_id)
+        ]
+
+    # Function for negotiation logic 
+    def _decide_negotiation(self) -> None:
+        """Decide whether to initiate negotiation with a peer. Stub"""
+        fresh_peers = self._fresh_peer_ids()
+        stale_peers = self._stale_peer_ids()
 
         if not self._logged_negotiation_stub:
             self.get_logger().info(
                 "_decide_negotiation stub reached; "
                 f"fresh_peers={fresh_peers}; "
+                f"stale_peers={stale_peers}; "
                 "negotiation logic not yet implemented"
             )
             self._logged_negotiation_stub = True
         
-        self.get_logger().debug(f"Fresh peers: {fresh_peers}")
+        self.get_logger().debug(f"Fresh peers: {fresh_peers}; Stale peers: {stale_peers}")
 
 def main(args=None) -> None:
     rclpy.init(args=args)
