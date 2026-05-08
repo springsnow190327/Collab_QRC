@@ -1,0 +1,11 @@
+deployment_mode: real_hybrid_ros1_slam_ros2_nav
+slam_backend: swarm_lio2_shadow
+dynamic_filter_backend: temporal_voxel_fallback
+static_map_cleanup_backend: none
+ros1_runtime: onboard_noetic_catkin
+ros2_runtime: humble_high_level
+start_ros1_slam_bridge: false
+require_swarm_loop_agreement: true
+swarm_loop_agreement_max_translation: 0.5
+swarm_loop_agreement_max_yaw_deg: 5.0
+description: Each robot runs ROS1/Noetic SLAM onboard; ROS2/Humble remains the high-level Nav2 and team_loop_closure layer.

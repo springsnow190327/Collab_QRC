@@ -1,0 +1,6 @@
+slam_backend: fast_lio_scpgo
+dynamic_filter_backend: none
+static_map_cleanup_backend: none
+team_pose_graph_backend: auto
+require_swarm_loop_agreement: false
+notes: "Validated baseline. Fast-LIO / SC-PGO remains primary."

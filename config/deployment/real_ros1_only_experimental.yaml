@@ -1,0 +1,8 @@
+deployment_mode: real_ros1_only_experimental
+slam_backend: swarm_lio2_shadow
+dynamic_filter_backend: temporal_voxel_fallback
+static_map_cleanup_backend: none
+ros1_runtime: onboard_noetic_catkin
+ros2_runtime: disabled
+experimental_only: true
+description: Experimental onboard-only ROS1 mode for SLAM bringup. Do not use for production Nav2/team_loop_closure validation.

@@ -1,0 +1,14 @@
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      obstacle_layer:
+        scan:
+          observation_persistence: 0.0
+          clearing: true
+          raytrace_max_range: 6.0
+          obstacle_max_range: 5.0
+        peer_scan:
+          observation_persistence: 0.0
+          clearing: true
+          raytrace_max_range: 6.0
+          obstacle_max_range: 6.0

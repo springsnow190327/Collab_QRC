@@ -1,0 +1,40 @@
+topics:
+  -
+    topic: /clock
+    type: rosgraph_msgs/msg/Clock
+    queue_size: 10
+  -
+    topic: /robot_a/Odometry
+    type: nav_msgs/msg/Odometry
+    queue_size: 20
+  -
+    topic: /robot_b/Odometry
+    type: nav_msgs/msg/Odometry
+    queue_size: 20
+  -
+    topic: /robot_a/cloud_registered_body
+    type: sensor_msgs/msg/PointCloud2
+    queue_size: 5
+  -
+    topic: /robot_b/cloud_registered_body
+    type: sensor_msgs/msg/PointCloud2
+    queue_size: 5
+  -
+    topic: /robot_a/sc_pgo/pose_stamped
+    type: geometry_msgs/msg/PoseStamped
+    queue_size: 20
+  -
+    topic: /robot_b/sc_pgo/pose_stamped
+    type: geometry_msgs/msg/PoseStamped
+    queue_size: 20
+  -
+    topic: /robot_a/sc_pgo/corrected_path
+    type: nav_msgs/msg/Path
+    queue_size: 5
+  -
+    topic: /robot_b/sc_pgo/corrected_path
+    type: nav_msgs/msg/Path
+    queue_size: 5
+
+services_1_to_2: []
+services_2_to_1: []

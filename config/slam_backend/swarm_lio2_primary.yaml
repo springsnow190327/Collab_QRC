@@ -1,0 +1,15 @@
+slam_backend: swarm_lio2_primary
+dynamic_filter_backend: temporal_voxel_fallback
+static_map_cleanup_backend: erasor_wrapper
+team_pose_graph_backend: auto
+require_swarm_loop_agreement: true
+swarm_loop_agreement_max_translation: 0.5
+swarm_loop_agreement_max_yaw_deg: 5.0
+adapter_outputs:
+  - /<ns>/Odometry
+  - /<ns>/corrected_odom
+  - /<ns>/cloud_registered_body
+  - /<ns>/cloud_static
+  - /<ns>/cloud_dynamic
+  - /team_slam/swarm_lio2_relative_transform
+  - /tf

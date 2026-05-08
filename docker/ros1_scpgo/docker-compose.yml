@@ -1,0 +1,28 @@
+services:
+  ros1_scpgo:
+    build:
+      context: ../..
+      dockerfile: docker/ros1_scpgo/Dockerfile
+    network_mode: host
+    environment:
+      - ROS_MASTER_URI=${ROS_MASTER_URI:-http://127.0.0.1:11311}
+      - ROS_HOSTNAME=${ROS_HOSTNAME:-127.0.0.1}
+      - ROS_IP=${ROS_IP:-127.0.0.1}
+
+  ros1_bridge:
+    image: ${ROS1_BRIDGE_IMAGE:-ros:foxy-ros1-bridge}
+    network_mode: host
+    depends_on:
+      - ros1_scpgo
+    environment:
+      - ROS1_DISTRO=${ROS1_DISTRO:-noetic}
+      - ROS2_DISTRO_IN_BRIDGE=${ROS2_DISTRO_IN_BRIDGE:-foxy}
+      - ROS_MASTER_URI=${ROS_MASTER_URI:-http://127.0.0.1:11311}
+      - ROS_HOSTNAME=${ROS_HOSTNAME:-127.0.0.1}
+      - ROS_IP=${ROS_IP:-127.0.0.1}
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+      - RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
+    volumes:
+      - ./bridge_entrypoint.sh:/bridge_entrypoint.sh:ro
+      - ./bridge.yaml:/bridge.yaml:ro
+    command: bash /bridge_entrypoint.sh
