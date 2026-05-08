@@ -187,3 +187,15 @@ def _next_request_id(self) -> str:
 - [ ] Peer map subscriber + overlay_map fusion
 - [ ] Integration with existing single_robot_node
 - [ ] Comms-cut survival demo
+
+## PeerState Heartbeat Design
+
+PeerState messages are published using best-effort QoS with depth 1. This matches the semantics of heartbeat/state broadcasts: old messages become stale quickly, so the receiver only needs the most recent state.
+
+Each node stores peer heartbeat data in a `PeerInfo` dataclass keyed by peer ID. The stored receive timestamp uses the local ROS 2 clock, not the sender's message timestamp, so freshness checks are based on when this robot last heard from the peer.
+
+PeerState topics use publisher-scoped namespacing:
+
+`/{robot_namespace}/cfpa2_peer_coordination/peer_state`
+
+Each robot publishes under its own namespace and subscribes to the configured peer namespaces.
