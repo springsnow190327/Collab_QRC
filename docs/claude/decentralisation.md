@@ -24,7 +24,7 @@ RACER (Zhou et al., 2022) — arxiv 2209.08533
 - Cross-robot map fusion under SLAM drift — in scope or out?
 - Decentralised map fusion in this implementation works because both robots share a world frame via common-origin Fast-LIO initialisation. The system inherits the existing centralised version's vulnerability to long-run drift (which would cause ghost walls in either implementation). Proper SLAM-frame alignment via inter-robot loop closure is out of scope and listed as future work — see the CLAUDE.md co-drift property notes for the existing system's stance.
 
-## MDVRP solver audit
+## MDVRP solver audit - Done + Tested
 
 - `mdvrp_solver.py` is pure Python and reusable outside the central coordinator,
 - It exposes `solve_mdvrp(...) -> dict[int, list[int]]`, where robot identities are represented only by integer indices. It does not depend on `rclpy` or ROS message types.
@@ -47,6 +47,12 @@ solve_mdvrp(
     span_cost_coefficient=100,
 ) -> dict[int, list[int]]
 ```
+
+### MDVRP Adapter Determinism Note
+
+The adapter test suite verifies that shuffled robot/frontier input ordering produces identical assignments. This confirms that the deterministic ordering wrapper works with the current upstream MDVRP solver.
+
+The tests implicitly rely on OR-Tools producing reproducible routes for identical inputs. If this test becomes flaky on another machine or OR-Tools version, the likely cause is solver-side randomisation rather than adapter ordering. This could be hardened by setting an explicit random seed in the upstream `solve_mdvrp` search parameters, or by weakening the test to compare equivalent assignment sets rather than exact route order.
 
 ## Current System
 
@@ -172,7 +178,12 @@ def _next_request_id(self) -> str:
 - [X] Verify centralisation in cfpa2_coordinator_node.py
 - [X] Audit map_merge_utils.py for centralised assumptions
 - [X] Architecture sketch
-- [ ] Jetson environment setup
-- [ ] Implement peer map sync
-- [ ] Implement pairwise frontier negotiation
-- [ ] Integration + demo
+- [ ] Jetson environment setup (Hanshang know how to)
+- [ ] PeerState heartbeat publish + subscribe
+- [ ] Peer state freshness tracking (timeout detection)
+- [ ] Pairwise frontier negotiation (request/response protocol)
+- [ ] Claim management (storage, expiry, conflict resolution)
+- [ ] Frontier filter output (so single_robot_node respects claims)
+- [ ] Peer map subscriber + overlay_map fusion
+- [ ] Integration with existing single_robot_node
+- [ ] Comms-cut survival demo
