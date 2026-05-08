@@ -8,10 +8,15 @@ This is the skeleton; protocol logic is not yet implemented.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Any
+
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSReliabilityPolicy, QoSProfile
+from std_msgs.msg import Header
 
-from cfpa2_peer_coordination_msgs.msg import(
+from cfpa2_peer_coordination_msgs.msg import (
     ClaimedFrontier,
     NegotiationRequest,
     NegotiationResponse,
@@ -21,9 +26,36 @@ from cfpa2_peer_coordination_msgs.msg import(
 PROTOCOL_VERSION = 1   # bump when message formats change incompatibly
 
 # Topic naming convention
+# PeerState is published under the sender's namespace:
+#   /robot_a/cfpa2_peer_coordination/peer_state
+#
+# Negotiation messages will later use destination-scoped inboxes:
+#   /robot_a/cfpa2_peer_coordination/inbox/negotiation_request
+#   /robot_a/cfpa2_peer_coordination/inbox/negotiation_response
 PEER_STATE_TOPIC = "cfpa2_peer_coordination/peer_state"
 NEGOTIATION_REQUEST_TOPIC = "cfpa2_peer_coordination/inbox/negotiation_request"
 NEGOTIATION_RESPONSE_TOPIC = "cfpa2_peer_coordination/inbox/negotiation_response"
+
+# QoS profile for peer-state heartbeats: best-effort, latest-only.
+# Heartbeats are intentionally lossy; a missed message means we use the previous state (and eventually trigger a freshness timeout).
+# Reliable delivery would queue stale heartbeats behind retried ones, which is the wrong behaviour for state broadcasts.
+PEER_STATE_QOS = QoSProfile(
+    reliability=QoSReliabilityPolicy.BEST_EFFORT,
+    durability=QoSDurabilityPolicy.VOLATILE,
+    history=QoSHistoryPolicy.KEEP_LAST,
+    depth=1,
+)
+
+@dataclass
+class PeerInfo:
+    """Tracks per-peer state for the local coordinator.
+
+    Extended over the project: currently holds the last received
+    PeerState and the local timestamp it arrived at. Future fields
+    will include claim tracking and negotiation-state machines."""
+
+    last_state: PeerState | None = None
+    last_received_ns: int = 0
 
 
 class PeerCoordinatorNode(Node):
@@ -75,41 +107,187 @@ class PeerCoordinatorNode(Node):
 
         self.odom_topic_suffix: str = self.get_parameter("odom_topic_suffix").value
 
-        self.get_logger().info(
-            f"PeerCoordinatorNode starting | robot_id={self.robot_id} "
-            f"namespace={self.robot_namespace} "
-            f"peer_namespaces={self.peer_namespaces} "
-            f"protocol_version={PROTOCOL_VERSION}"
+        # Per-peer storage. Initialised with a placeholder for every known peer.
+        # Updated by _peer_state_received(), read by negotiation logic (later).
+        self.peer_info: dict[str, PeerInfo] = {
+            peer_id: PeerInfo() for peer_id in self.peer_ids
+        }
+
+        # Topic names
+        self.own_peer_state_topic = f"/{self.robot_namespace}/{PEER_STATE_TOPIC}"
+
+        self.own_request_inbox_topic = (
+            f"/{self.robot_namespace}/{NEGOTIATION_REQUEST_TOPIC}"
         )
+        self.own_response_inbox_topic = (
+            f"/{self.robot_namespace}/{NEGOTIATION_RESPONSE_TOPIC}"
+        )
+
+        self.peer_state_topics = {
+            peer_id: f"/{peer_ns}/{PEER_STATE_TOPIC}"
+            for peer_id, peer_ns in zip(self.peer_ids, self.peer_namespaces)
+        }
+        self.peer_request_inbox_topics = {
+            peer_id: f"/{peer_ns}/{NEGOTIATION_REQUEST_TOPIC}"
+            for peer_id, peer_ns in zip(self.peer_ids, self.peer_namespaces)
+        }
+        self.peer_response_inbox_topics = {
+            peer_id: f"/{peer_ns}/{NEGOTIATION_RESPONSE_TOPIC}"
+            for peer_id, peer_ns in zip(self.peer_ids, self.peer_namespaces)
+        }
+
+        # PeerState publisher/subscribers
+        self.peer_state_pub = self.create_publisher(
+            PeerState,
+            self.own_peer_state_topic,
+            PEER_STATE_QOS,
+        )
+
+        # Store subscription objects so they are not garbage-collected. We only subscribe to peer state topics for now; negotiation inboxes will be added later.
+        self.peer_state_subs = []
+
+        for peer_id, peer_topic in self.peer_state_topics.items():
+            sub = self.create_subscription(
+                PeerState,
+                peer_topic,
+                lambda msg, pid=peer_id: self._peer_state_received(msg, pid),
+                PEER_STATE_QOS,
+            )
+            self.peer_state_subs.append(sub)
 
         # Timers (stubs only for now)
         peer_state_period = 1.0 / max(self.peer_state_rate_hz, 1e-6)
         negotiation_period = 1.0 / max(self.negotiation_rate_hz, 1e-6)
 
         self.peer_state_timer = self.create_timer(
-            peer_state_period, self._publish_peer_state
+            peer_state_period, 
+            self._publish_peer_state,
         )
         self.negotiation_timer = self.create_timer(
-            negotiation_period, self._decide_negotiation
+            negotiation_period, 
+            self._decide_negotiation,
         )
 
+        self._logged_negotiation_stub = False  # to avoid spamming logs with the stub message
 
-    # Timer callbacks (stubs)
+        # Startup logs
+        self.get_logger().info(
+            f"PeerCoordinatorNode starting | robot_id={self.robot_id} "
+            f"namespace={self.robot_namespace} "
+            f"peer_namespaces={self.peer_namespaces} "
+            f"protocol_version={PROTOCOL_VERSION}"
+        )
+        self.get_logger().info(
+            f"Publishing own PeerState on {self.own_peer_state_topic}"
+        )
+        self.get_logger().info(
+            f"Subscribed peer PeerState topics: {self.peer_state_topics}"
+        )
+        self.get_logger().info(
+            "Own negotiation inbox topics planned | "
+            f"request={self.own_request_inbox_topic} "
+            f"response={self.own_response_inbox_topic}"
+        )
+        self.get_logger().info(
+            f"Peer request inbox publishers planned: {self.peer_request_inbox_topics}"
+        )
+        self.get_logger().info(
+            f"Peer response inbox publishers planned: {self.peer_response_inbox_topics}"
+        )
+    
+    # Timer callbacks
+    def _make_header(self) -> Header:
+        header = Header()
+        header.stamp = self.get_clock().now().to_msg()
+        header.frame_id = "map"
+        return header
+
     def _publish_peer_state(self) -> None:
-        """Broadcast this robot's current state. Stub"""
-        # Construct an empty PeerState just to verify the message import works.
+        """Broadcast this robot's current PeerState heartbeat."""
         msg = PeerState()
+        msg.header = self._make_header()
         msg.robot_id = self.robot_id
+
+        # Pose is left as the default zero pose for this milestone
+        # It will be filled from /odom/nav in a later step
+        msg.claimed_frontiers = []
+
+        # These become meaningful once negotiation is implemented
+        # For now, use zero/default timesteps
+        msg.last_interaction_attempt_stamp.sec = 0
+        msg.last_interaction_attempt_stamp.nanosec = 0
+        msg.last_successful_interaction_stamp.sec = 0
+        msg.last_successful_interaction_stamp.nanosec = 0
+
         msg.protocol_version = PROTOCOL_VERSION
-        # No publisher wired yet; just log on first tick to confirm liveness
+
+        self.peer_state_pub.publish(msg)
+
+        # self.get_logger().debug(
+        #     f"_publish_peer_state: would publish {msg.robot_id} "
+        #     f"v{msg.protocol_version}"
+        # )
+
+    def _peer_state_received(self, msg: PeerState, peer_id: str) -> None:
+        """Store an incoming PeerState heartbeat from a configured peer."""
+        if peer_id not in self.peer_info:
+            self.get_logger().warn(
+                f"Received PeerState from unknown peer_id={peer_id}; ignoring"
+            )
+            return
+
+        if msg.robot_id != peer_id:
+            self.get_logger().warn(
+                f"Ignoring PeerState for expected peer_id={peer_id}: "
+                f"message robot_id={msg.robot_id}"
+            )
+            return
+
+        if msg.protocol_version != PROTOCOL_VERSION:
+            self.get_logger().warn(
+                f"Protocol version mismatch from peer_id={peer_id}: "
+                f"theirs={msg.protocol_version}, ours={PROTOCOL_VERSION}. Ignoring"
+            )
+            return
+
+        info = self.peer_info[peer_id]
+        info.last_state = msg
+        info.last_received_ns = self.get_clock().now().nanoseconds
+
         self.get_logger().debug(
-            f"_publish_peer_state: would publish {msg.robot_id} "
-            f"v{msg.protocol_version}"
+            f"Received PeerState from {peer_id} at ns={info.last_received_ns}"
         )
+
+    def _peer_is_fresh(self, peer_id: str) -> bool:
+        """Check if the last received PeerState from a peer is still fresh (i.e. within timeout)
+
+        Return True if peer has published a recent heartbeat
+        """
+        info = self.peer_info.get(peer_id)
+
+        if info is None or info.last_state is None:
+            return False
+        
+        age_sec = (
+            self.get_clock().now().nanoseconds - info.last_received_ns
+        ) / 1e9
+        return age_sec <= self.peer_timeout_sec
 
     def _decide_negotiation(self) -> None:
         """Decide whether to initiate negotiation with a peer. Stub"""
-        self.get_logger().debug("_decide_negotiation stub")
+        fresh_peers = [
+            peer_id for peer_id in self.peer_ids if self._peer_is_fresh(peer_id)
+        ]
+
+        if not self._logged_negotiation_stub:
+            self.get_logger().info(
+                "_decide_negotiation stub reached; "
+                f"fresh_peers={fresh_peers}; "
+                "negotiation logic not yet implemented"
+            )
+            self._logged_negotiation_stub = True
+        
+        self.get_logger().debug(f"Fresh peers: {fresh_peers}")
 
 def main(args=None) -> None:
     rclpy.init(args=args)
@@ -125,8 +303,4 @@ def main(args=None) -> None:
 
 if __name__ == "__main__":
     main()
-
-
-
-
 
