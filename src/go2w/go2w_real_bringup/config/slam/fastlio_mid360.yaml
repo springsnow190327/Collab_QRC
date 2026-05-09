@@ -8,21 +8,20 @@
 /**:
     ros__parameters:
         feature_extract_enable: false
-        # 2026-05-01: dropped 3 → 1 so every Mid-360 return is processed.
-        # Mid-360 is already sparse on thin obstacles (tripod legs ~5 cm
-        # wide get 1–2 returns per sweep at 1 m); skipping 2 of every 3
-        # returns made them invisible to octomap once filter_speckles was
-        # on. Now that speckles is off and we keep all returns, thin
-        # posts persist in /cloud_registered_body across scans and reach
-        # the octree.
+        # 2026-05-09: brief experiment with upstream HKU MaRS Lab defaults
+        # (point_filter_num=3, filter_size_*=0.5). Replay test on the
+        # outdoor bag livox_dataset_20260508_170822_outdoor_run1 showed
+        # 23074 m end-displacement vs 146 m with the values below. The
+        # upstream defaults are tuned for INDOOR / dense scenes; outdoor
+        # Mid-360 returns are sparse (~24 k pts/scan) and aggressive
+        # filtering leaves too few ICP correspondences → degenerate
+        # registration → IMU prediction accepted → unbounded drift.
+        # Keep filter_size at 0.10 and point_filter_num=1 to preserve
+        # geometric constraint density. CPU cost (p50 ~76ms on 10Hz cycle)
+        # is the real-time price; address with chrt + core pinning rather
+        # than reducing ICP info.
         point_filter_num: 1
         max_iteration: 3
-        # Voxel downsample for body-frame scan keyframe (also affects the
-        # /cloud_registered_body cloud that octomap consumes). The 0.5 m
-        # vendor default voxelises a 25-30 cm obstacle to a single point per
-        # scan → octomap's filter_speckles then prunes it. 0.10 m keeps
-        # short obstacles visible while still decimating enough to keep
-        # Fast-LIO real-time at 10 Hz.
         filter_size_surf: 0.10
         filter_size_map: 0.10
         cube_side_length: 1000.0
@@ -38,13 +37,9 @@
         preprocess:
             lidar_type: 1           # Livox series
             scan_line: 4
-            # Min slant-range filter. Mid-360 spec min range is 0.10 m; the
-            # vendor default 0.5 m rejects every return inside a 0.5 m ball
-            # around the sensor. With Mid-360 at ~0.57 m on Go2W, a 25-30 cm
-            # obstacle within ~42 cm horizontally has its top inside that
-            # ball and is fully blind-filtered before Fast-LIO sees it.
-            # 0.20 m reopens the near-field band (clearing the robot's own
-            # body which is masked by the body filter / extrinsic anyway).
+            # Min slant-range filter. Same outdoor-rationale as the voxel
+            # filter revert above — 0.20 keeps near-field band that helps
+            # ICP find correspondences in sparse outdoor scenes.
             blind: 0.20
             timestamp_unit: 3
             scan_rate: 10
@@ -56,6 +51,11 @@
             b_gyr_cov: 0.0001
             fov_degree: 360.0
             det_range: 100.0
+            # Online IMU↔LiDAR extrinsic estimation. Upstream README §3 C
+            # recommends false when the extrinsic is known, but our
+            # extrinsic_T is the FACTORY value (not measured per unit), so
+            # online refinement actually helps absorb mount-specific offset.
+            # Net cost: 6 extra EKF states per scan. Acceptable.
             extrinsic_est_en: true
             extrinsic_T: [ -0.011, -0.02329, 0.04412 ]
             extrinsic_R: [ 1.0, 0.0, 0.0,
