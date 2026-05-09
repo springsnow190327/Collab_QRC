@@ -131,6 +131,17 @@ class ExplorationMetricsLogger(Node):
         # Stop-trigger params (see module docstring for semantics).
         self.declare_parameter("event_log_path", "")
         self.declare_parameter("consec_no_reachable_threshold", 3)
+        # Coverage-stagnation stop trigger.
+        # ``coverage_stagnant_threshold_m2`` is the new (correct) form: stop if
+        # KNOWN-AREA (m²) growth over the window is less than this threshold.
+        # The legacy ``coverage_stagnant_threshold_pct`` field tracked
+        # (free+occ)/total and was buggy — when the costmap autosizes (real-
+        # robot maps often double in extent during the first minute), the
+        # percentage drops *even while the robot is actively exploring*,
+        # falsely tripping the stop. Kept here for backward compatibility but
+        # only consulted if the m² parameter is left at its default sentinel
+        # value (-1).
+        self.declare_parameter("coverage_stagnant_threshold_m2", 1.0)
         self.declare_parameter("coverage_stagnant_threshold_pct", 0.5)
         self.declare_parameter("coverage_stagnant_window_sec", 30.0)
         self.declare_parameter("summary_interval_sec", 30.0)
@@ -143,6 +154,8 @@ class ExplorationMetricsLogger(Node):
 
         self._consec_threshold = int(
             self.get_parameter("consec_no_reachable_threshold").value)
+        self._cov_thr_m2 = float(
+            self.get_parameter("coverage_stagnant_threshold_m2").value)
         self._cov_thr_pct = float(
             self.get_parameter("coverage_stagnant_threshold_pct").value)
         self._cov_window_sec = float(
@@ -523,10 +536,15 @@ class ExplorationMetricsLogger(Node):
             if rs.stop_triggered:
                 continue
 
-            # Update coverage ringbuffer.
+            # Update coverage ringbuffer with KNOWN AREA in m² (NOT percentage).
+            # Percentage is a fraction of map_total which itself grows as the
+            # costmap autosizes — that made the previous formulation falsely
+            # report stagnation any time the map grew faster than exploration
+            # added cells. Absolute area is monotonic and only stagnates when
+            # the robot really stops finding new ground.
             if rs.map_total > 0:
-                known_pct = 100.0 * (rs.map_free + rs.map_occ) / rs.map_total
-                rs.coverage_window.append((now, known_pct))
+                known_area_m2 = (rs.map_free + rs.map_occ) * (rs.map_resolution ** 2)
+                rs.coverage_window.append((now, known_area_m2))
                 cutoff = now - self._cov_window_sec
                 while rs.coverage_window and rs.coverage_window[0][0] < cutoff:
                     rs.coverage_window.popleft()
@@ -538,14 +556,15 @@ class ExplorationMetricsLogger(Node):
 
             # Safety net: coverage stagnation. Need full window of data.
             if len(rs.coverage_window) >= 2:
-                t_first, pct_first = rs.coverage_window[0]
-                t_last, pct_last = rs.coverage_window[-1]
+                t_first, area_first = rs.coverage_window[0]
+                t_last, area_last = rs.coverage_window[-1]
                 if (t_last - t_first) >= self._cov_window_sec * 0.95:
-                    delta_pct = pct_last - pct_first
-                    if delta_pct < self._cov_thr_pct:
+                    delta_m2 = area_last - area_first
+                    if delta_m2 < self._cov_thr_m2:
                         self._trigger_stop(
                             ns,
-                            f"coverage_stagnant (Δ={delta_pct:.2f}% over {t_last - t_first:.0f}s)")
+                            f"coverage_stagnant (Δ={delta_m2:+.2f} m² over "
+                            f"{t_last - t_first:.0f}s, threshold={self._cov_thr_m2:.2f} m²)")
                         continue
 
     def _trigger_stop(self, ns: str, reason: str) -> None:
