@@ -78,6 +78,8 @@ CTestTestfile.cmake
 *.tmp
 core
 core.*
+# MuJoCo runtime log (regenerated each run)
+MUJOCO_LOG.TXT
 
 # =============================================
 # SLAM output artifacts
