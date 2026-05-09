@@ -23,7 +23,7 @@ fi
 # spawned by launch files should be added here too — a surviving child
 # leaves stale publishers on /robot/map, state_estimation_at_scan, etc.
 _PREFLIGHT_PATTERNS=(
-  "ros2 launch .*(nav_test|door_demo|vlm_demo|real_autonomy)"
+  "ros2 launch .*(nav_test|vlm_demo|real_autonomy)"
   # Sim core
   "mujoco_ros2_control"
   "mujoco_sensor_bridge"
