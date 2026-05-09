@@ -102,7 +102,6 @@ def _launch_setup(ctx):
             "two_way_drive":    _get(ctx, "two_way_drive"),
             "session_duration_sec": _get(ctx, "session_duration_sec"),
             "session_output_path":  _get(ctx, "session_output_path"),
-            "enable_wall_checker":  _get(ctx, "enable_wall_checker"),
             "far_max_speed":    _get(ctx, "far_max_speed"),
             "spawn_x":  _get(ctx, "spawn_x"),
             "spawn_y":  _get(ctx, "spawn_y"),
@@ -215,7 +214,6 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("spawn_yaw", default_value="0.0"),
         DeclareLaunchArgument("session_duration_sec", default_value="0"),
         DeclareLaunchArgument("session_output_path",  default_value=""),
-        DeclareLaunchArgument("enable_wall_checker",  default_value="false"),
         DeclareLaunchArgument("far_max_speed",        default_value=""),
         DeclareLaunchArgument("tare_scenario",        default_value="indoor",
                               description="TARE config profile — indoor / garage / "

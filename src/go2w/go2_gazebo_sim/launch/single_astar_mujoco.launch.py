@@ -545,7 +545,9 @@ def _launch_setup(context):
     session_duration_sec = float(_get(context, "session_duration_sec"))
     session_output_path = _get(context, "session_output_path").strip()
     scene_area_m2 = float(_get(context, "scene_area_m2"))
-    enable_wall_checker = _as_bool(_get(context, "enable_wall_checker"))
+    # enable_wall_checker / far_wall_checker.py removed 2026-05-09 (sim-only
+    # debug helper that was gated default-off; the spawn block here had a
+    # broken hardcoded ~/Research/... path anyway).
 
     if robot not in ("go2w", "go2"):
         raise ValueError(f"robot must be 'go2w' or 'go2', got {robot!r}")
@@ -721,34 +723,7 @@ def _launch_setup(context):
             )],
         ))
 
-    # ── Wall / tip-over fail checker (optional — terminal) ──
-    # Subscribes to /mujoco/contacts and /{ns}/odom/ground_truth; exits non-
-    # zero on first robot-vs-wall contact or tip-over (|roll|, |pitch| > 45°).
-    # OnProcessExit then shuts the launch down so the failure is terminal.
-    # Off by default during benchmarks — we want the full-run contact count.
-    if enable_wall_checker:
-        wall_checker_script = os.path.expanduser(
-            "~/Research/Collab_QRC/scripts/runtime/far_wall_checker.py"
-        )
-        wall_checker_proc = ExecuteProcess(
-            cmd=["python3", "-u", wall_checker_script],
-            name="far_wall_checker",
-            output="screen",
-        )
-        actions.append(TimerAction(
-            period=nav_delay + 3.0,
-            actions=[wall_checker_proc],
-        ))
-        actions.append(RegisterEventHandler(
-            OnProcessExit(
-                target_action=wall_checker_proc,
-                on_exit=[
-                    LogInfo(msg="far_wall_checker exited — shutting down "
-                                "launch (robot hit a wall or tipped)"),
-                    Shutdown(reason="far_wall_checker detected failure"),
-                ],
-            )
-        ))
+    # (Wall / tip-over fail checker removed 2026-05-09 — see top of file.)
 
     # ── Bounded session reporter (JSON + contact counter) ──
     # Same script the FAR benchmark uses. Counts wall contacts from
@@ -864,11 +839,6 @@ def generate_launch_description():
             "scene_area_m2", default_value="96.0",
             description="Ground-truth observable scene area in m² (for "
                         "coverage ratio). demo1=96, demo3≈384.",
-        ),
-        DeclareLaunchArgument(
-            "enable_wall_checker", default_value="false",
-            description="Terminal fail-early wall/tip-over checker. Off "
-                        "for bench runs; set true during development.",
         ),
         OpaqueFunction(function=_launch_setup),
     ])

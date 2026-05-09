@@ -5,8 +5,6 @@
 #   nav_backend:=nav2_hybrid_astar
 #   explore:=true
 #   gui:=false  rviz:=false
-#   enable_wall_checker:=false      (we want to measure contact counts,
-#                                    not abort on first hit)
 #   session_duration_sec:=<DUR>     (graceful launch shutdown on timeout)
 #
 # Each trial writes a JSON report via session_reporter.py. At the end we
@@ -109,7 +107,6 @@ for ((i=1; i<=NUM_TRIALS; i++)); do
       gui:=false \
       rviz:=false \
       cleanup_stale:=false \
-      enable_wall_checker:=false \
       session_duration_sec:="${DURATION_SEC}" \
       session_output_path:="${trial_json}" \
       scene_area_m2:="${SCENE_AREA_M2}" \

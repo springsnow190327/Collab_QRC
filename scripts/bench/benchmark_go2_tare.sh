@@ -4,7 +4,6 @@
 #
 # Runs N sequential trials of nav_test_go2_tare_real.launch.py with:
 #   gui:=false  rviz:=false
-#   enable_wall_checker:=false    (we measure contacts, not abort on first)
 #   session_duration_sec:=<DUR>   (session_reporter drives graceful shutdown)
 #   session_output_path:=<json>   (per-trial JSON report)
 #   mujoco_model_path:=demo3_go2_real.xml  scene_area_m2:=384
@@ -96,7 +95,6 @@ cleanup_procs() {
   pkill -f 'robust_controller_spawner' 2>/dev/null || true
   pkill -f 'session_reporter.py' 2>/dev/null || true
   pkill -f 'far_debug_monitor' 2>/dev/null || true
-  pkill -f 'far_wall_checker' 2>/dev/null || true
   pkill -f '/home/hz/Collab_QRC/install/' 2>/dev/null || true
   pkill -f '/opt/ros/humble/lib/' 2>/dev/null || true
   sleep 1
@@ -134,7 +132,6 @@ for i in $(seq 1 "${NUM_TRIALS}"); do
     ros2 launch go2_gazebo_sim nav_test_go2_tare_real.launch.py \
       gui:=false \
       rviz:=false \
-      enable_wall_checker:=false \
       session_duration_sec:="${DURATION_SEC}" \
       session_output_path:="${trial_json}" \
       scene_area_m2:="${SCENE_AREA_M2}" \

@@ -5,8 +5,6 @@
 #   nav_backend:=far
 #   explore:=true
 #   gui:=false  rviz:=false
-#   enable_wall_checker:=false      (we want to measure contact counts,
-#                                    not abort on first hit)
 #   session_duration_sec:=<DUR>     (graceful launch shutdown on timeout)
 #
 # Each trial writes a JSON report via session_reporter.py. At the end we
@@ -85,7 +83,6 @@ cleanup_procs() {
   pkill -f 'fastlio_mapping' 2>/dev/null || true
   pkill -f 'sc_pgo_node' 2>/dev/null || true
   pkill -f 'session_reporter.py' 2>/dev/null || true
-  pkill -f 'far_wall_checker.py' 2>/dev/null || true
   pkill -f 'far_debug_monitor' 2>/dev/null || true
   pkill -f '/home/hz/Collab_QRC/install/' 2>/dev/null || true
   pkill -f '/opt/ros/humble/lib/' 2>/dev/null || true
@@ -128,7 +125,6 @@ for i in $(seq 1 "${NUM_TRIALS}"); do
       explore:=true \
       gui:=false \
       rviz:=false \
-      enable_wall_checker:=false \
       session_duration_sec:="${DURATION_SEC}" \
       session_output_path:="${trial_json}" \
       scene_area_m2:="${SCENE_AREA_M2}" \
