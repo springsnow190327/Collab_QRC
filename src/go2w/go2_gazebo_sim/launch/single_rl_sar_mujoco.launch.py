@@ -252,23 +252,9 @@ def launch_setup(context, *args, **kwargs):
                 go2w_config_pkg=go2w_config_pkg,
                 nav_backend="nav2_hybrid_astar",
             ))
-            # RViz '2D Goal Pose' (PoseStamped on /goal_pose) → planner's
-            # PointStamped on /robot/way_point_coord. Without this no goal
-            # ever reaches nav and /robot/cmd_vel stays at zero.
-            actions.append(TimerAction(
-                period=nav_delay,
-                actions=[Node(
-                    package="go2w_nav",
-                    executable="rviz_goal_relay.py",
-                    namespace=NS,
-                    name="rviz_goal_relay",
-                    parameters=[{
-                        "use_sim_time": use_sim_time,
-                        "output_topic": "way_point_coord",
-                    }],
-                    output="screen",
-                )],
-            ))
+            # (rviz_goal_relay removed 2026-05-09. RL+nav2_hybrid_astar
+            #  scenario: send goals via Nav2 NavigateToPose action or
+            #  `ros2 topic pub /robot/way_point_coord` instead.)
 
     if rviz:
         actions.append(TimerAction(

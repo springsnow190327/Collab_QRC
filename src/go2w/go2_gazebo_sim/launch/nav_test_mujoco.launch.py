@@ -77,17 +77,15 @@ def _launch_setup(context):
     rviz = _as_bool(_get(context, "rviz"))
     explore = _as_bool(_get(context, "explore"))
     mujoco_model_path = _get(context, "mujoco_model_path").strip()
-    # Bounded session + wall-checker toggles (for headless benchmark runs).
+    # Bounded session toggles (for headless benchmark runs).
     session_duration_sec = float(_get(context, "session_duration_sec"))
     session_output_path = _get(context, "session_output_path").strip()
-    enable_wall_checker = _as_bool(_get(context, "enable_wall_checker"))
+    # enable_wall_checker / enable_velocity_supervisor: removed 2026-05-09 with
+    # scripts/runtime/{far_wall_checker,velocity_safety_supervisor}.py — they
+    # were sim-only debug helpers gated default-off.
     # Ground-truth observable area for coverage_ratio_of_scene. 96 m² is
     # the 12 m × 8 m inner room of demo1.xml.
     scene_area_m2 = float(_get(context, "scene_area_m2"))
-    # Velocity-aware safety supervisor (LiDAR-scan based velocity clamp).
-    # When true, inserts scripts/velocity_safety_supervisor.py between
-    # pathFollower and twist_bridge on the cmd_vel path. Real-robot safe.
-    enable_velocity_supervisor = _as_bool(_get(context, "enable_velocity_supervisor"))
 
     go2_gazebo_pkg = get_package_share_directory("go2_gazebo_sim")
     vlm_pkg = get_package_share_directory("vlm_explorer")
@@ -363,22 +361,11 @@ def _launch_setup(context):
     else:  # nav_backend == "far"
         far_scan_topic = f"/{robot_ns}/registered_scan_map"
         far_odom_topic = f"/{robot_ns}/odom/nav"
-        # Iter 6 (2026-04-15): 0.2 m/s is the proven-safe default at the
-        # position-based checks. A 0.4 m/s ceiling only makes sense when
-        # the velocity-aware supervisor is enabled (enable_velocity_supervisor
-        # launch arg), which caps cmd_vel to v_cap = sqrt(2·a·(d_nearest-
-        # d_safe)) based on live scan clearance. Without the supervisor,
-        # stay at 0.2 — position checks + twoWayDrive + checkRotObstacle
-        # give 7/10 PASS at 120s with two failure modes (corner-wedge +
-        # yaw-drift stall).
-        far_max_speed = 0.4 if enable_velocity_supervisor else 0.2
-
-        # pathFollower output topic: canonical cmd_vel_stamped when no
-        # supervisor, or a "_raw" sibling that the supervisor consumes.
-        if enable_velocity_supervisor:
-            pf_cmd_out_topic = f"/{robot_ns}/cmd_vel_stamped_raw"
-        else:
-            pf_cmd_out_topic = f"/{robot_ns}/cmd_vel_stamped"
+        # 0.2 m/s is the proven-safe default (twoWayDrive + checkRotObstacle
+        # → 7/10 PASS @ 120s). 2026-05-09: dropped enable_velocity_supervisor
+        # gate (helper script removed); always use canonical cmd_vel topic.
+        far_max_speed = 0.2
+        pf_cmd_out_topic = f"/{robot_ns}/cmd_vel_stamped"
         local_planner_pkg = get_package_share_directory("local_planner")
 
         far_nodes = [
@@ -651,51 +638,9 @@ def _launch_setup(context):
 
         actions.append(TimerAction(period=nav_delay, actions=far_nodes))
 
-        # ── 4b. Velocity-aware safety supervisor (optional) ──
-        # Caps commanded velocity by live scan-based nearest-obstacle
-        # clearance. Only wired into the FAR path because pathFollower is
-        # the cmd_vel source there; astar branch would need a separate
-        # hookup on astar_nav_node's output.
-        if enable_velocity_supervisor:
-            supervisor_script = os.path.join(_ws_root, "scripts/runtime/velocity_safety_supervisor.py")
-            supervisor_proc = ExecuteProcess(
-                cmd=[
-                    "python3", "-u", supervisor_script,
-                    "--ros-args",
-                    "-p", f"scan_topic:=/{robot_ns}/scan_3d",
-                    "-p", f"cmd_in_topic:=/{robot_ns}/cmd_vel_stamped_raw",
-                    "-p", f"cmd_out_topic:=/{robot_ns}/cmd_vel_stamped",
-                    "-p", f"max_linear_speed_m_s:={far_max_speed}",
-                    "-p", "max_decel_m_s2:=2.0",
-                    "-p", "safety_margin_m:=0.10",
-                    "-p", "forward_arc_half_rad:=1.047",
-                    "-p", "publish_rate_hz:=50.0",
-                ],
-                name="velocity_safety_supervisor",
-                output="screen",
-            )
-            actions.append(
-                TimerAction(period=nav_delay, actions=[supervisor_proc])
-            )
+        # (4b. velocity_safety_supervisor removed 2026-05-09 — see top of file.)
 
-    # ── 5. RViz goal relay (always on — click "2D Goal Pose" to send manual goals) ──
-    actions.append(
-        TimerAction(
-            period=nav_delay,
-            actions=[
-                Node(
-                    package="go2w_nav",
-                    executable="rviz_goal_relay.py",
-                    namespace=robot_ns,
-                    name="rviz_goal_relay",
-                    parameters=[
-                        {"output_topic": f"/{robot_ns}/way_point_coord"},
-                    ],
-                    output="screen",
-                ),
-            ],
-        )
-    )
+    # (5. rviz_goal_relay removed 2026-05-09 — see fastlio launch sibling.)
 
     # ── 5b. FAR debug monitor ──
     # Integrated into launch — prints 1-line/sec summary of FAR I/O
@@ -715,40 +660,7 @@ def _launch_setup(context):
         )
     )
 
-    # ── 6. Wall / tip-over fail checker (optional — terminal) ──
-    # Runs scripts/far_wall_checker.py as a launch process. On robot-body
-    # contact with wall_/divider_ geoms OR tip-over (|roll|, |pitch| > 45°),
-    # the checker prints a FAIL banner and exits 1. The OnProcessExit event
-    # handler then shuts down the entire launch so the failure is terminal.
-    # Disabled via `enable_wall_checker:=false` for benchmark runs that
-    # want to measure contact count without the launch dying on first hit.
-    if enable_wall_checker:
-        wall_checker_script = os.path.join(_ws_root, "scripts/runtime/far_wall_checker.py")
-        wall_checker_proc = ExecuteProcess(
-            cmd=["python3", "-u", wall_checker_script],
-            name="far_wall_checker",
-            output="screen",
-        )
-        actions.append(
-            TimerAction(
-                period=nav_delay + 3.0,  # wait until standup + nav are done
-                actions=[wall_checker_proc],
-            )
-        )
-        actions.append(
-            RegisterEventHandler(
-                OnProcessExit(
-                    target_action=wall_checker_proc,
-                    on_exit=[
-                        LogInfo(
-                            msg="far_wall_checker exited — shutting down launch "
-                            "(robot hit a wall or tipped over)"
-                        ),
-                        Shutdown(reason="far_wall_checker detected failure"),
-                    ],
-                )
-            )
-        )
+    # (6. far_wall_checker removed 2026-05-09 — see top of file.)
 
     # ── 6b. Bounded session reporter (optional — graceful exit on timeout) ──
     # Runs scripts/session_reporter.py for `session_duration_sec` seconds.
@@ -841,15 +753,5 @@ def generate_launch_description():
                               description="Sim ground-truth observable area (m²) "
                               "used as denominator for coverage_ratio_of_scene. "
                               "Default 96 for vlm_exploration_scene_no_artifacts."),
-        DeclareLaunchArgument("enable_wall_checker", default_value="false",
-                              description="Test mode: crash-stop on first wall contact. "
-                              "Default false (benchmark mode — session reporter "
-                              "captures all contacts without killing the launch). "
-                              "Use enable_wall_checker:=true when developing to "
-                              "get instant feedback on wall hits."),
-        DeclareLaunchArgument("enable_velocity_supervisor", default_value="false",
-                              description="Enable LiDAR-scan velocity-aware safety "
-                              "supervisor between pathFollower and twist_bridge; "
-                              "allows far_max_speed=0.4 to be safe"),
         OpaqueFunction(function=_launch_setup),
     ])

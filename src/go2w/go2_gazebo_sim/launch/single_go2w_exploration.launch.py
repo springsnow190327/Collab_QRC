@@ -506,24 +506,8 @@ def _launch_setup(context):
             )
         )
 
-    # ── 5. RViz goal relay ───────────────────────────────────────────
-    actions.append(
-        TimerAction(
-            period=nav_delay,
-            actions=[
-                Node(
-                    package="go2w_nav",
-                    executable="rviz_goal_relay.py",
-                    namespace=robot_ns,
-                    name="rviz_goal_relay",
-                    parameters=[
-                        {"output_topic": f"/{robot_ns}/way_point_coord"},
-                    ],
-                    output="screen",
-                ),
-            ],
-        )
-    )
+    # (5. rviz_goal_relay removed 2026-05-09 — Nav2 path uses /goal_pose
+    #  → bt_navigator NavigateToPose action directly.)
 
     # ── 6. RViz2 ─────────────────────────────────────────────────────
     if rviz:

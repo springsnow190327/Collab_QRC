@@ -115,7 +115,6 @@ endif()
 install(PROGRAMS
   scripts/default_nav.py
   scripts/collision_monitor.py
-  scripts/rviz_goal_relay.py
   scripts/far_status_adapter.py
   scripts/path_safety_filter.py
   scripts/cmd_vel_safety_shield.py
