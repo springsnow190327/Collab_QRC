@@ -9,6 +9,12 @@
     <xacro:include filename="$(find go2_description)/xacro/leg.xacro"/>
     <!-- <xacro:include filename="$(find go2_description)/xacro/stairs.xacro"/> -->
     <xacro:include filename="$(find go2_description)/xacro/gazebo.xacro"/>
+    <!-- Livox Mid-360 mount (15° forward pitch, factory IMU offset).
+         Documents the mechanical mount in URDF; the values are also
+         mirrored in slam.launch.py's body→base_link static (for the
+         active SLAM TF chain) and fastlio_mid360.yaml's extrinsic_T
+         (for Fast-LIO EKF). Keep all three in sync. -->
+    <xacro:include filename="$(find go2_description)/xacro/livox_mid360.xacro"/>
     <!-- <xacro:include filename="$(find go2_gazebo)/launch/stairs.urdf.xacro"/> -->
 
     <!-- <xacro:stairs stairs="15" xpos="0" ypos="0" zpos="0" /> -->
