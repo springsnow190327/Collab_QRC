@@ -265,8 +265,11 @@ if [[ "$HOLONOMIC_NAV" == "true" ]]; then
     echo "ERROR: holonomic profile '$NAV2_PROFILE' requires nav=nav2_mppi." >&2
     exit 1
   fi
-  if [[ "$ROBOT" != "go2w" ]]; then
-    echo "ERROR: holonomic profile '$NAV2_PROFILE' is currently only wired for robot=go2w." >&2
+  # SE2 holonomic is wired for both go2w (wheels) and go2 (walking) as of
+  # 2026-05-05. omni_2d is still Go2W-only (no Go2 omni overlay file).
+  if [[ "$NAV2_PROFILE" == "omni_2d" && "$ROBOT" != "go2w" ]]; then
+    echo "ERROR: holonomic profile 'omni_2d' is only wired for robot=go2w." >&2
+    echo "       Use holonomic_profile=se2_holonomic for robot=go2." >&2
     exit 1
   fi
 fi

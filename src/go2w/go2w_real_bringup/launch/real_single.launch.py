@@ -123,8 +123,12 @@ def _launch_setup(context):
         raise ValueError(f"Unsupported robot_model '{robot_model}' (expected go2w or go2)")
     if holonomic_nav_enabled and nav_backend != "nav2_mppi":
         raise ValueError("holonomic_nav_profile requires nav_backend=nav2_mppi")
-    if holonomic_nav_enabled and robot_model != "go2w":
-        raise ValueError("holonomic_nav_profile is currently supported only for robot_model=go2w")
+    # SE2 holonomic is wired for both go2 and go2w as of 2026-05-05; omni_2d
+    # remains Go2W-only (no Go2 omni overlay file).
+    if holonomic_nav_enabled and holonomic_nav_profile == "omni_2d" and robot_model != "go2w":
+        raise ValueError(
+            "holonomic_nav_profile=omni_2d is currently supported only for robot_model=go2w "
+            "(no nav2_go2_real_omni_overlay.yaml). Use holonomic_nav_profile=se2_holonomic for go2.")
 
     # Consistency: carto_2d mapper needs Cartographer in 2D mode.
     # Other combos are fine (carto_binary + 3d projects 3D submaps to 2D grid).
@@ -308,18 +312,26 @@ def _launch_setup(context):
                     "nav2_go2_real.yaml" if robot_model == "go2"
                     else "nav2_go2w_real.yaml"
                 ),
-                # Optional second-layer override for Go2W Nav2 profile variants.
+                # Optional second-layer override for Nav2 profile variants.
                 # Keep the base diff-drive/Reeds-Shepp yaml untouched and apply
                 # one of the profile overlays at runtime:
-                #   - omni_2d: SmacPlanner2D + MPPI Omni
-                #   - se2_holonomic: SmacPlannerLattice + forward/pivot MPPI
-                #                    (no lateral strafe)
+                #   - omni_2d: SmacPlanner2D + MPPI Omni  (Go2W only)
+                #   - se2_holonomic: SmacPlannerLattice + forward/pivot MPPI,
+                #                    no lateral strafe  (Go2W + Go2)
+                # Per-robot overlay lookup — Go2 SE2 overlay omits speed
+                # overrides so nav2_go2_real.yaml's walking-tuned envelope
+                # (vx_max=0.30, wz_max=0.8) carries through.
                 "nav2_yaml_extra_override": (
                     {
-                        "omni_2d": "nav2_go2w_real_omni_overlay.yaml",
-                        "se2_holonomic": "nav2_go2w_real_se2_holonomic_overlay.yaml",
-                    }.get(holonomic_nav_profile, "")
-                    if (robot_model == "go2w" and holonomic_nav_enabled)
+                        "go2w": {
+                            "omni_2d":       "nav2_go2w_real_omni_overlay.yaml",
+                            "se2_holonomic": "nav2_go2w_real_se2_holonomic_overlay.yaml",
+                        },
+                        "go2": {
+                            "se2_holonomic": "nav2_go2_real_se2_holonomic_overlay.yaml",
+                        },
+                    }.get(robot_model, {}).get(holonomic_nav_profile, "")
+                    if holonomic_nav_enabled
                     else ""
                 ),
             }.items(),
