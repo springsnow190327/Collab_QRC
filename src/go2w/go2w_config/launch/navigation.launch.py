@@ -56,15 +56,24 @@ def _setup(context):
     use_sim_time = _as_bool(_get(context, "use_sim_time"))
     map_frame = _get(context, "map_frame")
     remap_tf = _as_bool(_get(context, "remap_tf"))
-    nav_backend = _get(context, "nav_backend").strip().lower() or "default"
-    # Back-compat alias: old invocations still pass "reactive" — accept it
-    # as synonymous with the Python default_nav. "rrt_star" and "far_rrt_star"
-    # are GONE (reactive_nav_node deleted); we silently upgrade them to
-    # "astar" so legacy launches keep working.
-    if nav_backend == "reactive":
-        nav_backend = "default"
-    elif nav_backend in ("rrt_star", "far_rrt_star"):
-        nav_backend = "astar"
+    nav_backend = _get(context, "nav_backend").strip().lower() or "nav2_mppi"
+    # 2026-05-09: removed default / astar / hybrid_astar / nav2_hybrid_astar
+    # backends — superseded by nav2_mppi production stack since 2026-04-29.
+    # Legacy aliases silently upgrade so older invocations still work.
+    legacy_alias = {
+        "reactive": "nav2_mppi",
+        "rrt_star": "nav2_mppi",
+        "far_rrt_star": "nav2_mppi",
+        "default": "nav2_mppi",
+        "astar": "nav2_mppi",
+        "hybrid_astar": "nav2_mppi",
+        "nav2_hybrid_astar": "nav2_mppi",
+    }
+    nav_backend = legacy_alias.get(nav_backend, nav_backend)
+    if nav_backend not in {"nav2_mppi", "far"}:
+        raise ValueError(
+            f"nav_backend must be 'nav2_mppi' | 'far'; got '{nav_backend}'"
+        )
 
     scan_topic = _get(context, "scan_topic") or f"/{robot_ns}/scan_3d"
     odom_topic = _get(context, "odom_topic") or f"/{robot_ns}/odom/nav"
@@ -427,65 +436,6 @@ def _setup(context):
         # topic so CFPA2 can fast-blacklist unreachable goals regardless
         # of which planner is active.
         actions.append(_far_status_adapter_node(robot_ns, use_sim_time, odom_topic, waypoint_suffix))
-    else:
-        # Shared remappings for astar_nav_node and default_nav.py
-        nav_remappings = [
-            ("/way_point", f"/{robot_ns}{waypoint_suffix}"),
-            ("/odom/ground_truth", odom_topic),
-            ("/scan", scan_topic),
-            ("/cmd_vel_stamped", f"/{robot_ns}/cmd_vel_stamped"),
-            ("/nav_status", f"/{robot_ns}/nav_status"),
-            ("/planned_path", f"/{robot_ns}/planned_path"),
-            ("/robot_trajectory", f"/{robot_ns}/robot_trajectory"),
-            ("/final_goal_marker", f"/{robot_ns}/final_goal_marker"),
-            ("/robot_pose_marker", f"/{robot_ns}/robot_pose_marker"),
-        ]
-
-        nav_extra = {
-            "frontier_replan_topic": f"/{robot_ns}/frontier_replan",
-            "stop_topic": f"/{robot_ns}/stop",
-        }
-
-        if nav_backend == "astar":
-            # C++ A* + pure-pursuit + oriented footprint validation.
-            if max_linear_speed_str:
-                nav_extra["max_linear_speed"] = float(max_linear_speed_str)
-            nav_extra["map_frame"] = map_frame
-            nav_extra["map_topic"] = f"/{robot_ns}/map"
-
-            actions.append(
-                Node(
-                    package="go2w_nav",
-                    executable="astar_nav_node",
-                    namespace=robot_ns,
-                    name="astar_nav",
-                    parameters=[nav_config, {"use_sim_time": use_sim_time}, nav_extra],
-                    remappings=nav_remappings + (tf_remaps if remap_tf else []),
-                    ros_arguments=log_info,
-                    output="screen",
-                )
-            )
-        else:
-            # default_nav — Python A*/D* Lite with recovery (legacy stable).
-            if max_linear_speed_str:
-                nav_extra["max_linear_speed"] = float(max_linear_speed_str)
-            if require_settle_str:
-                nav_extra["require_settle_before_motion"] = _as_bool(require_settle_str)
-            if nav_map_topic_str:
-                nav_extra["map_topic"] = nav_map_topic_str
-
-            actions.append(
-                Node(
-                    package="go2w_nav",
-                    executable="default_nav.py",
-                    namespace=robot_ns,
-                    name="default_nav",
-                    parameters=[nav_config, {"use_sim_time": use_sim_time}, nav_extra],
-                    remappings=nav_remappings,
-                    ros_arguments=log_warn,
-                    output="screen",
-                )
-            )
 
     return actions
 

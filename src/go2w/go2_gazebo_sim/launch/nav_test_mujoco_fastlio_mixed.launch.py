@@ -883,190 +883,6 @@ def _build_fastlio_nav_stack(
         )
     )
 
-    # ── A* / Hybrid A* branch: nav_node + twist_bridge (+ hybrid_router on Go2W) ──
-    # Both backends share the same I/O contract and supporting infra — they
-    # differ only in the search/smoothing core. Selecting executable + yaml
-    # by `nav_backend`:
-    #   astar         → astar_nav_node          (8-conn A* + reactive Option B)
-    #   hybrid_astar  → hybrid_astar_nav_node   (Hybrid A* + OMPL RS + Ceres)
-    # Much lighter than FAR — no terrain_analysis, no localPlanner/pathFollower.
-    # Uses the same /{ns}/map (from octomap above) directly for planning.
-    if nav_backend in ("astar", "hybrid_astar", "nav2_hybrid_astar"):
-        if nav_backend == "astar":
-            astar_config_yaml = os.path.join(
-                go2w_config_pkg, "config", "nav", "astar_nav_go2w.yaml"
-            )
-            nav_executable = "astar_nav_node"
-            nav_node_name  = "astar_nav"
-        elif nav_backend == "hybrid_astar":
-            astar_config_yaml = os.path.join(
-                go2w_config_pkg, "config", "nav", "hybrid_astar_nav_go2w.yaml"
-            )
-            nav_executable = "hybrid_astar_nav_node"
-            nav_node_name  = "hybrid_astar_nav"
-        else:  # nav2_hybrid_astar
-            astar_config_yaml = os.path.join(
-                go2w_config_pkg, "config", "nav", "nav2_hybrid_astar_nav_go2w.yaml"
-            )
-            nav_executable = "nav2_hybrid_astar_nav_node"
-            nav_node_name  = "nav2_hybrid_astar_nav"
-        # ── Per-robot body geometry overrides ──
-        # The shared yaml has Go2W defaults (wheeled, body 0.65×0.45). Go2
-        # menagerie body (robot_b) is narrower and needs different
-        # gait-engagement params:
-        #
-        #   Param                  | Go2W (A)         | Go2 (B)            | Why
-        #   -----------------------|------------------|--------------------|------
-        #   footprint_length       | 0.65 (yaml)      | 0.65               | body length similar
-        #   footprint_width        | 0.45 (yaml)      | 0.30               | Go2 narrower → more clearance
-        #   global_inflation_m     | 0.25 (yaml)      | 0.18               | inflation ~= width/2 + safety;
-        #                          |                  |                    | B's body is 33% narrower so its
-        #                          |                  |                    | inflation should be smaller, not
-        #                          |                  |                    | larger. Old 0.30 made B's spawn
-        #                          |                  |                    | area (4,-6) pivot_unsafe in all
-        #                          |                  |                    | directions because the corridor
-        #                          |                  |                    | walls had a 0.30 m phantom buffer
-        #                          |                  |                    | wider than the gaps B needed to
-        #                          |                  |                    | turn. demo3_mixed 2026-04-26:
-        #                          |                  |                    | 17 T1_BRAKE + 7 T2_BACKTRACK on B
-        #                          |                  |                    | in 200 s, B moved only 1.9 m total.
-        #   legs_pivot_v_floor     | 0.0  (override)  | 0.05 (yaml)        | Go2W cmd_router converts ω to
-        #                          |                  |                    | wheel diff; Go2 needs forward
-        #                          |                  |                    | creep to engage CHAMP gait
-        #
-        # Letting B use Go2W's 0.45 body width meant CFPA2 forbade many
-        # genuinely-passable corridors and astar's footprint validation
-        # rejected paths Go2 could physically take. Letting A use Go2's
-        # 0.05 leg-pivot creep meant A's wheel router got 0.05 m/s
-        # forward bias during pure turns — a small but persistent
-        # forward push that contributed to A drifting into walls.
-        body_overrides = {}
-        if has_wheels:
-            # Go2W (robot_a): keep yaml defaults, just kill the leg
-            # creep (yaml has 0.05; Go2W doesn't need it).
-            # The legs_pivot_v_floor knob exists only in astar_nav_node's
-            # legged-pivot recovery FSM; hybrid_astar_nav_node has no
-            # pivot-recovery FSM (Hybrid A* output is kinematically
-            # feasible by construction), so the override is astar-only.
-            if nav_backend == "astar":
-                body_overrides["legs_pivot_v_floor"] = 0.0
-        else:
-            # Go2 (robot_b): narrower body → smaller inflation halo.
-            # Inflation rule of thumb = body_half_width + safety_margin:
-            #   A:  0.45/2 + 0.025 = 0.25
-            #   B:  0.30/2 + 0.030 = 0.18
-            body_overrides["footprint_width"] = 0.30
-            # `global_inflation_m` is an astar/hybrid_astar param;
-            # nav2_hybrid_astar uses `smoother_inflation_radius_m` instead.
-            if nav_backend in ("astar", "hybrid_astar"):
-                body_overrides["global_inflation_m"] = 0.18
-            else:  # nav2_hybrid_astar
-                body_overrides["smoother_inflation_radius_m"] = 0.18
-            # Yaml footprint_length (0.85) is sized for Go2W body+head;
-            # Go2 menagerie is shorter and B has known-working past runs
-            # at 0.65. Two attempts to bump (0.85, 0.70) both clipped at
-            # narrow passage (4.51, -3.77) just north of B's spawn,
-            # making astar report no_plan_repeated → B parked. Keep B
-            # at 0.65 (= prior yaml default before A's head-fix bump);
-            # B has not exhibited the head-on-wall climb that motivated
-            # the 0.85 increase for A. demo3_mixed 2026-04-26.
-            body_overrides["footprint_length"] = 0.65
-            # leg_pivot_v_floor stays at yaml's 0.05 (Go2 needs creep).
-
-        # Common remappings for both astar and hybrid_astar. The
-        # `astar_nogo_disks` viz topic is only published by astar_nav_node;
-        # appended below conditionally.
-        nav_remaps = [
-            # CFPA2 publishes goals on /{ns}/way_point_coord; the planner
-            # subscribes on /way_point (remapped into the namespace).
-            ("/way_point", f"/{ns}/way_point_coord"),
-            ("/odom/ground_truth", f"/{ns}/odom/nav"),
-            ("/scan", f"/{ns}/scan_3d"),
-            ("/cmd_vel_stamped", f"/{ns}/cmd_vel_stamped"),
-            ("/nav_status", f"/{ns}/nav_status"),
-            ("/planned_path", f"/{ns}/planned_path"),
-            ("/global_planned_path", f"/{ns}/global_planned_path"),
-            ("/robot_trajectory", f"/{ns}/robot_trajectory"),
-            ("/final_goal_marker", f"/{ns}/final_goal_marker"),
-            ("/robot_pose_marker", f"/{ns}/robot_pose_marker"),
-            ("/frontier_replan", f"/{ns}/frontier_replan"),
-            ("/stop", f"/{ns}/stop"),
-        ]
-        if nav_backend == "astar":
-            nav_remaps.append(("/astar_nogo_disks", f"/{ns}/astar_nogo_disks"))
-
-        astar_nodes = [
-            Node(
-                package="go2w_nav",
-                executable=nav_executable,
-                namespace=ns,
-                name=nav_node_name,
-                parameters=[
-                    astar_config_yaml,
-                    {"use_sim_time": use_sim_time},
-                    body_overrides,
-                    {
-                        "map_frame": "map",
-                        # base_frame is per-robot — robot_a uses bare URDF
-                        # (base_link) but robot_b's URDF is `b_`-prefixed
-                        # via build_robot_b_urdf, so its base is `b_base_link`.
-                        # astar_nav_node looks up `map → base_frame_` in TF;
-                        # passing the wrong frame leaves it stuck in
-                        # `warming_up:no_tf` and no plan ever publishes.
-                        "base_frame": base_frame,
-                        "map_topic": f"/{ns}/map",
-                        "frontier_replan_topic": f"/{ns}/frontier_replan",
-                        "stop_topic": f"/{ns}/stop",
-                    },
-                ],
-                remappings=nav_remaps + tf_remaps,
-                output="screen",
-            ),
-            Node(
-                package="go2w_perception",
-                executable="twist_bridge.py",
-                namespace=ns,
-                name="twist_bridge",
-                remappings=[
-                    ("/cmd_vel_stamped", f"/{ns}/cmd_vel_stamped"),
-                    ("/cmd_vel", f"/{ns}/cmd_vel"),
-                ],
-                output="screen",
-            ),
-        ]
-        if has_wheels:
-            # Go2W: hybrid_cmd_router splits cmd_vel into cmd_vel_legged (CHAMP)
-            # and wheel velocity commands. In the mixed launch the ros2_control
-            # controller_manager lives under /mujoco_sim, NOT /{ns}, so the
-            # wheel controller publishes/listens at
-            #     /mujoco_sim/{ns}_wheel_velocity_controller/commands
-            # Pass that as an ABSOLUTE topic so the router's namespace (robot_a)
-            # doesn't prepend. Without the leading slash the router publishes
-            # to /robot_a/robot_a_wheel_velocity_controller/commands where
-            # nobody listens → wheels silent → robot stuck the whole time
-            # hybrid mode is "wheel".
-            astar_nodes.append(
-                Node(
-                    package="go2w_control",
-                    executable="go2w_hybrid_cmd_router.py",
-                    namespace=ns,
-                    name="go2w_hybrid_cmd_router",
-                    parameters=[
-                        os.path.join(
-                            go2w_config_pkg, "config", "control",
-                            "go2w_hybrid_motion.yaml",
-                        ),
-                        {
-                            "use_sim_time": use_sim_time,
-                            "wheel_command_topic":
-                                f"/mujoco_sim/{ns}_wheel_velocity_controller/commands",
-                        },
-                    ],
-                    output="screen",
-                )
-            )
-        actions.append(TimerAction(period=nav_delay, actions=astar_nodes))
-        return actions
 
     # ── Nav2 MPPI branch: planner_server + controller_server + ─────────
     # behavior_server + bt_navigator + lifecycle_manager + the
@@ -1823,27 +1639,21 @@ def _launch_setup(context):
     if holonomic_profile_b not in _holonomic_allowed:
         raise ValueError(
             f"holonomic_profile_b must be one of {_holonomic_allowed}, got '{holonomic_profile_b}'")
-    # Back-compat aliases from the removed planners.
-    # `hybrid` → our v0.1 Hybrid A* + Ceres-smoothed planner.
-    # `nav2`   → B-route: nav2_smac_planner library integration.
-    _alias = {"rrt_star": "astar", "far_rrt_star": "astar", "mppi": "astar",
-              "reactive": "astar", "default": "astar",
-              "hybrid": "hybrid_astar",
-              "nav2":   "nav2_hybrid_astar"}
+    # 2026-05-09: removed astar / hybrid_astar / nav2_hybrid_astar / default /
+    # reactive / rrt_star / far_rrt_star / mppi backends — all superseded by
+    # nav2_mppi production stack since 2026-04-29. Legacy aliases silently
+    # upgrade so older invocations still work.
+    _alias = {"rrt_star": "nav2_mppi", "far_rrt_star": "nav2_mppi",
+              "mppi": "nav2_mppi", "reactive": "nav2_mppi",
+              "default": "nav2_mppi", "astar": "nav2_mppi",
+              "hybrid": "nav2_mppi", "hybrid_astar": "nav2_mppi",
+              "nav2": "nav2_mppi", "nav2_hybrid_astar": "nav2_mppi"}
     nav_backend_a = _alias.get(nav_backend_a, nav_backend_a)
     nav_backend_b = _alias.get(nav_backend_b, nav_backend_b)
     # "none" → spawn perception + SLAM + octomap but NO path planner / controller.
-    # Use this when running an external nav stack alongside (e.g. Nav2's
-    # planner_server + DWB) — the launch supplies the /map and TF, the
-    # external stack publishes /cmd_vel.
-    # "nav2_mppi" → spawn the Nav2 stack (SmacPlannerHybrid planner +
-    # MPPI controller + lifecycle_manager) plus the CFPA2 → Nav2 goal
-    # bridge and the hybrid_cmd_router. Replaces the entire astar /
-    # hybrid_astar / far custom-controller chain with battle-tested
-    # nav2 nodes; planner is still SmacHybrid so RS arcs are produced,
-    # but MPPI samples velocity space (no pure-pursuit overshoot).
-    _allowed = {"far", "astar", "hybrid_astar", "nav2_hybrid_astar",
-                "nav2_mppi", "none"}
+    # "far"  → CMU autonomy stack (vendor, dormant).
+    # "nav2_mppi" → Nav2 SmacPlannerHybrid + MPPI + behavior_server.
+    _allowed = {"far", "nav2_mppi", "none"}
     if nav_backend_a not in _allowed:
         raise ValueError(
             f"nav_backend_a must be one of {_allowed}, got '{nav_backend_a}'")

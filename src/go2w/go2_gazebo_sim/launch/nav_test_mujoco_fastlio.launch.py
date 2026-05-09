@@ -180,21 +180,23 @@ def _launch_setup(context):
         mujoco_model_path = os.path.join(go2_gazebo_pkg, "mujoco", "demo1.xml")
 
     tf_remaps = [("/tf", f"/{robot_ns}/tf"), ("/tf_static", f"/{robot_ns}/tf_static")]
-    nav_backend = _get(context, "nav_backend").strip().lower() or "far"
-    # Back-compat aliases — rrt_star/mppi → astar (deleted 2026-04-24).
-    if nav_backend == "rrt_star":
-        nav_backend = "astar"
-    # `hybrid`  → hybrid_astar (Ceres-smoothed Hybrid A*, our v0.1)
-    # `nav2`    → nav2_hybrid_astar (B-route: nav2_smac_planner lib)
-    if nav_backend == "hybrid":
-        nav_backend = "hybrid_astar"
-    if nav_backend == "nav2":
-        nav_backend = "nav2_hybrid_astar"
-    if nav_backend not in {"astar", "hybrid_astar", "nav2_hybrid_astar",
-                           "nav2_mppi", "far"}:
+    nav_backend = _get(context, "nav_backend").strip().lower() or "nav2_mppi"
+    # 2026-05-09: removed astar / hybrid_astar / nav2_hybrid_astar backends —
+    # superseded by nav2_mppi production stack since 2026-04-29.
+    # The aliases below silently upgrade legacy invocations that still pass
+    # the old names so older ops scripts keep working.
+    legacy_alias = {
+        "rrt_star": "nav2_mppi",
+        "hybrid": "nav2_mppi",
+        "nav2": "nav2_mppi",
+        "astar": "nav2_mppi",
+        "hybrid_astar": "nav2_mppi",
+        "nav2_hybrid_astar": "nav2_mppi",
+    }
+    nav_backend = legacy_alias.get(nav_backend, nav_backend)
+    if nav_backend not in {"nav2_mppi", "far"}:
         raise ValueError(
-            f"nav_backend must be 'astar' | 'hybrid_astar' | 'nav2_hybrid_astar' | "
-            f"'nav2_mppi' | 'far'; got '{nav_backend}'")
+            f"nav_backend must be 'nav2_mppi' | 'far'; got '{nav_backend}'")
     # Optional Nav2 SE2-holonomic profile overlay. Only meaningful when
     # nav_backend=nav2_mppi. Mirrors the real-Go2W profile from 2026-05-02:
     #   off            → SmacPlannerHybrid + DiffDrive MPPI (default)
@@ -671,108 +673,6 @@ def _launch_setup(context):
             TimerAction(period=nav_delay, actions=_nav2_actions)
         )
 
-    elif nav_backend in ("astar", "hybrid_astar", "nav2_hybrid_astar"):
-        # All three share the same I/O contract and supporting infra
-        # (octomap_server + map_merger). They differ only in the nav
-        # executable + yaml config:
-        #   astar              → astar_nav_node            (8-conn A* + Option B)
-        #   hybrid_astar       → hybrid_astar_nav_node     (our v0.1: OMPL RS + Ceres)
-        #   nav2_hybrid_astar  → nav2_hybrid_astar_nav_node (B-route: nav2_smac lib)
-        if nav_backend == "astar":
-            nav_config_path = os.path.join(
-                go2w_config_pkg, "config", "nav", "astar_nav_go2w.yaml")
-            nav_executable = "astar_nav_node"
-            nav_node_name  = "astar_nav"
-        elif nav_backend == "hybrid_astar":
-            nav_config_path = os.path.join(
-                go2w_config_pkg, "config", "nav", "hybrid_astar_nav_go2w.yaml")
-            nav_executable = "hybrid_astar_nav_node"
-            nav_node_name  = "hybrid_astar_nav"
-        else:  # nav2_hybrid_astar
-            nav_config_path = os.path.join(
-                go2w_config_pkg, "config", "nav", "nav2_hybrid_astar_nav_go2w.yaml")
-            nav_executable = "nav2_hybrid_astar_nav_node"
-            nav_node_name  = "nav2_hybrid_astar_nav"
-        nav_remappings = [
-            ("/way_point", f"/{robot_ns}/way_point_coord"),
-            ("/odom/ground_truth", f"/{robot_ns}/odom/nav"),
-            ("/scan", f"/{robot_ns}/scan_3d"),
-            ("/cmd_vel_stamped", f"/{robot_ns}/cmd_vel_stamped"),
-            ("/nav_status", f"/{robot_ns}/nav_status"),
-            ("/planned_path", f"/{robot_ns}/planned_path"),
-            ("/robot_trajectory", f"/{robot_ns}/robot_trajectory"),
-            ("/final_goal_marker", f"/{robot_ns}/final_goal_marker"),
-            ("/robot_pose_marker", f"/{robot_ns}/robot_pose_marker"),
-        ]
-
-        # octomap_server: 3D voxel grid from the reliable registered scan
-        # projected to 2D. In Fast-LIO mode it IS the /{ns}/map source
-        # (no Cartographer to merge with), so the map_merger below is a
-        # pass-through and astar reads /{ns}/map directly.
-        octomap_node = Node(
-            package="octomap_server",
-            executable="octomap_server_node",
-            namespace=robot_ns,
-            name="octomap_server",
-            parameters=[{
-                "use_sim_time": use_sim_time,
-                "resolution": 0.05,
-                "frame_id": "map",
-                "base_frame_id": "base_link",
-                "sensor_model.max_range": 6.0,
-                "sensor_model.hit": 0.8,
-                "sensor_model.miss": 0.35,
-                "sensor_model.min": 0.12,
-                "sensor_model.max": 0.97,
-                "point_cloud_min_z": 0.05,
-                "point_cloud_max_z": 1.10,
-                "occupancy_min_z": 0.05,
-                "occupancy_max_z": 1.00,
-                "filter_ground_plane": False,
-                "incremental_2D_projection": False,
-                "filter_speckles": False,
-                "compress_map": True,
-                # latch=True → TRANSIENT_LOCAL, matches CFPA2 map sub QoS.
-                "latch": True,
-                "publish_free_space": False,
-            }],
-            remappings=[
-                ("cloud_in", f"/{robot_ns}/registered_scan_reliable"),
-                # Publish directly as /robot/map in Fast-LIO mode.
-                ("projected_map", f"/{robot_ns}/map"),
-            ] + tf_remaps,
-            output="screen",
-        )
-
-        # 2026-05-09: dropped map_merger pass-through (Fast-LIO mode has no
-        # Cartographer to merge with — astar reads /robot/map straight from
-        # octomap_server above). map_merger.py is still in go2w_perception
-        # for the Cartographer-sim variant (nav_test_mujoco.launch.py).
-        astar_nav_node = Node(
-            package="go2w_nav",
-            executable=nav_executable,
-            namespace=robot_ns,
-            name=nav_node_name,
-            parameters=[
-                nav_config_path,
-                {"use_sim_time": use_sim_time},
-                {
-                    "map_frame": "map",
-                    "map_topic": f"/{robot_ns}/map",
-                    "frontier_replan_topic": f"/{robot_ns}/frontier_replan",
-                    "stop_topic": f"/{robot_ns}/stop",
-                },
-            ],
-            remappings=nav_remappings + tf_remaps,
-            output="screen",
-        )
-
-        actions.append(
-            TimerAction(
-                period=nav_delay,
-                actions=[octomap_node, astar_nav_node],
-            )
-        )
     else:  # nav_backend == "far"
         far_scan_topic = f"/{robot_ns}/registered_scan_map"
         far_odom_topic = f"/{robot_ns}/odom/nav"

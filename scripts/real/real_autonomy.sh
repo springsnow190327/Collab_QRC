@@ -13,13 +13,11 @@
 #                                         ensure_link so the dongle is up.
 #                                         Override GO2W_MID360_IP or set
 #                                         slam=carto_l1 explicitly to skip.)
-#   nav={nav2_mppi|cfpa2|tare|tare_real|far}    default: nav2_mppi
+#   nav={nav2_mppi|tare|tare_real|far}    default: nav2_mppi
 #                                        nav2_mppi = Nav2 SmacPlannerHybrid + MPPI +
 #                                                    behavior_server + stuck_watchdog +
 #                                                    fast_lio_tf_adapter
 #                                                    (production stack since 2026-04-29).
-#                                        cfpa2     = legacy default_nav.py (Python A* +
-#                                                    D* Lite + recovery).
 #                                        tare_real = real CMU TARE → localPlanner
 #                                                    direct (FAR unwired, CFPA2 off)
 #   mapper={scan|carto_binary|carto_2d}  default: carto_2d
@@ -176,7 +174,14 @@ done
 case "$ROBOT"   in go2w|go2) ;; *) echo "ERROR: robot must be go2w|go2" >&2; exit 1 ;; esac
 case "$CONNECT" in ethernet|webrtc) ;; *) echo "ERROR: connect must be ethernet|webrtc" >&2; exit 1 ;; esac
 case "$SLAM"    in auto|carto_l1|fastlio_mid360) ;; *) echo "ERROR: slam must be auto|carto_l1|fastlio_mid360" >&2; exit 1 ;; esac
-case "$NAV"     in nav2_mppi|cfpa2|tare|tare_real|far) ;; *) echo "ERROR: nav must be nav2_mppi|cfpa2|tare|tare_real|far" >&2; exit 1 ;; esac
+case "$NAV"     in
+  nav2_mppi|tare|tare_real|far) ;;
+  cfpa2|default|reactive)
+    echo "WARN: nav=$NAV (default_nav.py) deprecated since 2026-05-09; using nav2_mppi" >&2
+    NAV="nav2_mppi"
+    ;;
+  *) echo "ERROR: nav must be nav2_mppi|tare|tare_real|far" >&2; exit 1 ;;
+esac
 case "$MAPPER"  in scan|carto_binary|carto_2d) ;; *) echo "ERROR: mapper must be scan|carto_binary|carto_2d" >&2; exit 1 ;; esac
 case "$OA"      in true|false) ;; *) echo "ERROR: oa must be true|false" >&2; exit 1 ;; esac
 case "$EXECUTE" in true|false) ;; *) echo "ERROR: execute must be true|false" >&2; exit 1 ;; esac
@@ -230,9 +235,8 @@ case "$NAV" in
   # stuck_watchdog + cfpa2_to_nav2_bridge. See
   # docs/claude/nav2_mppi_journey.md for the full stack rationale.
   nav2_mppi) LAUNCH="real_single.launch.py";      NAV_BACKEND="nav2_mppi" ;;
-  cfpa2)     LAUNCH="real_single.launch.py";      NAV_BACKEND="reactive" ;;
   far)       LAUNCH="real_single.launch.py";      NAV_BACKEND="far" ;;
-  tare)      LAUNCH="real_single_tare.launch.py"; NAV_BACKEND="reactive" ;;
+  tare)      LAUNCH="real_single_tare.launch.py"; NAV_BACKEND="nav2_mppi" ;;
   # Real CMU TARE → localPlanner direct (FAR unwired, watchdog armed).
   # Full CMU autonomy stack; CFPA2 is disabled. See
   # src/go2w/go2w_real_bringup/launch/real_single_tare_real.launch.py.

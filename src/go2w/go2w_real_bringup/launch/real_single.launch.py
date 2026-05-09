@@ -149,20 +149,17 @@ def _launch_setup(context):
     # Fast-LIO (no occupancy grid at all), navigation must use an external mapper.
     use_external_mapper = map_backend != "scan" or slam == "fastlio_mid360"
 
-    # Nav + FAR configs: Go2W-tuned stays in go2w_config; Go2-tuned ships in real_bringup.
+    # Nav configs: only FAR remains as a nav_config-driven backend after
+    # 2026-05-09 (default_nav.py + astar_nav_node deleted, nav2_mppi gets its
+    # config from nav2_yaml_override below). Go2W-tuned stays in go2w_config;
+    # Go2-tuned ships in real_bringup.
     if robot_model == "go2":
         real_nav_cfg_dir = os.path.join(bringup_share, "config", "nav")
-        if nav_backend == "far":
-            nav_config = os.path.join(real_nav_cfg_dir, "far_planner_real_go2.yaml")
-        else:
-            nav_config = os.path.join(real_nav_cfg_dir, "default_nav_real_go2.yaml")
+        nav_config = os.path.join(real_nav_cfg_dir, "far_planner_real_go2.yaml")
         max_linear_speed = "0.60"
         far_max_speed = "0.40"
     else:  # go2w
-        if nav_backend == "far":
-            nav_config = os.path.join(go2w_config_pkg, "config", "nav", "far_planner_real.yaml")
-        else:
-            nav_config = os.path.join(go2w_config_pkg, "config", "nav", "default_nav_single_go2w.yaml")
+        nav_config = os.path.join(go2w_config_pkg, "config", "nav", "far_planner_real.yaml")
         max_linear_speed = "0.30"
         far_max_speed = "0.30"
 

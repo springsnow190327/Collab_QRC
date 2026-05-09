@@ -65,7 +65,6 @@ def _build_cleanup_stale_command() -> str:
         "/mujoco_sensor_bridge/",
         "/go2_nav_algorithms/lib/go2_nav_algorithms/simple_scan_mapper_cpp",
         "/go2w_perception/lib/go2w_perception/qos_bridge.py",
-        "/go2w_nav/lib/go2w_nav/default_nav.py",
         "/go2w_safety/lib/go2w_safety/autonomy_enabler.py",
         "/go2w_perception/lib/go2w_perception/twist_bridge.py",
         "/go2w_control/lib/go2w_control/go2w_hybrid_cmd_router.py",
