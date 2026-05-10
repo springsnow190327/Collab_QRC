@@ -1,11 +1,6 @@
 /**:
   ros__parameters:
-    algorithm_mode: cfpa2
     publish_rate: 2.0
-    output_mode: waypoint_coord
-    tare_goal_topic_suffix: /way_point_tare
-    relocation_goal_topic_suffix: /goal_point
-    grid_world_status_topic_suffix: /grid_world_status
     nav_status_topic_suffix: /nav_status
     use_shared_map: false
     shared_map_topic: /disco_slam/global_map
@@ -125,13 +120,7 @@
     # 0.05 m res) is still big enough to filter speckle/noise but
     # accepts fragmented late-stage frontiers.
     cfpa2_frontier_min_cluster_area_m2: 0.05
-    communication_timeout_sec: 6.0
-    prediction_horizon_sec: 4.0
-    pursuit_weight: 2.0
-    pursuit_switch_margin: 0.10
     exploration_gain_radius_cells: 4
-    meeting_min_distance: 1.5
-    teammate_stale_ttl_sec: 120.0
 
     # IG box = (2r+1)² cells. Single-robot yaml bumped this to 40 so big
     # unexplored rooms out-score tiny frontier pockets; that 9× cost blow-up
