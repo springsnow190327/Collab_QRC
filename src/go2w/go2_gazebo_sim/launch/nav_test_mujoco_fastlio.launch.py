@@ -33,8 +33,8 @@ Usage:
 from __future__ import annotations
 
 import os
+import sys
 
-import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
@@ -52,34 +52,22 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
+# sys.path must be amended BEFORE the `from modules.*` import below — when
+# ros2 launch loads this file it doesn't add the launch dir to sys.path.
+_here = os.path.dirname(os.path.abspath(__file__))
+if _here not in sys.path:
+    sys.path.insert(0, _here)
+
+from modules.launch_helpers import (  # noqa: E402
+    as_bool as _as_bool,
+    get_launch_arg as _get,
+    load_yaml_params as _load_yaml_params,
+)
+
 
 _ws_root = os.path.abspath(os.path.join(
     os.path.dirname(os.path.realpath(__file__)), "..", "..", "..", ".."
 ))
-
-
-def _as_bool(value: str) -> bool:
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _get(context, key: str) -> str:
-    return LaunchConfiguration(key).perform(context)
-
-
-def _load_yaml_params(yaml_path: str) -> dict:
-    """Load a ROS2 YAML param file and return the ros__parameters dict.
-
-    CMU autonomy stack YAML files are keyed by unqualified node name
-    (e.g. ``far_planner:``), which doesn't match when the node is
-    launched in a namespace. Strip the outer key and return just the
-    parameter dict so it can be merged into the launch params list.
-    """
-    with open(yaml_path, "r") as f:
-        data = yaml.safe_load(f) or {}
-    for _node_name, inner in data.items():
-        if isinstance(inner, dict) and "ros__parameters" in inner:
-            return dict(inner["ros__parameters"])
-    return data
 
 
 def _launch_setup(context):
