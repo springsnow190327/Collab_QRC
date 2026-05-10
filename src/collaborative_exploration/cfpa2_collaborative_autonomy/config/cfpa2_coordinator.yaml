@@ -19,6 +19,12 @@
     # candidates × halving IG-box (gain_r 22 → 14) cuts core scoring
     # work ~6×; expect p95 < 100 ms, leaving 400 ms slack at 2 Hz.
     max_targets: 400
+    # Stable-challenger override (2026-05-09): see cfpa2_single_robot.yaml
+    # for full doc. Streak=3, improvement_factor=1.20, min_lock_age=2s.
+    # Set streak_required=0 to disable.
+    cfpa2_challenger_streak_required: 3
+    cfpa2_challenger_improvement_factor: 1.20
+    cfpa2_challenger_min_lock_age_sec: 2.0
     switch_hysteresis: 0.50
     switch_min_dist: 0.80
     min_assign_distance: 0.30
@@ -32,7 +38,13 @@
     cfpa2_w_ig: 0.5
     cfpa2_w_c: 1.5
     cfpa2_w_sw: 0.2
-    cfpa2_lambda_overlap: 1.0
+    # 2026-05-09: switched to multiplicative penalty in the joint allocator.
+    # λ is now "max % deduction when goals fully overlap" — λ=0.5 → up to
+    # 50% off (1000 + 1000 → 520 when overlapping vs 750 → 735 when
+    # spread out, so the spread-out pair flips the decision). Old additive
+    # λ=1.0 deducted ≤ 1.0 from IG-dominated sums in the hundreds-thousands,
+    # which let both robots converge on the same frontier region.
+    cfpa2_lambda_overlap: 0.5
     # Momentum bonus: cos(heading_to_goal) × (alpha + beta·speed).
     # Bumped 2026-04-25 after demo3_mixed showed 0.4 Hz goal flap (A
     # 72 NEW GOALS / 180 s). Old defaults (w=0.8, alpha=0.5, beta=1.0)
@@ -85,7 +97,11 @@
     # be overridden by blacklist (frontier became unreachable) or by
     # max-lock (held >switch_hysteresis_max_lock_sec without progress).
     cfpa2_goal_min_hold_sec: 5.0
-    cfpa2_sigma_overlap_m: 0.0
+    # 2026-05-09: was 0.0 → fallback 2×sensor_range (≈ 7m default), too
+    # gradual: at 5m apart still overlap ≈ 0.66. Set to sensor_range so
+    # penalty drops sharper: at d=σ overlap = 0.61, at d=2σ overlap = 0.14.
+    # Frontiers more than 2× sensor range apart count as "different region".
+    cfpa2_sigma_overlap_m: 4.0
     cfpa2_stuck_lock_sec: 45.0
     cfpa2_stuck_min_motion_m: 0.20
     cfpa2_stuck_blacklist_sec: 60.0

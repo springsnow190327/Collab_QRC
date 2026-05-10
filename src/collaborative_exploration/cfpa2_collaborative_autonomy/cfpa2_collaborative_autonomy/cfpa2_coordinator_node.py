@@ -195,7 +195,10 @@ class CFPA2Coordinator(Node):
         self.declare_parameter("cfpa2_w_ig", 1.0)
         self.declare_parameter("cfpa2_w_c", 0.6)
         self.declare_parameter("cfpa2_w_sw", 0.2)
-        self.declare_parameter("cfpa2_lambda_overlap", 1.0)
+        # 2026-05-09: now interpreted as "max fraction deducted from joint
+        # score when goals fully overlap" (multiplicative). Default 0.5 =
+        # up to 50% off. See _cfpa2_overlap_penalty / joint allocator block.
+        self.declare_parameter("cfpa2_lambda_overlap", 0.5)
         # Outer weight applied to the momentum_bonus term. Bumped 0.8 →
         # 2.0 on 2026-04-25 after demo3_mixed showed a 0.4 Hz goal flap
         # for robot_a despite brake-hold; momentum bonus range was too
@@ -231,6 +234,19 @@ class CFPA2Coordinator(Node):
         # cluster-centroid jitter from reassigning the same robot 5-10×
         # in a few seconds while it's mid-navigation.
         self.declare_parameter("cfpa2_goal_min_hold_sec", 5.0)
+        # Stable-challenger override: lets a freshly-seen high-utility frontier
+        # preempt the held goal mid-flight, but only if (a) the same candidate
+        # has been the top-1 frontier for `streak_required` consecutive ticks
+        # (anti-jitter — cluster centroids drift tick-to-tick, real winners
+        # persist) AND (b) its score beats utility(held) re-evaluated under
+        # the current map by `improvement_factor` AND (c) at least
+        # `min_lock_age_sec` has elapsed since the held goal was assigned.
+        # Set streak_required=0 to disable the override (legacy commitment-
+        # only behavior). Default 1.20× = 20% better; raise to be more
+        # conservative, lower to be more reactive.
+        self.declare_parameter("cfpa2_challenger_streak_required", 3)
+        self.declare_parameter("cfpa2_challenger_improvement_factor", 1.20)
+        self.declare_parameter("cfpa2_challenger_min_lock_age_sec", 2.0)
         self.declare_parameter("cfpa2_min_utility", -0.5)
         self.declare_parameter("cfpa2_sigma_overlap_m", 0.0)
         self.declare_parameter("cfpa2_stuck_lock_sec", 45.0)
@@ -387,6 +403,12 @@ class CFPA2Coordinator(Node):
             0, int(self.get_parameter("cfpa2_frontier_min_unknown_cells").value))
         self.cfpa2_goal_min_hold_sec = max(
             0.0, float(self.get_parameter("cfpa2_goal_min_hold_sec").value))
+        self.cfpa2_challenger_streak_required = max(
+            0, int(self.get_parameter("cfpa2_challenger_streak_required").value))
+        self.cfpa2_challenger_improvement_factor = max(
+            1.0, float(self.get_parameter("cfpa2_challenger_improvement_factor").value))
+        self.cfpa2_challenger_min_lock_age_sec = max(
+            0.0, float(self.get_parameter("cfpa2_challenger_min_lock_age_sec").value))
         self.cfpa2_min_utility = float(self.get_parameter("cfpa2_min_utility").value)
         self.cfpa2_sigma_overlap_m = max(0.0, float(self.get_parameter("cfpa2_sigma_overlap_m").value))
         self.cfpa2_stuck_lock_sec = max(0.0, float(self.get_parameter("cfpa2_stuck_lock_sec").value))
@@ -605,6 +627,9 @@ class CFPA2Coordinator(Node):
         # change goal — it stays in legged/idle indefinitely (CLAUDE.md
         # golden rule #12 — multi-layer safety stacks deadlock easily).
         self._pivot_lock_held_since_ns: dict[str, int] = {}
+        # Stable-challenger streak tracking — see _apply_goal_policy override.
+        self._challenger_id: dict[str, tuple[int, int]] = {}
+        self._challenger_streak: dict[str, int] = {}
         self.last_goal_set_time_ns: dict[str, int] = {}
         self.goal_progress_samples: dict[str, deque[tuple[int, float]]] = {
             ns: deque() for ns in self.namespaces
@@ -1741,6 +1766,59 @@ class CFPA2Coordinator(Node):
             and (now_ns - last_set_ns) < int(self.goal_lock_sec * 1e9)
         )
 
+        # ── Stable-challenger override ─────────────────────────────
+        # Placed BEFORE the goal_lock and hold/progressing branches so a
+        # *consistent* high-utility alternative can preempt mid-flight.
+        # Two layers of jitter rejection:
+        #   1. Streak: same _goal_key candidate top-1 for K ticks (rejects
+        #      cluster-centroid drift — those flip top-1 every tick).
+        #   2. Score: utility(candidate) > utility(last) × improvement_factor,
+        #      where utility(last) is RE-EVALUATED under the current map
+        #      (catches the case where the held goal's IG dropped to ~0
+        #      because nearby unknowns got resolved by recent scans).
+        # Plus a min lock-age so it can't fire on the first tick after
+        # assignment. Set cfpa2_challenger_streak_required=0 to disable.
+        candidate_id = self._goal_key(candidate_goal)
+        last_id = self._goal_key(last)
+        if candidate_id == last_id:
+            self._challenger_id.pop(ns, None)
+            self._challenger_streak.pop(ns, None)
+        else:
+            if self._challenger_id.get(ns) == candidate_id:
+                self._challenger_streak[ns] = self._challenger_streak.get(ns, 0) + 1
+            else:
+                self._challenger_id[ns] = candidate_id
+                self._challenger_streak[ns] = 1
+
+            challenger_streak = self._challenger_streak.get(ns, 0)
+            challenger_lock_age_sec = (
+                max(0.0, (now_ns - last_set_ns) / 1e9) if last_set_ns > 0 else 1e9
+            )
+            if (
+                self.cfpa2_challenger_streak_required > 0
+                and challenger_streak >= self.cfpa2_challenger_streak_required
+                and challenger_lock_age_sec >= self.cfpa2_challenger_min_lock_age_sec
+            ):
+                last_score = self._cfpa2_single_utility(
+                    ns=ns, goal=last, map_msg=map_msg, dist_map=dist_map,
+                )
+                if last_score <= -1e17:
+                    self._set_policy_reason(ns, "switch/held_goal_dead")
+                    self._challenger_id.pop(ns, None)
+                    self._challenger_streak.pop(ns, None)
+                    return candidate_goal
+                # Multiplicative threshold; works for typical positive scores.
+                # For the rare negative case (held very bad) any candidate
+                # above last_score × k still clears the bar.
+                if assignment_score > last_score * self.cfpa2_challenger_improvement_factor:
+                    self._set_policy_reason(
+                        ns,
+                        f"switch/stable_challenger_u={assignment_score:.2f}_vs_held={last_score:.2f}",
+                    )
+                    self._challenger_id.pop(ns, None)
+                    self._challenger_streak.pop(ns, None)
+                    return candidate_goal
+
         if lock_active and not hard_failure and not reached_last:
             self._set_policy_reason(ns, "hold/goal_lock_active")
             return last
@@ -1751,6 +1829,8 @@ class CFPA2Coordinator(Node):
         candidate_move = math.hypot(candidate_goal[0] - last[0], candidate_goal[1] - last[1])
         if candidate_move < self.switch_min_dist:
             self._set_policy_reason(ns, "hold/small_candidate_move")
+            self._challenger_id.pop(ns, None)
+            self._challenger_streak.pop(ns, None)
             return last
 
         if not reached_last and not hard_failure:
@@ -3359,7 +3439,19 @@ class CFPA2Coordinator(Node):
                     if self._goals_equivalent(goal_a, goal_b):
                         continue
                     overlap = self._cfpa2_overlap_penalty(goal_a, goal_b)
-                    joint = score_a + score_b - (self.cfpa2_lambda_overlap * overlap)
+                    # Multiplicative penalty (2026-05-09): the previous
+                    # additive form `joint = a + b - λ·overlap` made the
+                    # penalty a constant ≤ λ regardless of score magnitude;
+                    # with IG-dominated scores in the 100-3000 range and
+                    # λ=1.0, it deducted ≤ 1.0 from sums of thousands —
+                    # effectively zero. Multiplicative makes λ a "max %
+                    # deduction when goals fully overlap" (λ=0.5 → up to
+                    # 50% off). Scale-invariant w.r.t. IG box size /
+                    # cfpa2_w_ig changes. Clamp multiplier to [0, 1] so
+                    # λ>1 doesn't flip the sign on positive sums.
+                    overlap_multiplier = max(
+                        0.0, 1.0 - self.cfpa2_lambda_overlap * overlap)
+                    joint = (score_a + score_b) * overlap_multiplier
                     if joint > best_joint:
                         best_joint = joint
                         best_pair = (goal_a, goal_b, score_a, score_b)
