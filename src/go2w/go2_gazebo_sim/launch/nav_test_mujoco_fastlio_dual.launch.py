@@ -644,7 +644,29 @@ def _build_fastlio_nav_stack(
                     go2w_config_pkg, "config", "control",
                     "go2w_hybrid_motion.yaml",
                 ),
-                {"use_sim_time": use_sim_time},
+                {
+                    "use_sim_time": use_sim_time,
+                    # Single controller_manager for both robots → all
+                    # JointStateBroadcasters share /mujoco_sim/joint_states.
+                    # Default `joint_states` (relative) would resolve to
+                    # /<ns>/joint_states which has pub_count=0. Override.
+                    "wheel_state_topic": "/mujoco_sim/joint_states",
+                    # Per-robot wheel joint names: Robot A unprefixed,
+                    # Robot B b_*-prefixed. Without this override, both
+                    # routers default to unprefixed names → Robot B reads
+                    # Robot A's wheel ω → publishes A's ω as B's setpoint
+                    # → B's wheel actuator brake-locks against the wrong target.
+                    "wheel_joint_names": (
+                        ["FL_foot_joint", "FR_foot_joint",
+                         "RL_foot_joint", "RR_foot_joint"]
+                        if ns == "robot_a" else
+                        ["b_FL_foot_joint", "b_FR_foot_joint",
+                         "b_RL_foot_joint", "b_RR_foot_joint"]
+                    ),
+                    # Wheel command topic — same per-namespace pattern as mixed.
+                    "wheel_command_topic":
+                        f"/mujoco_sim/{ns}_wheel_velocity_controller/commands",
+                },
             ],
             output="screen",
         ),

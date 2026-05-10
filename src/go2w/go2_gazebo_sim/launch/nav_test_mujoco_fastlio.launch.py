@@ -638,28 +638,14 @@ def _launch_setup(context):
             output="screen",
         )
 
-        # hybrid_cmd_router: only Go2W needs it (splits cmd_vel into
-        # wheel + legged components based on curvature). Go2 (no wheels)
-        # has CHAMP listening to /<ns>/cmd_vel directly.
-        if has_wheels:
-            router_node = Node(
-                package="go2w_control",
-                executable="go2w_hybrid_cmd_router.py",
-                namespace=robot_ns,
-                name="go2w_hybrid_cmd_router",
-                parameters=[
-                    os.path.join(go2w_config_pkg, "config", "control",
-                                 "go2w_hybrid_motion.yaml"),
-                    {
-                        "use_sim_time": use_sim_time,
-                        "wheel_command_topic":
-                            f"/mujoco_sim/{robot_ns}_wheel_velocity_controller/commands",
-                    },
-                ],
-                output="screen",
-            )
-        else:
-            router_node = None
+        # NOTE (2026-05-10): The hybrid_cmd_router is spawned by the
+        # included single_go2w_mujoco_cfpa2.launch.py (line ~488). Spawning
+        # it again here was a duplicate — both instances took the same
+        # name+ns, both subscribed to /<ns>/cmd_vel, both published to
+        # /<ns>/cmd_vel_legged → CHAMP saw 2× messages. Worse, the duplicate
+        # here had `wheel_command_topic=/mujoco_sim/...` which had zero
+        # subscribers (real controller is at /<ns>/robot_wheel_velocity_controller/commands).
+        # Removed.
 
         _nav2_actions = [
             GroupAction(actions=nav2_inner_nodes),
@@ -667,8 +653,6 @@ def _launch_setup(context):
             path_relay_node,
             stuck_watchdog_node,
         ]
-        if router_node is not None:
-            _nav2_actions.append(router_node)
         actions.append(
             TimerAction(period=nav_delay, actions=_nav2_actions)
         )

@@ -73,12 +73,19 @@ class Go2WHybridCmdRouter(Node):
         # In legged/idle mode, mirror actual wheel ω back as the velocity
         # setpoint so the velocity actuator's brake torque is zero (error=0)
         # and the wheels can freewheel under the body's leg-gait motion. With
-        # the previous default (cmd=0 in legged mode), kv=50 generates up to
-        # ±15 N·m brake force opposing residual body motion → wheel skids
+        # the previous default (cmd=0 in legged mode), kv=5 generates up to
+        # ~10 N·m brake force opposing residual body motion → wheel skids
         # against the ground. Subscribe to joint_states to read actual ω.
         # Names match the MJCF foot_joint convention ([FL,FR,RL,RR]_foot_joint
         # — Robot A is unprefixed; Robot B is b_*-prefixed and skipped).
-        self.declare_parameter("wheel_state_topic", "/mujoco_sim/joint_states")
+        # 2026-05-10: was "/mujoco_sim/joint_states" but the actual publisher
+        # is `robot_joint_states_controller` (JointStateBroadcaster) which
+        # publishes to its own controller_manager namespace = `/<ns>/joint_states`.
+        # The old absolute default had publisher_count=0 → router never read
+        # actual ω → published [0,0,0,0] → kv=5 actuator brake-locked the
+        # wheels in legged mode (THE wheel-skid bug). Default is now relative
+        # so it picks up `/<ns>/joint_states` automatically.
+        self.declare_parameter("wheel_state_topic", "joint_states")
         self.declare_parameter("wheel_joint_names", [
             "FL_foot_joint", "FR_foot_joint", "RL_foot_joint", "RR_foot_joint"
         ])

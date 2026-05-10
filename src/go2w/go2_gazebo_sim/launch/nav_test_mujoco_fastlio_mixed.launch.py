@@ -1044,6 +1044,14 @@ def _build_fastlio_nav_stack(
                         "use_sim_time": use_sim_time,
                         "wheel_command_topic":
                             f"/mujoco_sim/{ns}_wheel_velocity_controller/commands",
+                        # Mixed/dual sim: ALL joint broadcasters share
+                        # /mujoco_sim/joint_states (single controller_manager
+                        # in /mujoco_sim ns). Single-robot sim has its own
+                        # /<ns>/joint_states which the router default picks
+                        # up automatically. Without this override, the
+                        # mixed router would subscribe to /<ns>/joint_states
+                        # (pub_count=0) → freewheel never engages → wheel skid.
+                        "wheel_state_topic": "/mujoco_sim/joint_states",
                     },
                 ],
                 output="screen",
@@ -1596,6 +1604,7 @@ def _build_fastlio_nav_stack(
                         "use_sim_time": use_sim_time,
                         "wheel_command_topic":
                             f"/mujoco_sim/{ns}_wheel_velocity_controller/commands",
+                        "wheel_state_topic": "/mujoco_sim/joint_states",
                     },
                 ],
                 output="screen",
