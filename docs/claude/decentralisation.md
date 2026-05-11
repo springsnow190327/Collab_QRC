@@ -187,6 +187,34 @@ PeerState topics use publisher-scoped namespacing:
 
 Each robot publishes under its own namespace and subscribes to the configured peer namespaces.
 
+### Claim and Frontier Management Checkpoint
+For the first integration, the peer coordinator ingests local frontier candidates from the existing CFPA2 frontier MarkerArray output. This avoids invasive changes to the existing planner while giving the decentralised layer access to the same frontier positions already used for visualisation. A future cleaner integration would expose frontier candidates through a dedicated typed topic rather than parsing visualisation markers.
+
+Implemented and manually tested the first claim-management layer for decentralised exploration.
+
+The peer coordinator now subscribes to the existing CFPA2 frontier visualisation output, using `visualization_msgs/MarkerArray` markers in the `cfpa2_frontiers` namespace as a pragmatic v1 frontier input. These marker positions are converted into deterministic `(x, y, z)` tuples and stored as `local_frontiers`.
+
+The node now maintains three frontier/claim stores:
+
+- `local_frontiers`: candidate frontiers visible to this robot;
+- `own_claims`: frontiers currently claimed by this robot, to be populated by future negotiation logic;
+- `peer_claims`: frontiers claimed by peers and received through `PeerState` heartbeats.
+
+Peer claims are filtered using `claim_timeout_sec`, so stale claims stop blocking local frontiers after expiry. Frontier equality is determined by spatial proximity using a module-level `FRONTIER_MATCH_TOLERANCE_M = 0.5`, ensuring both peers use the same deterministic matching rule.
+
+Conflict resolution has also been added for future negotiation use. If this robot and a peer claim the same frontier, the deterministic winner rule is:
+
+1. the earlier `claim_stamp` wins;
+2. if timestamps tie, the lexicographically smaller `claimed_by` robot ID wins.
+
+Manual ROS testing verified the full claim-blocking lifecycle:
+
+1. With fake frontier markers only, `local_frontiers=2` and `available_frontiers=2`.
+2. After publishing a fake `robot_b` `PeerState` containing one matching `ClaimedFrontier`, the peer coordinator stores one peer claim and `available_frontiers` drops from 2 to 1.
+3. After the claim timeout expires, the stale claim is removed and `available_frontiers` recovers from 1 to 2.
+
+This confirms that local frontier ingestion, peer claim storage, stale-claim expiry, and peer-claim blocking are working. The deterministic conflict-resolution helper is implemented, but should still be unit-tested with hand-crafted claims before being marked fully verified.
+
 ## Status
 - [X] Verify centralisation in cfpa2_coordinator_node.py
 - [X] Audit map_merge_utils.py for centralised assumptions
@@ -196,7 +224,9 @@ Each robot publishes under its own namespace and subscribes to the configured pe
 - [X] Peer state freshness tracking (timeout detection)
 - [X] Bonus: real-pose ingestion from `/odom/nav`
 - [ ] Pairwise frontier negotiation (request/response protocol)
-- [ ] Claim management (storage, expiry, conflict resolution)
+- [X] Claim management: storage, expiry, and peer-claim blocking implemented/tested
+- [X] Frontier management: local frontier ingestion from CFPA2 MarkerArray and peer-claim filtering implemented
+- [ ] Claim conflict resolution rule implemented/tested
 - [ ] Frontier filter output (so single_robot_node respects claims)
 - [ ] Peer map subscriber + overlay_map fusion
 - [ ] Integration with existing single_robot_node
