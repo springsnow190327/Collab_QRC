@@ -215,6 +215,23 @@ Manual ROS testing verified the full claim-blocking lifecycle:
 
 This confirms that local frontier ingestion, peer claim storage, stale-claim expiry, and peer-claim blocking are working. The deterministic conflict-resolution helper is implemented, but should still be unit-tested with hand-crafted claims before being marked fully verified.
 
+## Milestone
+local frontiers + peer pose + own pose
+        ↓
+MDVRP adapter
+        ↓
+proposed own claims
+        ↓
+debug visibility only for now
+
+✅ import solve_frontier_assignment + pose_msg_to_tuple
+✅ import Point
+✅ parameters for MDVRP proposal generation
+✅ cooldown tracking
+✅ _point3_to_claim()
+✅ _generate_mdvrp_own_claims()
+✅ _decide_negotiation() now generates own claims from MDVRP when possible
+
 ## Status
 - [X] Verify centralisation in cfpa2_coordinator_node.py
 - [X] Audit map_merge_utils.py for centralised assumptions
@@ -226,6 +243,7 @@ This confirms that local frontier ingestion, peer claim storage, stale-claim exp
 - [ ] Pairwise frontier negotiation (request/response protocol)
 - [X] Claim management: storage, expiry, and peer-claim blocking implemented/tested
 - [X] Frontier management: local frontier ingestion from CFPA2 MarkerArray and peer-claim filtering implemented
+- [X] MDVRP-generated own-claim proposal
 - [ ] Claim conflict resolution rule implemented/tested
 - [ ] Frontier filter output (so single_robot_node respects claims)
 - [ ] Peer map subscriber + overlay_map fusion
