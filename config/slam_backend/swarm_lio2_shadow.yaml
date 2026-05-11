@@ -1,0 +1,12 @@
+slam_backend: swarm_lio2_shadow
+dynamic_filter_backend: temporal_voxel_fallback
+static_map_cleanup_backend: none
+team_pose_graph_backend: auto
+require_swarm_loop_agreement: false
+swarm_outputs:
+  - /<ns>/swarm_lio2/Odometry
+  - /<ns>/swarm_lio2/cloud_static
+  - /<ns>/swarm_lio2/cloud_map
+  - /<ns>/swarm_lio2/mutual_state
+  - /<ns>/swarm_lio2/relative_transform
+  - /team_slam/swarm_lio2_metrics

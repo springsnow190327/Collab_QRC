@@ -1,0 +1,5 @@
+deployment_mode: sim_ros2
+slam_backend: fast_lio_scpgo
+dynamic_filter_backend: none
+static_map_cleanup_backend: none
+description: Existing ROS2 simulation deployment. Fast-LIO / SC-PGO remains production-safe default.

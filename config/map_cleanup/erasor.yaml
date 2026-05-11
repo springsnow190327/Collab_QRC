@@ -1,0 +1,12 @@
+static_map_cleanup_backend: erasor_wrapper
+erasor_trigger_mode: manual
+export_dir: logs/erasor
+required_exports:
+  - pcds/
+  - dense_global_map.pcd
+  - poses_lidar2body.csv
+  - initial_naive_map.pcd
+required_outputs:
+  - cleaned_static_map.pcd
+  - removed_dynamic_points.pcd
+  - erasor_metrics.json

@@ -4,8 +4,10 @@ Multi-robot autonomy on Unitree **Go2 / Go2W** wheeled-legged quadrupeds. ROS 2 
 
 Two active threads:
 
-- **Single-robot nav + exploration benchmarking** — Fast-LIO2 + SC-PGO SLAM, CMU autonomy stack (terrain_analysis + localPlanner + pathFollower) with either **CFPA2** or the **real CMU TARE planner** for goal sourcing.
+- **Single-robot nav + exploration** — Fast-LIO2 / Cartographer SLAM, **Nav2 MPPI / SmacPlannerLattice (SE2 holonomic)** as production stack since 2026-04-29; CMU autonomy stack (FAR / TARE) and Python A* kept as escape hatches.
 - **Dual-robot door task** — two Go2Ws in adjacent rooms divided by a spring-loaded fire door; VLM-driven coordination with an analytical door-lock barrier.
+
+A third **ROS 1 hybrid SLAM** thread (Swarm-LIO2 + Dynamic-LIO + ERASOR via Docker + ros1_bridge) is wired in additively (Phase A) — see `docker/ros1_hybrid_slam/`.
 
 Detailed index and per-topic docs: **[CLAUDE.md](CLAUDE.md)** + [docs/claude/](docs/claude/).
 
@@ -23,44 +25,51 @@ source install/setup.bash
 ### Sim launches
 
 ```bash
+# Single-robot nav + exploration (Nav2 MPPI + Fast-LIO2 + CFPA2 — production)
+./scripts/launch/nav_test_demo3.sh                        # demo3 24×16 m, 4-quadrant scene
+./scripts/launch/nav_test_fastlio.sh                      # demo1 12×8 m
+./scripts/launch/nav_test_demo2.sh                        # LRC maze
+
+# Real CMU TARE exploration (FAR bypassed, TARE → localPlanner direct)
+./scripts/launch/nav_test_go2_tare_real.sh  gui:=true rviz:=true
+
+# ROS1 hybrid Swarm-LIO2 in docker, fed by MuJoCo lidar via ros1_bridge
+./scripts/launch/nav_test_swarm_lio2_se2.sh
+
 # Dual-robot door task (VLM coordination, MuJoCo)
 ./scripts/launch/door_demo_mujoco.sh
 
 # Single-robot VLM exploration (Phase 1)
 ./scripts/launch/vlm_demo_mujoco.sh
 
-# Nav stack smoke + benchmarks (Go2W, reactive/FAR backends)
-./scripts/launch/nav_test_mujoco.sh
-./scripts/bench/benchmark_far_nav.sh          # 5 trials, PASS = cov≥90% ∧ contacts==0
-./scripts/bench/benchmark_fastlio.sh
-
-# Go2 (non-W) with CHAMP — demo1 (12×8) / demo3 (24×16)
-./scripts/launch/nav_test_go2.sh            gui:=true rviz:=true
-./scripts/launch/nav_test_go2_demo3.sh      gui:=true rviz:=true
-
-# Go2 + real CMU TARE exploration (FAR bypassed, watchdog armed)
-./scripts/launch/nav_test_go2_tare_real.sh  gui:=true rviz:=true
-./scripts/bench/benchmark_go2_tare.sh       # 10 trials × 10 min on demo3
+# Multi-trial benchmarks (PASS = cov≥90% ∧ contacts==0 ∧ ¬tipped, ≥10 trials for stats)
+./scripts/bench/benchmark_fastlio.sh                       # FAR + Fast-LIO2 + Mid-360
+./scripts/bench/benchmark_far_nav.sh                       # FAR + Cartographer + L1
+./scripts/bench/benchmark_go2_tare.sh                      # 10 trials × 10 min, Go2 + TARE
 ```
 
 ### Real-robot launches
 
 ```bash
-# Go2W — Ethernet, Cartographer + L1, CFPA2 (defaults)
-./scripts/real/real_autonomy.sh
+# Recommended entry — SE2 holonomic baked in, sport API direct (oa=false), curated flags.
+./scripts/real/real_autonomy_se2.sh                                # default Go2W, Cartographer + L1
+./scripts/real/real_autonomy_se2.sh slam=fastlio_mid360             # Mid-360 + Fast-LIO2
+./scripts/real/real_autonomy_se2.sh slam=fastlio_mid360 lidar_range=4.0
+./scripts/real/real_autonomy_se2.sh stop                            # tear down everything
 
-# Go2W — Livox Mid-360 + Fast-LIO2, FAR nav
-./scripts/real/real_autonomy.sh slam=fastlio_mid360 nav=far
+# Full-surface launcher (legacy/comparison runs):
+./scripts/real/real_autonomy.sh                                     # nav2_mppi default
+./scripts/real/real_autonomy.sh nav=far slam=fastlio_mid360          # FAR escape hatch
+./scripts/real/real_autonomy.sh holonomic_profile=se2_holonomic     # Go2W or Go2 walking SE2
 
-# Go2 (non-W, walking gait) — same stack
-./scripts/real/real_autonomy_go2.sh slam=fastlio_mid360 nav=far
+# Go2 (non-W, walking gait):
+./scripts/real/real_autonomy_go2.sh                                 # nav2_mppi default
+./scripts/real/real_autonomy_go2.sh nav=tare_real oa=false          # CMU TARE → localPlanner
 
-# **Real CMU TARE** exploration → localPlanner direct (FAR unwired).
-# oa=false is REQUIRED: default oa=true routes Move to /api/obstacles_avoid/request
-# (needs manual-mode pre-arm); oa=false routes to /api/sport/request (api_id=1008).
-./scripts/real/real_autonomy.sh robot=go2 slam=fastlio_mid360 nav=tare_real oa=false
-
-./scripts/real/real_autonomy.sh stop          # tear down everything
+# Outdoor SLAM-debug bag tools (no autonomy, BT pad walks the robot):
+./scripts/real/record_livox_dataset.sh tag=outdoor_run1              # /livox/lidar+imu+FLIO output → MCAP/sqlite3
+./scripts/real/replay_livox_dataset.sh                               # autonomy.rviz parity, /tf_static QoS fixed
+./scripts/debug/analyze_lidar_odom_drops.py                          # per-scan latency, dropped-frame stats
 ```
 
 Debug dashboards auto-start:
@@ -72,81 +81,130 @@ Debug dashboards auto-start:
 
 ```text
 Collab_QRC/
-  src/
-    go2w/                              Go2W/Go2 platform packages
-      go2_gazebo_sim/                    MJCF scenes, TARE configs, sim launch files
-      mujoco_sensor_bridge/              MuJoCo sensor nodes (LiDAR, contact, odom)
-      go2w_nav/ go2w_control/            Reactive RRT*, A*, cmd routing
-      go2w_perception/ go2w_config/      QoS bridge, Cartographer bridge, shared YAML
-      go2w_safety/                       Safety monitors (wall checker, supervisor)
-      go2w_real_bringup/                 Real-robot launches (real_single*, tare_real)
-      unitree_go2w_ros2/                 Unitree ROS 2 SDK integration
-    exploration/
-      cfpa2_collaborative_autonomy/      CFPA2 frontier allocator (single-robot)
-      go2_nav_algorithms/                Scan mapper, frontier detection, pipeline
-    collaborative_exploration/
-      door_task/                         Dual-robot door task (VLM + analytical barrier)
-    vlm_explorer/                        VLM-in-the-loop exploration (Phase 1)
-    vendor/                              Third-party sources (vendored, not submodules)
-      tare_planner/                        CMU TARE (caochao39, humble-jazzy)
-      autonomy_stack_go2/                  CMU FAR + terrain_analysis + localPlanner
-      fast_lio/                            Fast-LIO2 LiDAR-inertial SLAM
-      mujoco_ros2_control/                 DFKI MuJoCo ros2_control HW interface
-      champ/                               CHAMP quadruped locomotion controller
-      livox_ros_driver2/ Livox-SDK2/       Mid-360 driver (workspace-local install)
+  CLAUDE.md / CLAUDE1.md           Engineering memory (current + archive)
+  README.md / setup.sh / env.sh    First-time setup + workspace env
+  todo.txt                         Forward-looking research items
+
+  config/
+    deployment/                    Hybrid ROS1+ROS2 deployment configs (Phase A)
+    dynamic_filter/                Dynamic-LIO + temporal voxel decay
+    map_cleanup/                   ERASOR static-map filtering
+    slam_backend/                  Swarm-LIO2 / Fast-LIO+SC-PGO selectors
+    fastdds_no_shm.xml             FastDDS profile (sim, no shared memory)
+    cyclonedds_{ethernet,wifi}.xml CycloneDDS profiles (real robot)
+
+  docker/
+    ros1_hybrid_slam/              Swarm-LIO2 + Dynamic-LIO + ERASOR in Noetic + bridge
+    ros1_scpgo/                    SC-PGO loop closure (legacy)
+
+  docs/
+    claude/                        Per-topic engineering notes (door_task, nav_benchmarks,
+                                   real_robot, slam_and_scenes, sim_comparison, …)
+    *.md                           Hybrid-SLAM design + integration plans
+
+  external/                        gitignored — fetch_slam_backends.sh pulls Swarm-LIO2,
+                                   dynamic_lio, ERASOR, Livox-SDK into here
+
   scripts/
-    launch/      user-invoked entry points (nav_test_*, door_demo, vlm_demo)
-    bench/       multi-trial PASS-criterion runners + session_reporter
-    runtime/     ROS 2 nodes started by launches (watchdog, spawners, bridges)
-    debug/       live-stack observation tools
-    ops/         one-shot dev/ops utilities
-    real/        real-robot entry points
-  config/        DDS configs (fastdds_no_shm.xml)
-  docs/claude/   Per-topic engineering notes (door_task, nav_benchmarks, go2_integration, real_robot, …)
-  setup.sh
+    launch/      User-invoked sim entry points (nav_test_*, door_demo, vlm_demo, swarm_lio2)
+    bench/       Multi-trial PASS-criterion runners + session_reporter
+    runtime/     ROS 2 nodes started by launches (fast_lio_tf_adapter, gravity_align_at_init,
+                 stuck_watchdog, swarm_lio_tf_adapter, exploration_metrics_logger, …)
+    real/        Real-robot entry points (real_autonomy*, record/replay_livox_dataset,
+                 connect_ethernet, calibrate_imu, onboard_slam, dry_run_go2)
+    debug/       Live-stack observation tools (far_debug_monitor, vlm_debug_web,
+                 analyze_lidar_odom_drops, failure_decomposer, …)
+    ops/         One-shot dev/ops utilities (far_reset_vgraph, sync_to_main,
+                 aic8800-install-fix)
+    setup/       SLAM backend fetch + sanity-check scripts
+
+  src/
+    go2w/                          Go2 / Go2W platform packages
+      go2_description/             URDF + xacro (incl. Mid-360 mount tilt 2026-05-09)
+      go2_gazebo_sim/              MJCF scenes + sim launches (Nav2 MPPI / FAR / TARE / RL)
+      mujoco_sensor_bridge/        MuJoCo LiDAR / contact / odom bridges
+      go2w_nav/ go2w_control/      A*, Hybrid A*, cmd_vel routing (legacy + Nav2 entrypoints)
+      go2w_perception/             Cartographer bridge, scan adapter, frontier markers
+      go2w_observability/          exploration_metrics_logger (events + summary + stop trigger)
+      go2w_safety/                 supervisor_panic, autonomy_enabler, wall-collision checker
+      go2w_real_bringup/           Real-robot launches (real_single*, slam.launch.py, real_bringup_core)
+      go2w_config/                 Nav2 yaml profiles (default, omni_2d, se2_holonomic) + Cartographer cfg
+      go2w_spawn/ unitree_go2w_ros2/  Spawn helpers + Unitree ROS 2 SDK
+    collaborative_exploration/
+      cfpa2_collaborative_autonomy/  CFPA2 frontier allocator (single + dual coordinator)
+      go2_nav_algorithms/            Scan mapper, frontier detection, far_status_adapter
+      go2_tare_planner_ros2/         CMU TARE wrapped for ROS 2 (real-robot path)
+      slam_backend_adapters/         ROS 2 adapters for Swarm-LIO2 / Dynamic-LIO / ERASOR
+      dynamic_scene_filter/          Temporal voxel decay + dynamic obstacle injector
+      door_task/                     Dual-robot door task (VLM + analytical barrier)
+    vlm_explorer/                  Single-robot VLM-in-the-loop exploration (Phase 1)
+    vendor/                        Vendored third-party (not submodules):
+      autonomy_stack_go2/            CMU FAR + terrain_analysis + localPlanner
+      tare_planner/                  CMU TARE (caochao39, humble-jazzy)
+      far_planner/                   FAR V-graph planner (vendored separately)
+      fast_lio/                      Fast-LIO2 LiDAR-inertial SLAM (HKU MaRS)
+      sc_pgo/                        Scan-context loop closure (post-FLIO2 correction)
+      mujoco_ros2_control/           DFKI MuJoCo ros2_control HW interface
+      champ/                         CHAMP quadruped locomotion controller
+      livox_ros_driver2/ Livox-SDK2/ Mid-360 driver (workspace-local install)
+      multirobot_map_merge/          Multi-robot OccupancyGrid merge
+      elevation_mapping_gpu_ros2/    GPU elevation mapping (experimental)
+      patchwork-plusplus/            Ground-segmentation
+      rl_sar/ go2_rl_ws/             RL locomotion experiments (saturation issues — see go2_integration.md)
 ```
 
-## Architecture (sim path)
+## Architecture (sim Nav2 MPPI path)
 
 ```text
 MuJoCo physics (500 Hz)
-  └─ mujoco_ros2_control  →  LiDAR PointCloud2, joint_states, /clock
+  └─ mujoco_ros2_control  →  PointCloud2, joint_states, /clock
          │
-         ├─ Fast-LIO2  →  /Odometry, /cloud_registered
-         │     └─ SC-PGO loop closure  →  /aft_pgo_odom
+         ├─ Fast-LIO2  →  /Odometry, /cloud_registered{,_body}
+         │     └─ fast_lio_tf_adapter  →  /<ns>/odom/nav  +  TF map → base_link
          │
-         ├─ terrain_analysis  →  /terrain_map[_ext]
+         ├─ octomap_server  →  /<ns>/map (2D projection from /cloud_registered_body)
          │
          ├─ exploration goal source
-         │     ├─ CFPA2 frontier allocator          (nav_backend=reactive/far/default)
-         │     └─ real CMU TARE planner             (nav_backend=tare_real, FAR unwired)
-         │           └─ waypoint watchdog → /nogo_boundary (persistent blacklist)
+         │     └─ CFPA2 single_robot_node          →  /<ns>/way_point_coord
+         │           └─ cfpa2_to_nav2_bridge       →  /<ns>/goal_pose
          │
-         └─ localPlanner  →  pathFollower  →  /cmd_vel
-                                                 └─ CHAMP (200 Hz IK) → ros2_control
+         ├─ Nav2 stack (planner_server + controller_server + behavior_server +
+         │              bt_navigator + lifecycle_manager)
+         │     ├─ SmacPlannerLattice (SE2 holonomic, 0.5 m diff primitives)
+         │     ├─ MPPIController DiffDrive (no-strafe, forward-bias critics)
+         │     └─ Recovery: BackUp / Spin / Wait
+         │
+         └─ stuck_watchdog (per-namespace) — outer loop on (v ≈ 0, ω ≈ 0):
+                 cancel goal → Nav2 BackUp action → republish goal
 ```
+
+The real-robot path replaces MuJoCo with `livox_ros_driver2` + Unitree sport API for cmd_vel, and adds `gravity_align_at_init.py` (one-shot, IMU-measured `map → camera_init`) so the SLAM map is gravity-aligned regardless of startup terrain.
 
 ## Navigation Backends
 
-Switchable via `nav_backend:=` / `nav_execution_backend:=` at launch time.
+Switchable via `nav_backend:=` / `nav=` at launch time.
 
-| Backend | Planner | Note |
+| Backend | Planner / Controller | Status |
 | --- | --- | --- |
-| `astar` | `astar_nav_node` | C++ A\* + pure-pursuit + Stanley + oriented footprint validation (Option B) |
-| `default` | `default_nav.py` | Python A\* grid + D\* Lite + recovery (legacy stable) |
-| `far` | CMU autonomy stack | Terrain analysis + FAR V-graph + pathFollower |
+| **`nav2_mppi`** | Nav2 SmacPlannerLattice + MPPIController + bt_navigator + lifecycle_manager | **Production** (default since 2026-04-29) — supports `holonomic_profile=off / omni_2d / se2_holonomic` |
+| `far` | CMU autonomy stack (terrain_analysis + FAR V-graph + localPlanner + pathFollower) | Escape hatch — kept for benchmark comparison |
 | `tare_real` | Real CMU TARE → localPlanner direct (Go2 only, FAR unwired) | Used in `nav_test_go2_tare_real.launch.py` and `real_single_tare_real.launch.py` |
+| `astar` | C++ `astar_nav_node` (8-conn A* + pure-pursuit + Stanley + oriented footprint) | Legacy escape hatch; door task pinned here |
+| `default` | Python `default_nav.py` (A\* grid + D\* Lite + recovery) | Legacy stable on real robot + door task |
 
-Legacy aliases silently upgrade: `reactive` → `default`, `rrt_star` / `far_rrt_star` / `mppi` → `astar`. The reactive RRT\* planner (`reactive_nav_node`) and MPPI (`mppi_nav_node`) were deleted 2026-04-24.
-
-**Why TARE bypasses FAR:** FAR's V-graph is built over *observed traversable* space; TARE's frontier goals sit at the *boundary* of observed space. Stacking them runs two global planners with conflicting scopes. CMU's reference pipeline pairs TARE → localPlanner directly.
+**SE2 holonomic profile (default for Go2W and Go2)** — SmacPlannerLattice with 0.5 m diff lattice primitives + MPPI DiffDrive (no strafe, forward-bias critics, pivot-then-forward execution). Suppresses lateral crab-walk while keeping SE2 planner awareness for narrow geometry.
 
 ## SLAM Options
 
-| Backend | Topic in | Backend chain | Use |
+| Backend | Inputs | Output topics | Use |
 | --- | --- | --- | --- |
-| Cartographer 2D | `scan_3d` (LaserScan) | `cartographer_node` → TF → `carto_odom_bridge` | Default on Go2W real robot (L1 LiDAR) |
-| Fast-LIO2 + SC-PGO | PointCloud2 | `fast_lio` → `sc_pgo` → `slam_odom_relay` | Mid-360 LiDAR, sim + real; fixes scan-odom temporal lag |
+| **Fast-LIO2 + Mid-360** | `/livox/lidar`, `/livox/imu` | `/Odometry`, `/cloud_registered{,_body}` | Default sim + real (Mid-360 onboard) |
+| Cartographer 2D + L1 | `/utlidar/transformed_cloud` | `/<ns>/map_prob`, TF map → body | Real robot fallback (Unitree L1 LiDAR) |
+| **Swarm-LIO2 hybrid (ROS 1 in Docker)** | `/livox/lidar`, `/livox/imu` (bridged) | `/robot_a/swarm_lio2_raw/{Odometry,cloud_static}` | Phase A additive — used by `nav_test_swarm_lio2_se2.sh` |
+
+**TF / gravity alignment (real Fast-LIO path):** `gravity_align_at_init.py` samples ~1 s of stationary IMU at startup and publishes a latched static `map → camera_init` from the measured gravity vector. The Mid-360 mount tilt (+15°/-2°) lives in `go2_description/xacro/livox_mid360.xacro` as the canonical source; `slam.launch.py` reads it for the `body → base_link` static. Re-calibrating the mount only requires editing the xacro.
+
+**TF / gravity alignment (sim swarm_lio2 path):** `swarm_lio_tf_adapter.py` rebroadcasts swarm_lio2's `quad1/world → quad1_aft_mapped` dynamic into ROS 2 and rewrites cloud frame_ids to play nicely with octomap.
 
 ## VLM Integration
 
@@ -170,7 +228,8 @@ source /opt/ros/humble/setup.bash
 # COLCON_IGNORE is gitignored (see .gitignore), so each clone must recreate it.
 touch src/vendor/autonomy_stack_go2/COLCON_IGNORE  \
       src/vendor/Livox-SDK2/COLCON_IGNORE          \
-      src/vendor/sc_pgo/fast_lio_sam/COLCON_IGNORE
+      src/vendor/sc_pgo/fast_lio_sam/COLCON_IGNORE \
+      src/mtare_ros1_ws/COLCON_IGNORE
 
 colcon build --symlink-install --cmake-clean-cache \
   --cmake-args -DPython3_EXECUTABLE=$CONDA_PREFIX/bin/python3
@@ -184,7 +243,8 @@ source install/setup.bash
 | --- | --- |
 | `src/vendor/autonomy_stack_go2/` | CMU upstream, vendored as reference; the active FAR / terrain_analysis / localPlanner builds live in their own packages. |
 | `src/vendor/Livox-SDK2/` | Plain CMake library, not a colcon package; built workspace-local by `livox_ros_driver2`'s own install step. |
-| `src/vendor/sc_pgo/fast_lio_sam/` | ROS 1 (catkin) — see `PORT_TO_ROS2.md` next to it. The active SC-PGO loop closure path uses a different sub-tree. |
+| `src/vendor/sc_pgo/fast_lio_sam/` | ROS 1 (catkin) — the active SC-PGO loop closure path uses a different sub-tree. |
+| `src/mtare_ros1_ws/` | ROS 1 MTARE workspace — kept for reference only. |
 
 YAML + Python are live via symlink-install; C++ requires rebuild.
 
@@ -197,21 +257,31 @@ YAML + Python are live via symlink-install; C++ requires rebuild.
 5. Kill zombie MuJoCo before re-launch (see [debug_notes.md](docs/claude/debug_notes.md)).
 6. Benchmark PASS = `completed ∧ coverage≥90% ∧ contacts==0 ∧ ¬tipped`. Use ≥10 trials for reliability claims.
 7. Real-robot: any Unitree BT pad button press latches a 5 s **supervisor-panic** window — auto `cmd_vel` blocked, FAR disarmed, sticks drive directly. See [real_robot.md](docs/claude/real_robot.md#supervisor-panic-override-any-button-emergency).
+8. **MPPI footprint:** with `consider_footprint: false` (the default), MPPI uses `robot_radius + collision_margin_distance` as the rejection zone. Set `consider_footprint: true` + a polygon `footprint:` on both costmaps for narrow corridors. See [CLAUDE.md golden rule 14](CLAUDE.md).
+9. **Outer-loop `stuck_watchdog` is required** — Nav2's BT recovery rarely fires because MPPI/DWB self-report success while emitting (v ≈ 0, ω ≈ 0). The per-namespace watchdog catches the silent stalls.
 
 ## Debugging
 
 ```bash
+# Topic rates
 ros2 topic hz /{ns}/registered_scan
 ros2 topic hz /{ns}/odom/nav
+
+# TF lookups (dual-robot must remap)
+ros2 run tf2_ros tf2_echo map base_link \
+    --ros-args -r /tf:=/{ns}/tf -r /tf_static:=/{ns}/tf_static
 
 # Stale DDS state → clear shared memory
 rm -f /dev/shm/fastrtps_* /dev/shm/sem.fastrtps_*
 
-# Zombie MuJoCo cleanup
-pkill -9 -f mujoco_ros2_control; pkill -9 -f mujoco_sensor; killall -9 rviz2
+# Zombie MuJoCo cleanup (preflight kill helper)
+bash scripts/launch/_preflight_kill.sh
+
+# Outdoor Fast-LIO drift analysis on a recorded bag
+./scripts/debug/analyze_lidar_odom_drops.py bags/livox_dataset_*  --mask 0,2
 ```
 
-See [docs/claude/debug_notes.md](docs/claude/debug_notes.md) for cross-cutting gotchas (QoS, zombies, MuJoCo quirks) and [docs/claude/real_robot.md](docs/claude/real_robot.md) for the 10-layer Mid-360 bring-up chain.
+See [docs/claude/debug_notes.md](docs/claude/debug_notes.md) for cross-cutting gotchas (QoS, zombies, MuJoCo quirks) and [docs/claude/real_robot.md](docs/claude/real_robot.md) for the real-robot bring-up chain.
 
 ## Environment
 
@@ -219,7 +289,7 @@ See [docs/claude/debug_notes.md](docs/claude/debug_notes.md) for cross-cutting g
 - **ROS 2:** Humble
 - **Python:** 3.10 (micromamba `cmu_env`)
 - **Sim:** MuJoCo 3.6.0 (pip) + DFKI `mujoco_ros2_control`
-- **DDS:** FastDDS (sim, `config/fastdds_no_shm.xml`) · CycloneDDS (real robot)
+- **DDS:** FastDDS (sim, `config/fastdds_no_shm.xml`) · CycloneDDS (real robot, `config/cyclonedds_*.xml`)
 - **Build:** colcon + ament_cmake / ament_python
 
 ## License

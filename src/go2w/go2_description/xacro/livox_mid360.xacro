@@ -1,0 +1,64 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+    <!-- ─── Livox Mid-360 mount on Go2 / Go2W top plate ─────────────────
+         Mechanical mount calibration — measured 2026-04-17 via
+         tools/measure_mid360_tilt.py (20s static, std=0.027 m/s²):
+             body reads gravity = (-0.260, -0.036, +0.964) g
+           → body tilted +15.103° pitch (forward), -2.109° roll (left)
+             relative to level base_link.
+
+         Orientation values:
+             pitch = +0.263591 rad (forward tilt)
+             roll  = -0.036809 rad (left lean)
+         Sign convention: rpy in URDF expresses CHILD orientation in PARENT
+         frame, so livox_mid360_base orientation in trunk frame.
+
+         Translation (~8 cm forward, ~12 cm above base_link) is the typical
+         Go2W top-plate mount; can be remeasured per unit if needed.
+
+         Note on TF tree: this URDF chain (trunk → livox_mid360_base →
+         livox_mid360_imu) is for VISUALIZATION + DOCUMENTATION ONLY. The
+         actual SLAM TF chain runs through Fast-LIO's `body` frame, which is
+         physically the same point as livox_mid360_imu but a separate TF
+         node (TF can't have multi-parent — Fast-LIO owns body's parent
+         link to camera_init dynamically). The values here MUST stay in
+         sync with slam.launch.py's body→base_link static.
+         ─────────────────────────────────────────────────────────────────── -->
+    <joint name="livox_mid360_mount_joint" type="fixed">
+        <parent link="trunk"/>
+        <child link="livox_mid360_base"/>
+        <origin xyz="0.08 0 0.12" rpy="-0.036809 0.263591 0"/>
+    </joint>
+    <link name="livox_mid360_base">
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <cylinder length="0.05" radius="0.046"/>
+            </geometry>
+            <material name="black">
+                <color rgba="0.1 0.1 0.1 1.0"/>
+            </material>
+        </visual>
+        <inertial>
+            <mass value="0.001"/>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/>
+        </inertial>
+    </link>
+
+    <!-- Livox Mid-360 internal LiDAR-to-IMU offset (factory datasheet).
+         Same numbers live in fastlio_mid360.yaml as `extrinsic_T` for the
+         Fast-LIO EKF — the duplicate here is for URDF tree completeness. -->
+    <joint name="livox_mid360_imu_joint" type="fixed">
+        <parent link="livox_mid360_base"/>
+        <child link="livox_mid360_imu"/>
+        <origin xyz="-0.011 -0.02329 0.04412" rpy="0 0 0"/>
+    </joint>
+    <link name="livox_mid360_imu">
+        <inertial>
+            <mass value="0.001"/>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/>
+        </inertial>
+    </link>
+</robot>

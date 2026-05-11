@@ -1,8 +1,23 @@
 # CLAUDE.md — Collab_QRC Index
 
-Multi-robot autonomy with Unitree Go2W wheeled-legged quadrupeds on ROS 2 Humble + MuJoCo (primary) / Gazebo Classic (legacy) / real-robot deployment. Two active threads: **dual-robot door task** (VLM-driven coordination) and **single-robot nav benchmarking** (CMU stack tuning).
+Multi-robot autonomy with Unitree Go2W wheeled-legged quadrupeds + Go2 walking quadrupeds on ROS 2 Humble + MuJoCo (primary) / Gazebo Classic (legacy) / real-robot deployment. Active focus: **Nav2 SE2 holonomic stack tuning** for both single-robot exploration and heterogeneous dual-robot (Go2W + Go2) coordination, with CFPA2 frontier allocation.
 
-For Phase 1 (single-robot VLM exploration) background, Phase 2 FSM-era archive, and archived 2026-04 operational notes, see [CLAUDE1.md](CLAUDE1.md).
+Door task (Phase 2 dual-robot VLM coordination) and the legacy A*/default Python nav backends were removed in the 2026-05 cleanup; see [CLAUDE1.md](CLAUDE1.md) for Phase 1 VLM exploration history, Phase 2 FSM archive, archived 2026-04 operational notes, and the deletion log.
+
+## Active state (2026-05-10) — CFPA2 policy + Go2W wheel-skid fix
+
+- **CFPA2 stable-challenger goal override** ([commit 0505ff0](src/collaborative_exploration/cfpa2_collaborative_autonomy/cfpa2_collaborative_autonomy/cfpa2_coordinator_node.py)).
+  `_apply_goal_policy` previously held a goal as long as the robot was making progress, never re-evaluating utility under the current map → robot kept committing to the older frontier even when a much better one appeared mid-flight. New override (gated by 3-tick streak + 2s lock-age + 1.20× score-improvement vs re-evaluated `utility(last)`) lets a freshly-seen high-IG frontier preempt without re-introducing zigzag from cluster centroid jitter. Bypasses `goal_lock_sec` since the streak gate already provides anti-thrash. Set `cfpa2_challenger_streak_required=0` to disable.
+
+- **CFPA2 multiplicative overlap penalty for joint allocator** (same commit).
+  Old `joint = a + b - λ·overlap` with λ=1.0 deducted ≤ 1.0 from IG-dominated sums in the hundreds-thousands → both robots routinely chose the same frontier region. New `joint = (a + b) × (1 − λ·overlap)` makes λ a "max % deduction when fully overlapping" (default 0.5 = up to 50% off). Scale-invariant w.r.t. IG-box / `cfpa2_w_ig` changes. Also tightened `cfpa2_sigma_overlap_m: 0 → 4` (was 2×sensor_range fallback ≈ 7m, too gradual). Live test: same-room (500+500, 2m apart) joint=520 vs different-rooms (400+350, 12m apart) joint=735 → splits decisively.
+
+- **Go2W wheel-skid bug — router subscribed to wrong joint_states topic** ([commit 5d0e01b](src/go2w/go2w_control/scripts/go2w_hybrid_cmd_router.py#L81)).
+  In legged mode the router is supposed to mirror actual wheel ω back as setpoint so kv=5 actuator brake torque stays at 0 (true freewheel). Live `ros2 topic echo` showed it publishing `[0,0,0,0]` indefinitely → `kv·(0 − ω_actual)` ≈ 13 N·m brake force per wheel under CHAMP gait → wheels skidded. Two root causes:
+  1. Router default `wheel_state_topic = /mujoco_sim/joint_states` (absolute) had publisher_count=0 in single-robot sim (controller_manager runs in `/robot/`). Subscribed to dead topic → `_latest_wheel_vels` stayed `[0,0,0,0]`. Default changed to relative `joint_states` (works for single); mixed/dual launches override back to `/mujoco_sim/joint_states` explicitly.
+  2. `nav_test_mujoco_fastlio.launch.py` was spawning a duplicate `go2w_hybrid_cmd_router` (the included `single_go2w_mujoco_cfpa2.launch.py` already starts one). Both shared name+ns → CHAMP saw 2× messages. Removed.
+
+  Bonus dual-Go2W fix: per-namespace `wheel_joint_names` override (b_*-prefixed for robot_b) so robot_b's router doesn't read robot_a's wheel ω from the shared `/mujoco_sim/joint_states`.
 
 ## Active state (2026-05-05) — SE2-only direction + observability + lidar_range
 
@@ -31,27 +46,10 @@ For Phase 1 (single-robot VLM exploration) background, Phase 2 FSM-era archive, 
 - **CFPA2 reachability uses an inflation-blind BFS** ([`cfpa2_coordinator_node.py:1208`](src/collaborative_exploration/cfpa2_collaborative_autonomy/cfpa2_collaborative_autonomy/cfpa2_coordinator_node.py#L1208)).
   `_distance_transform` walks 4-connected through cells where `_is_free()` is True (i.e. `0 ≤ v < occ_thresh` AND `v != -1`). It does NOT account for inflation, footprint, or kinematics — so it can mark a frontier reachable that Nav2 then cannot path through. For now this is documented as a known gap; the planned fix is to feed CFPA2 from `/{ns}/global_costmap/costmap` (inflated) instead of `/{ns}/map` (raw octomap projection).
 
-## Active state (2026-05-02)
+## Active state (2026-05-02) — archived
 
-- **Go2W real Nav2 profile split + SE2 footprint debugging (2026-05-01 → 2026-05-02)** — session started from persistent yaw-hunting / stop-go behavior in narrow passages, moved through "enable holonomic behavior", and converged on a 3-profile runtime matrix with explicit planner/controller semantics.
-  1. **Core finding: `SmacPlanner2D` is XY-only** — source inspection confirmed Node2D has one angle bin (`angles == 1`), so it cannot plan heading-dependent entry maneuvers for anisotropic footprints. Local MPPI footprint checks do not replace planner-level SE2 reasoning.
-  2. **Profile architecture shipped** — preserved [`nav2_go2w_real.yaml`](src/go2w/go2w_config/config/nav/nav2_go2w_real.yaml) as baseline; layered real-time overlays via [`navigation.launch.py`](src/go2w/go2w_config/launch/navigation.launch.py), [`real_single.launch.py`](src/go2w/go2w_real_bringup/launch/real_single.launch.py), and [`real_autonomy.sh`](scripts/real/real_autonomy.sh).
-  3. **Three Go2W real Nav2 profiles (`nav=nav2_mppi`)**:
-     - `off`: default diff-drive profile (`SmacPlannerHybrid` + MPPI DiffDrive).
-     - `omni_2d`: `SmacPlanner2D` + MPPI Omni (legacy `holonomic=true` alias maps here).
-     - `se2_holonomic`: `SmacPlannerLattice` with forward/pivot execution policy (final mode from this session).
-     **Sim parity (added 2026-05-02 PM)**: same `se2_holonomic` overlay is available in:
-     - **Mixed demo** ([`nav_test_demo3_mixed.sh`](scripts/launch/nav_test_demo3_mixed.sh)) via per-robot flags `holonomic_profile_a` / `holonomic_profile_b` (Go2W / Go2).
-     - **Single-robot Go2 sim** ([`nav_test_go2.sh`](scripts/launch/nav_test_go2.sh), [`nav_test_go2_demo3.sh`](scripts/launch/nav_test_go2_demo3.sh)) and any `nav_test_fastlio.sh`-based launch via `nav_backend:=nav2_mppi holonomic_profile:=se2_holonomic`. The `nav2_mppi` backend was newly wired into [`nav_test_mujoco_fastlio.launch.py`](src/go2w/go2_gazebo_sim/launch/nav_test_mujoco_fastlio.launch.py) — full Nav2 stack (planner_server + controller_server + behavior_server + bt_navigator + lifecycle_manager) plus `cfpa2_to_nav2_bridge`, `path_relay`, `stuck_watchdog`, and (Go2W only) `go2w_hybrid_cmd_router`.
-     - **Sim overlay file** is [`nav2_se2_holonomic_overlay_sim.yaml`](src/go2w/go2w_config/config/nav/nav2_se2_holonomic_overlay_sim.yaml) — same lattice + forward-bias deltas as real, but omits `vx_max`/`wz_max`/`ax_max` so each robot's base sim yaml continues to dictate its speed envelope (Go2W 0.50 m/s, Go2 0.30 m/s). The 0.5 m diff lattice primitives are stock — they're wider than Go2 walking strictly requires (min_turning_radius=0.05) but stay kinematically feasible.
-  4. **Important debug incident: missing overlay file was install drift, not launch logic** — launch failed with `No such file ... install/go2w_config/.../nav2_go2w_real_omni_overlay.yaml`; file existed in `src/` but not `install/`. `colcon build --symlink-install --packages-select go2w_config` fixed immediately.
-  5. **First SE2 attempt** — `SmacPlannerLattice + omni primitives + MPPI Omni` improved feasibility but enabled crab-walk, which mismatched operator preference.
-  6. **Final SE2 tuning (user-confirmed better)** — in [`nav2_go2w_real_se2_holonomic_overlay.yaml`](src/go2w/go2w_config/config/nav/nav2_go2w_real_se2_holonomic_overlay.yaml):
-     - lattice primitives switched to `.../sample_primitives/.../diff/output.json`
-     - MPPI forced to no-strafe execution (`motion_model: DiffDrive`, `vy_std/vy_max/ay_max = 0`)
-     - yaw+forward bias increased (`GoalAngleCritic`, `PathAngleCritic`, `PreferForwardCritic`)
-  7. **Net behavioral policy** — keep SE2 planner awareness for narrow geometry, but execute as yaw-align + forward motion with pivot turns; no lateral crab-walk.
-  8. **Cross-link for operators** — real-robot runbook mirror is in [`docs/claude/real_robot.md`](docs/claude/real_robot.md), with the same 2026-05-02 profile note near the top for launch-time decisions.
+- Detailed timeline moved to [`CLAUDE1.md`](CLAUDE1.md#archive-2026-05-02--go2w-real-nav2-profile-split--no-crab-se2-tuning).
+- Headline: 3-profile runtime matrix (`off` / `omni_2d` / `se2_holonomic`) for Go2W real Nav2; finding that `SmacPlanner2D` is XY-only (one angle bin in Node2D); final SE2 tuning forces no-strafe execution (`MPPI motion_model=DiffDrive`, lattice diff primitives, forward+yaw bias). Sim parity added via [`nav2_se2_holonomic_overlay_sim.yaml`](src/go2w/go2w_config/config/nav/nav2_se2_holonomic_overlay_sim.yaml). 2026-05-05 superseded this with "SE2-only" — the older `off` / `omni_2d` profiles are escape hatches now.
 
 ## Active state (2026-04-30) — archived
 
@@ -75,10 +73,7 @@ For Phase 1 (single-robot VLM exploration) background, Phase 2 FSM-era archive, 
 
 | Topic | Doc |
 |---|---|
-| Door task current architecture (scene, packages, VLM, perception, barrier) | [docs/claude/door_task.md](docs/claude/door_task.md) |
-| Door task evolution, lessons, 5-bug chain | [docs/claude/door_task_history.md](docs/claude/door_task_history.md) |
 | Nav stack benchmarking (Phase 5), config A, iteration logs | [docs/claude/nav_benchmarks.md](docs/claude/nav_benchmarks.md) |
-| **A\* planner (astar_nav_node): Option B footprint, Plan B legged gating, deletion of reactive/MPPI** | [docs/claude/nav_benchmarks.md#a-star-planner-2026-04-24](docs/claude/nav_benchmarks.md#a-star-planner-2026-04-24) |
 | Fast-LIO2 / Cartographer A/B, LiDAR options, demo scenes | [docs/claude/slam_and_scenes.md](docs/claude/slam_and_scenes.md) |
 | Cross-cutting debugging gotchas (QoS, zombies, MuJoCo quirks) | [docs/claude/debug_notes.md](docs/claude/debug_notes.md) |
 | **Gazebo vs MuJoCo — why stack works in Gazebo, MuJoCo matches real life** | [docs/claude/sim_comparison.md](docs/claude/sim_comparison.md) |
@@ -93,7 +88,7 @@ For Phase 1 (single-robot VLM exploration) background, Phase 2 FSM-era archive, 
 
 ```
 scripts/
-├── launch/    user-invoked entry points (nav_test_*, door_demo, vlm_demo)
+├── launch/    user-invoked entry points (nav_test_*, vlm_demo)
 ├── bench/     multi-trial PASS-criterion runners + session_reporter
 ├── runtime/   ROS 2 nodes started by launch files (policy, checkers, supervisors)
 ├── debug/     observe-a-running-sim tools (far_monitor, vlm_debug_web, …)
@@ -105,79 +100,58 @@ scripts/
 ## Quick launch
 
 ```bash
-# Door task (no flags; VLM-only path)
-./scripts/launch/door_demo_mujoco.sh
+# Single-robot Go2W nav smoke test (Nav2 MPPI + SE2 by default)
+./scripts/launch/nav_test_fastlio.sh robot:=go2w gui:=true rviz:=true
+./scripts/launch/nav_test_fastlio.sh robot:=go2w gui:=false           # headless
 
-# Nav stack smoke test
-NUM_TRIALS=1 DURATION_SEC=30 OUT_DIR=/tmp/far_bench/smoke ./scripts/bench/benchmark_far_nav.sh
-
-# 5-trial / 10-trial nav benchmark
-./scripts/bench/benchmark_far_nav.sh                                # 5 trials default
+# Nav benchmark (FAR baseline) — 5-trial / 10-trial
+./scripts/bench/benchmark_far_nav.sh
 NUM_TRIALS=10 DURATION_SEC=120 OUT_DIR=/tmp/cfgA_10 ./scripts/bench/benchmark_far_nav.sh
-
-# Fast-LIO + MID-360 benchmark
-./scripts/bench/benchmark_fastlio.sh
+./scripts/bench/benchmark_fastlio.sh                                  # Fast-LIO + MID-360
 
 # Demo2 / LRC maze
 ./scripts/launch/nav_test_demo2.sh gui:=false
 ./scripts/launch/nav_test_lrc_maze.sh
 
-# VLM exploration demo (Phase 1) — defaults to nav_execution_backend:=far;
-# pass nav_execution_backend:=astar to swap in the C++ A* planner.
+# VLM exploration demo (Phase 1) — uses nav2_mppi
 ./scripts/launch/vlm_demo_mujoco.sh
 
-# Single-robot A* smoke test (MuJoCo + CHAMP + astar_nav_node + Option B)
-./scripts/launch/single_astar.sh                                 # headless, demo3 default
-./scripts/launch/single_astar.sh robot:=go2w scene:=demo3 gui:=true rviz:=true
-./scripts/launch/single_astar.sh session_duration_sec:=120       # bounded run + JSON report
-
-# Heterogeneous dual (Go2W + Go2 share demo3_mixed + CFPA2 coord;
-# both DEFAULT to nav2_mppi since 2026-04-29 — production stack)
+# Heterogeneous dual (Go2W + Go2 + demo3_mixed + CFPA2 coord, nav2_mppi)
 ./scripts/launch/nav_test_demo3_mixed.sh gui:=true rviz:=true
 ./scripts/launch/nav_test_demo3_mixed.sh nav_backend_a:=far nav_backend_b:=far  # both FAR
-./scripts/launch/nav_test_demo3_mixed.sh nav_backend_b:=astar                   # mixed: A=mppi, B=astar
 
-# Go2 (non-W) sim — CHAMP locomotion, demo1 12×8 m / demo3 24×16 m
-./scripts/launch/nav_test_go2.sh gui:=true rviz:=true          # walk + FAR smoke
-./scripts/launch/nav_test_go2_demo3.sh gui:=true rviz:=true    # larger scene
-./scripts/bench/benchmark_go2.sh                                # 5-trial PASS check
-./scripts/bench/benchmark_go2_demo3.sh                          # same on demo3
-# Go2 + real CMU TARE exploration (FAR bypassed, TARE→localPlanner direct)
-./scripts/launch/nav_test_go2_tare_real.sh gui:=true rviz:=true
-# 10-trial TARE benchmark (10 min each, demo3, ~3.3 h wall-clock)
-./scripts/bench/benchmark_go2_tare.sh
-# RL policy (experimental, robot saturates — see go2_integration.md)
-./scripts/launch/nav_test_go2.sh gui:=true rviz:=true rl_policy:=true
+# Go2 (no-wheel) sim — CHAMP locomotion, demo1 12×8 m / demo3 24×16 m
+./scripts/launch/nav_test_go2.sh gui:=true rviz:=true                 # walk + FAR smoke
+./scripts/launch/nav_test_go2_demo3.sh gui:=true rviz:=true           # larger scene
+./scripts/bench/benchmark_go2.sh                                      # 5-trial PASS check
+./scripts/bench/benchmark_go2_demo3.sh                                # same on demo3
+./scripts/launch/nav_test_go2_tare_real.sh gui:=true rviz:=true       # CMU TARE → localPlanner
+./scripts/bench/benchmark_go2_tare.sh                                 # 10-trial TARE benchmark
+./scripts/launch/nav_test_go2.sh rl_policy:=true                      # RL (experimental, see go2_integration.md)
 
 # Real robot (Go2W) — RECOMMENDED entry as of 2026-05-05:
 #   SE2 holonomic baked in, oa=false (sport API direct), curated flag surface.
-./scripts/real/real_autonomy_se2.sh                                  # default Go2W SE2
-./scripts/real/real_autonomy_se2.sh slam=fastlio_mid360               # Mid-360 + Fast-LIO
+./scripts/real/real_autonomy_se2.sh                                   # default Go2W SE2
+./scripts/real/real_autonomy_se2.sh slam=fastlio_mid360                # Mid-360 + Fast-LIO
 ./scripts/real/real_autonomy_se2.sh slam=fastlio_mid360 lidar_range=4.0
 ./scripts/real/real_autonomy_se2.sh stop                              # kill everything
 
-# Legacy multi-profile launcher (still supported for ad-hoc comparison runs):
+# Legacy multi-profile real launcher (escape hatches for ad-hoc comparison):
 ./scripts/real/real_autonomy.sh                                       # Cartographer + L1 default
 ./scripts/real/real_autonomy.sh slam=fastlio_mid360
 ./scripts/real/real_autonomy.sh oa=false holonomic_profile=off        # diff-drive Reeds-Shepp
 ./scripts/real/real_autonomy.sh oa=false holonomic_profile=omni_2d    # SmacPlanner2D + MPPI Omni
-./scripts/real/real_autonomy.sh oa=false holonomic=true               # legacy alias for omni_2d
-./scripts/real/real_autonomy.sh nav=cfpa2                             # Python default_nav.py
 ./scripts/real/real_autonomy.sh slam=fastlio_mid360 nav=far
-# Real robot (Go2, no-wheel) — same stack, walking-gait nav tuning
-./scripts/real/real_autonomy_go2.sh                       # nav2_mppi default
+./scripts/real/real_autonomy_go2.sh                                   # Go2 (no wheel), nav2_mppi
 ./scripts/real/real_autonomy_go2.sh slam=fastlio_mid360 nav=far
-# TARE exploration on either robot — stub-based (go2_tare_planner_ros2 over CFPA2+mux)
-./scripts/real/real_autonomy.sh robot=go2 nav=tare
-# **Real CMU TARE** → localPlanner direct (FAR unwired, watchdog armed).
+# Real CMU TARE → localPlanner direct (FAR unwired, watchdog armed).
 # oa=false is REQUIRED — default (oa=true) routes Move to /api/obstacles_avoid/request
 # which needs manual mode pre-arm; oa=false sends to /api/sport/request (api_id=1008).
 ./scripts/real/real_autonomy.sh robot=go2 slam=fastlio_mid360 nav=tare_real oa=false
-./scripts/real/real_autonomy.sh stop           # kill everything real-robot
+./scripts/real/real_autonomy.sh stop                                  # kill everything real-robot
 ```
 
-Debug dashboards:
-- Door task: <http://127.0.0.1:8080> (auto-starts)
+Debug dashboard:
 - VLM exploration: <http://localhost:8501> (auto-starts)
 
 ## Build
@@ -204,14 +178,14 @@ src/
   go2w/                             Go2W platform packages
     go2_gazebo_sim/                   MJCF/world + launch files
     mujoco_sensor_bridge/             MuJoCo sensor nodes
-    go2w_control/ go2w_nav/           Locomotion + nav (C++ astar_nav + Python default_nav)
-    go2w_perception/ go2w_config/     QoS bridge, configs, sub-launches
+    go2w_control/                     Hybrid cmd_vel router (legged + wheel mux)
+    go2w_nav/                         Safety utilities (collision_monitor, cmd_vel_safety_shield, …)
+    go2w_perception/ go2w_config/     QoS bridge, robot_self_filter, configs, sub-launches
     unitree_go2w_ros2/                Unitree ROS 2 integration
-  exploration/
-    cfpa2_collaborative_autonomy/     CFPA2 frontier allocator (single-robot)
-    go2_nav_algorithms/               simple_scan_mapper, frontier detection
   collaborative_exploration/
-    door_task/                        Door task package (see door_task.md)
+    cfpa2_collaborative_autonomy/     CFPA2 frontier allocator (single + dual joint allocator)
+    dynamic_scene_filter/             Dynamic obstacle filter (peer body + temporal voxel)
+    slam_backend_adapters/            Fast-LIO ↔ Nav2 adapters
   vendor/
     fast_lio/                         Fast-LIO2 SLAM
     autonomy_stack_go2/               CMU stack (FAR, terrain analysis)
@@ -225,16 +199,12 @@ docs/claude/                        Detailed skill-API docs (this index)
 
 ## Nav backends
 
-Switchable via `nav_backend:=` / `nav_execution_backend:=` at launch time.
+Switchable via `nav_backend:=` at launch time. Two production backends now (legacy `astar` / `default` / `reactive` / `mppi_nav_node` were retired in commit 5c46a51).
 
 | Backend | Planner | Note |
 |---|---|---|
-| `nav2_mppi` | `nav2_planner` (SmacPlannerHybrid REEDS_SHEPP) + `nav2_controller` (MPPIController) + `nav2_behaviors` + `nav2_bt_navigator` + `nav2_lifecycle_manager` | Production stack for both robots (2026-04-29). Per-platform yaml: [`nav2_go2w_full_stack.yaml`](src/go2w/go2w_config/config/nav/nav2_go2w_full_stack.yaml) for Go2W, [`nav2_go2_full_stack.yaml`](src/go2w/go2w_config/config/nav/nav2_go2_full_stack.yaml) for Go2. **Real Go2W now supports overlay profile selection** via `holonomic_profile`: `off` (default), `omni_2d` (`SmacPlanner2D` + MPPI Omni), `se2_holonomic` (`SmacPlannerLattice` + forward/pivot MPPI, no strafe). Outer-loop `stuck_watchdog` per robot. CFPA2 `way_point` is bridged to `goal_pose` via `cfpa2_to_nav2_bridge`. |
-| `astar` | `astar_nav_node` | C++ A* + pure-pursuit + Stanley + curvature speed shaping + oriented footprint validation (Option B). **Retired for dual-robot 2026-04-26**, fully superseded by nav2_mppi 2026-04-29; left in place for door-task baseline. |
-| `default` | `default_nav.py` | Python A* grid + D* Lite + recovery; legacy stable for real robot + door task |
-| `far` | CMU autonomy stack | Terrain analysis + FAR V-graph + path follower (see nav_benchmarks.md) |
-
-Legacy aliases silently upgrade: `reactive` → `default`, `rrt_star` / `far_rrt_star` / `mppi` → `astar`. The reactive RRT* planner (`reactive_nav_node`) and MPPI (`mppi_nav_node`) were deleted 2026-04-24 once A* had matched their capabilities. Door task uses `astar` with `astar_nav_door.yaml` (aggressive obstacle thresholds for bumper contact).
+| `nav2_mppi` | `nav2_planner` (SmacPlannerHybrid REEDS_SHEPP / SmacPlannerLattice for SE2) + `nav2_controller` (MPPIController) + `nav2_behaviors` + `nav2_bt_navigator` + `nav2_lifecycle_manager` | **Default for sim and real.** Per-platform yaml: [`nav2_go2w_full_stack.yaml`](src/go2w/go2w_config/config/nav/nav2_go2w_full_stack.yaml) for Go2W, [`nav2_go2_full_stack.yaml`](src/go2w/go2w_config/config/nav/nav2_go2_full_stack.yaml) for Go2. Real Go2W supports overlay profile selection via `holonomic_profile`: `off` (diff-drive Reeds-Shepp, escape hatch), `omni_2d` (`SmacPlanner2D` + MPPI Omni, escape hatch), `se2_holonomic` (`SmacPlannerLattice` + forward/pivot MPPI, no strafe — **canonical**). Outer-loop `stuck_watchdog` per robot. CFPA2 `way_point` is bridged to `goal_pose` via `cfpa2_to_nav2_bridge`. |
+| `far` | CMU autonomy stack | Terrain analysis + FAR V-graph + path follower (see nav_benchmarks.md). Used for benchmarking comparison and Go2 TARE exploration. |
 
 ## Golden rules (must-follow across all work)
 
@@ -258,6 +228,7 @@ Legacy aliases silently upgrade: `reactive` → `default`, `rrt_star` / `far_rrt
 18. **Outer-loop stuck recovery is needed because MPPI/DWB/FAR rarely *report* failure.** They emit (v ≈ 0, ω ≈ 0) and self-report happy. Nav2's BT recovery only fires on a controller-reported failure → never triggers in this scenario. [`scripts/runtime/stuck_watchdog.py`](scripts/runtime/stuck_watchdog.py) is the watchdog: 10 s no-motion + active goal → Nav2 BackUp action → republish goal. Per-namespace, real-robot-compatible. Caveat: BackUp itself collision-checks `simulate_ahead_time × backup_speed` of clearance (≈ 0.20 m), so a robot wedged between two walls still fails recovery — last-resort raw-cmd_vel pulse not yet wired.
 19. **`SmacPlanner2D` is XY-only; do not expect it to solve heading-dependent footprint-fit maneuvers.** If the requirement is "choose body orientation to pass anisotropic narrow geometry", use an SE2 planner (`SmacPlannerHybrid` / `SmacPlannerLattice`) and tune controller execution policy separately.
 20. **Missing file errors under `install/.../share/<pkg>/...` usually mean stale install artifacts, not bad launch paths.** New YAML under `src/` is invisible to `get_package_share_directory()` until that package is rebuilt (`colcon build --symlink-install --packages-select <pkg>`). This exact failure happened with `nav2_go2w_real_omni_overlay.yaml` on 2026-05-01.
+21. **Don't hardcode absolute topic paths to controller_manager-namespaced state sources.** JointStateBroadcaster (and most `controller_manager`-loaded broadcasters) publish to `<cm_ns>/joint_states`, where `cm_ns` varies per launch: single-robot sim runs `cm_ns=/robot/`, mixed/dual sims run `cm_ns=/mujoco_sim/`, real robots run yet another. A node hardcoding `wheel_state_topic=/mujoco_sim/joint_states` worked silently in mixed/dual but had `publisher_count=0` in single → router published `[0,0,0,0]` wheel commands → kv=5 actuator brake-locked the wheels under CHAMP gait → wheel-skid bug, hidden for months (2026-05-10 fix). Use a relative default that picks up the per-namespace topic, and override in launches whose `cm_ns` is elsewhere. **Verify with `ros2 topic info <topic> -v` that publisher_count > 0 BEFORE assuming the node is wired.**
 
 ## Communication style
 

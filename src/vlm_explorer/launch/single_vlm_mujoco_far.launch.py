@@ -125,12 +125,10 @@ def _launch_setup(context):
     #    ground_truth mode: base launch runs gt_odom_relay directly from p3d GT.
     single_launch = os.path.join(go2_gazebo_pkg, "launch", "single_go2w_mujoco_cfpa2.launch.py")
     go2w_config_pkg = get_package_share_directory("go2w_config")
-    # After the reactive/MPPI cleanup there are only two VLM nav configs:
-    #   default / astar → default_nav_vlm_far.yaml (shared — params like
-    #     max_linear_speed, scan thresholds apply to both C++ and Python
-    #     A* planners via the same keys)
-    #   far → same yaml (FAR reads only a subset; extras are ignored)
-    nav_config_path = os.path.join(go2w_config_pkg, "config", "nav", "default_nav_vlm_far.yaml")
+    # 2026-05-09: default_nav_vlm_far.yaml deleted along with default_nav.py /
+    # astar_nav_node. VLM Phase 1 only ships a `far` backend now; reuse the
+    # production FAR real config since FAR reads the same params on sim/real.
+    nav_config_path = os.path.join(go2w_config_pkg, "config", "nav", "far_planner_real.yaml")
 
     # FAR terrain analysis needs map-frame 3D cloud.
     # - Fast-LIO: registered_scan_reliable is already in map frame.

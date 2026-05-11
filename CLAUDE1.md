@@ -428,3 +428,65 @@ These fixes are still in `simple_scan_mapper_cpp` although the VLM path no longe
 - **Prompts are code** — version-controllable markdown, loaded at startup.
 - **Config single-source-of-truth** — still TODO (`button_xy` in 3 files).
 - **Physics-based success checker** (`door_task_checker.py`) — loads MJCF independently, syncs state via ROS, calls `mj_forward()`. Still shipped alongside VLM path.
+
+## Archive (2026-05-02) — Go2W real Nav2 profile split + no-crab SE2 tuning
+
+Original active state was 80+ lines in CLAUDE.md; condensed to a 1-line pointer there on 2026-05-10. Full timeline preserved here.
+
+Session started 2026-05-01 from persistent yaw-hunting / stop-go behavior in narrow passages on the real Go2W, moved through "enable holonomic behavior", and converged on a 3-profile runtime matrix with explicit planner/controller semantics.
+
+1. **Core finding: `SmacPlanner2D` is XY-only** — source inspection confirmed Node2D has one angle bin (`angles == 1`), so it cannot plan heading-dependent entry maneuvers for anisotropic footprints. Local MPPI footprint checks do not replace planner-level SE2 reasoning.
+2. **Profile architecture shipped** — preserved [`nav2_go2w_real.yaml`](src/go2w/go2w_config/config/nav/nav2_go2w_real.yaml) as baseline; layered real-time overlays via [`navigation.launch.py`](src/go2w/go2w_config/launch/navigation.launch.py), [`real_single.launch.py`](src/go2w/go2w_real_bringup/launch/real_single.launch.py), and [`real_autonomy.sh`](scripts/real/real_autonomy.sh).
+3. **Three Go2W real Nav2 profiles (`nav=nav2_mppi`)**:
+   - `off`: default diff-drive profile (`SmacPlannerHybrid` + MPPI DiffDrive).
+   - `omni_2d`: `SmacPlanner2D` + MPPI Omni (legacy `holonomic=true` alias maps here).
+   - `se2_holonomic`: `SmacPlannerLattice` with forward/pivot execution policy (final mode from this session).
+
+   **Sim parity (added 2026-05-02 PM)**: same `se2_holonomic` overlay is available in:
+   - **Mixed demo** ([`nav_test_demo3_mixed.sh`](scripts/launch/nav_test_demo3_mixed.sh)) via per-robot flags `holonomic_profile_a` / `holonomic_profile_b` (Go2W / Go2).
+   - **Single-robot Go2 sim** ([`nav_test_go2.sh`](scripts/launch/nav_test_go2.sh), [`nav_test_go2_demo3.sh`](scripts/launch/nav_test_go2_demo3.sh)) and any `nav_test_fastlio.sh`-based launch via `nav_backend:=nav2_mppi holonomic_profile:=se2_holonomic`.
+   - **Sim overlay file** is [`nav2_se2_holonomic_overlay_sim.yaml`](src/go2w/go2w_config/config/nav/nav2_se2_holonomic_overlay_sim.yaml) — same lattice + forward-bias deltas as real, but omits `vx_max`/`wz_max`/`ax_max` so each robot's base sim yaml continues to dictate its speed envelope (Go2W 0.50 m/s, Go2 0.30 m/s). The 0.5 m diff lattice primitives are stock — they're wider than Go2 walking strictly requires (min_turning_radius=0.05) but stay kinematically feasible.
+4. **Important debug incident: missing overlay file was install drift, not launch logic** — launch failed with `No such file ... install/go2w_config/.../nav2_go2w_real_omni_overlay.yaml`; file existed in `src/` but not `install/`. `colcon build --symlink-install --packages-select go2w_config` fixed immediately. (Now codified as golden rule #20.)
+5. **First SE2 attempt** — `SmacPlannerLattice + omni primitives + MPPI Omni` improved feasibility but enabled crab-walk, which mismatched operator preference.
+6. **Final SE2 tuning (user-confirmed better)** — in [`nav2_go2w_real_se2_holonomic_overlay.yaml`](src/go2w/go2w_config/config/nav/nav2_go2w_real_se2_holonomic_overlay.yaml):
+   - lattice primitives switched to `.../sample_primitives/.../diff/output.json`
+   - MPPI forced to no-strafe execution (`motion_model: DiffDrive`, `vy_std/vy_max/ay_max = 0`)
+   - yaw+forward bias increased (`GoalAngleCritic`, `PathAngleCritic`, `PreferForwardCritic`)
+7. **Net behavioral policy** — keep SE2 planner awareness for narrow geometry, but execute as yaw-align + forward motion with pivot turns; no lateral crab-walk.
+8. **Cross-link for operators** — real-robot runbook mirror is in [`docs/claude/real_robot.md`](docs/claude/real_robot.md), with the same 2026-05-02 profile note near the top for launch-time decisions.
+
+2026-05-05 superseded this with "SE2-only" as the canonical direction; `off` / `omni_2d` are kept as escape hatches but no longer recipients of new tuning.
+
+## Removed from CLAUDE.md (2026-05-10 cleanup)
+
+CLAUDE.md was carrying ~30 stale references after the door_task and A*/default nav backend deletions (commits `f12b4c8` and `5c46a51`). Cleaned up in 2026-05-10:
+
+**From the header** — "Two active threads: dual-robot **door task** (VLM-driven coordination) and single-robot nav benchmarking (CMU stack tuning)" → replaced with current focus (Nav2 SE2 + CFPA2 dual-robot coordination).
+
+**From "Quick launch"**:
+- `./scripts/launch/door_demo_mujoco.sh` — door task entry, package deleted
+- `./scripts/launch/single_astar.sh` (3 invocations) — A* nav node deleted
+- `./scripts/launch/vlm_demo_mujoco.sh` astar option (`nav_execution_backend:=astar`) — fallback to nav2_mppi only
+- `./scripts/launch/nav_test_demo3_mixed.sh nav_backend_b:=astar` — A* gone
+- `./scripts/real/real_autonomy.sh nav=cfpa2` (Python `default_nav.py`) — backend deleted
+- `./scripts/real/real_autonomy.sh oa=false holonomic=true` (legacy alias) — kept `holonomic_profile=omni_2d` direct form
+- Door task debug dashboard (`http://127.0.0.1:8080`) — gone
+
+**From "Skill-API detail docs" table**:
+- `docs/claude/door_task.md` — Door task current architecture
+- `docs/claude/door_task_history.md` — Door task evolution + 5-bug chain
+- `docs/claude/nav_benchmarks.md#a-star-planner-2026-04-24` — A* planner section
+
+**From "Repo layout"**:
+- `door_task/                        Door task package (see door_task.md)` line
+- "Locomotion + nav (C++ astar_nav + Python default_nav)" description for go2w_control/go2w_nav → updated to reflect actual remaining scope
+
+**From "Nav backends" table**:
+- Row: `astar | astar_nav_node | C++ A* + pure-pursuit + Stanley + ...`
+- Row: `default | default_nav.py | Python A* grid + D* Lite + recovery`
+- Paragraph: "Legacy aliases silently upgrade: reactive → default, rrt_star/far_rrt_star/mppi → astar. ... Door task uses astar with astar_nav_door.yaml."
+
+**Active state condensation**:
+- 2026-05-02 entry was 80+ lines (full session timeline) → condensed to 1-line pointer to this archive.
+
+The deletion log is intentionally explicit: someone reading old commit messages or external slack threads referencing these scripts/docs needs a way to discover they were removed (and where to find context).

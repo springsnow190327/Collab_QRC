@@ -3,13 +3,9 @@
 #
 # Usage:
 #   ./vlm_demo_mujoco.sh                                  # defaults (xAI/Grok, FAR nav, carto_2d)
-#   ./vlm_demo_mujoco.sh nav_execution_backend:=astar     # switch to A* planner
-#   ./vlm_demo_mujoco.sh nav_execution_backend:=default   # switch to default_nav
 #
-# Nav backends since reactive_nav / mppi_nav were removed (2026-04-24):
+# Nav backends (2026-05-09: astar/default removed; only far remains for VLM demo):
 #   far     — CMU autonomy stack (default for VLM demo)
-#   astar   — C++ A* + oriented footprint check (recommended for tight scenes)
-#   default — Python A* + D* Lite + recovery (legacy stable)
 #
 # VLM history logs are saved to ~/.ros/log/vlm_history/<run_timestamp>/
 # A live debug viewer starts automatically at http://localhost:8501
@@ -108,8 +104,6 @@ cleanup_stale_processes() {
     '/install/terrain_analysis/lib/terrain_analysis/terrainAnalysis'
     '/install/terrain_analysis_ext/lib/terrain_analysis_ext/terrainAnalysisExt'
     '/install/sensor_scan_generation/lib/sensor_scan_generation/sensorScanGeneration'
-    '/install/go2w_nav/lib/go2w_nav/reactive_nav_node'
-    '/install/go2w_nav/lib/go2w_nav/default_nav.py'
     '/install/cfpa2_collaborative_autonomy/lib/cfpa2_collaborative_autonomy/cfpa2_single_robot_node'
     '/go2_gazebo_sim/lib/go2_gazebo_sim/waypoint_mux.py'
     # Control & safety
@@ -224,13 +218,13 @@ done
 NAV_EXECUTION_BACKEND="${NAV_EXECUTION_BACKEND,,}"
 # Back-compat aliases — old callers still pass the removed planners' names.
 case "${NAV_EXECUTION_BACKEND}" in
-  reactive)           NAV_EXECUTION_BACKEND="default" ;;
-  rrt_star|far_rrt_star) NAV_EXECUTION_BACKEND="astar" ;;
-esac
-case "${NAV_EXECUTION_BACKEND}" in
-  far|astar|default) ;;
+  far) ;;
+  reactive|rrt_star|far_rrt_star|astar|default|hybrid_astar|nav2_hybrid_astar)
+    echo "WARN: NAV_EXECUTION_BACKEND='${NAV_EXECUTION_BACKEND}' deprecated since 2026-05-09; using 'far'" >&2
+    NAV_EXECUTION_BACKEND="far"
+    ;;
   *)
-    echo "ERROR: unsupported NAV_EXECUTION_BACKEND='${NAV_EXECUTION_BACKEND}' (expected far|astar|default)" >&2
+    echo "ERROR: unsupported NAV_EXECUTION_BACKEND='${NAV_EXECUTION_BACKEND}' (only 'far' is supported)" >&2
     exit 2
     ;;
 esac

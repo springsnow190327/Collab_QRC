@@ -27,24 +27,13 @@ ament_target_dependencies(scan_rear_filter
 )
 
 install(DIRECTORY
-  config
   docs
-  launch
   DESTINATION share/${PROJECT_NAME}
 )
 
 install(TARGETS
   simple_scan_mapper_cpp
   scan_rear_filter
-  DESTINATION lib/${PROJECT_NAME}
-)
-
-install(PROGRAMS
-  scripts/simple_scan_mapper.py
-  scripts/simple_frontier_explorer.py
-  scripts/multi_robot_goal_assigner.py
-  scripts/geometric_frontier.py
-  scripts/gbplanner2_local.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

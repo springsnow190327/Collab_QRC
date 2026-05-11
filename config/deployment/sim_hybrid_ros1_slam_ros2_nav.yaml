@@ -1,0 +1,11 @@
+deployment_mode: sim_hybrid_ros1_slam_ros2_nav
+slam_backend: swarm_lio2_shadow
+dynamic_filter_backend: temporal_voxel_fallback
+static_map_cleanup_backend: none
+ros1_runtime: docker_noetic_catkin
+ros2_runtime: humble_host
+start_ros1_slam_bridge: true
+require_swarm_loop_agreement: true
+swarm_loop_agreement_max_translation: 0.5
+swarm_loop_agreement_max_yaw_deg: 5.0
+description: MuJoCo ROS2 sensors are bridged to a Dockerized ROS1/Noetic SLAM side; ROS1 outputs are adapted back to ROS2.

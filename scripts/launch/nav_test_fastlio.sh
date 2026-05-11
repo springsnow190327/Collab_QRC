@@ -3,7 +3,6 @@
 # Usage:
 #   ./scripts/nav_test_fastlio.sh                          # default scene
 #   ./scripts/nav_test_fastlio.sh gui:=false                # headless
-#   ./scripts/nav_test_fastlio.sh enable_wall_checker:=true  # test mode
 set -euo pipefail
 
 # Kill any stale nav/sim processes from a prior launch (see _preflight_kill.sh).

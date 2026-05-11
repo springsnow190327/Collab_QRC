@@ -50,78 +50,12 @@ from modules import _find_mujoco_plugin_dir
 from modules.assets import build_dual_robot_stack, build_namespaced_robot_description
 from modules.dual_urdf import build_robot_b_urdf
 from modules.dual_urdf_nav import build_dual_nav_urdf
-
-
-def _as_bool(v: str) -> bool:
-    return str(v).strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _get(ctx, key: str) -> str:
-    return LaunchConfiguration(key).perform(ctx)
-
-
-def _load_yaml_params(yaml_path: str) -> dict:
-    """Load a ROS2 YAML param file and return the ros__parameters dict."""
-    with open(yaml_path, "r") as f:
-        data = yaml.safe_load(f) or {}
-    for _node_name, inner in data.items():
-        if isinstance(inner, dict) and "ros__parameters" in inner:
-            return dict(inner["ros__parameters"])
-    return data
-
-
-def _build_cleanup_stale_cmd() -> str:
-    """Kill any leftover sim/nav processes from a prior run.
-
-    Pattern list mirrors benchmark_fastlio.sh's cleanup_procs so we cover
-    everything that could pollute DDS discovery and break controller_manager
-    service lookup in the next launch.
-    """
-    # Target only processes known to leak between runs. Previously included
-    # "/go2w_perception/" but that patterned-killed this same launch's qos_bridge
-    # and pointcloud_adapter when they spawned at T=0 alongside cleanup_stale —
-    # breaking the LiDAR → Fast-LIO → octomap → /map → CFPA2 pipeline from
-    # step 1. External benchmark scripts (benchmark_fastlio.sh) handle stale
-    # perception procs before launching; no need to duplicate here.
-    patterns = [
-        "ros2 launch go2_gazebo_sim nav_test_mujoco",
-        "mujoco_ros2_control",
-        "/mujoco_sensor_bridge/",
-        "/champ_base/",
-        "/fast_lio/",
-        "/far_planner/",
-        "/local_planner/",
-        "/terrain_analysis",
-        "/octomap_server/",
-        "/cfpa2_collaborative_autonomy/",
-        "/robot_state_publisher",
-        "/robot_localization/",
-        "/opt/ros/.*/lib/controller_manager/spawner",
-        "session_reporter.py",
-        "dual_robot_collision_monitor.py",
-    ]
-    cmd = [
-        "SELF=$$; PARENT=$PPID; ",
-        "kill_pattern(){ ",
-        "  PATTERN=\"$1\"; SIGNAL=\"$2\"; ",
-        "  for PID in $(pgrep -f \"$PATTERN\" 2>/dev/null || true); do ",
-        "    [ \"$PID\" = \"$SELF\" ] && continue; ",
-        "    [ \"$PID\" = \"$PARENT\" ] && continue; ",
-        "    kill -\"$SIGNAL\" \"$PID\" 2>/dev/null || true; ",
-        "  done; ",
-        "}; ",
-    ]
-    for p in patterns:
-        cmd.append(f"kill_pattern '{p}' TERM; ")
-    cmd.append("sleep 1; ")
-    for p in patterns:
-        cmd.append(f"kill_pattern '{p}' KILL; ")
-    cmd.append(
-        "rm -f /dev/shm/sem.fastrtps_* /dev/shm/sem.fastdds_* "
-        "/dev/shm/fastrtps_* /dev/shm/fastdds_* 2>/dev/null || true; "
-    )
-    cmd.append("sleep 0.5")
-    return "".join(cmd)
+from modules.launch_helpers import (
+    as_bool as _as_bool,
+    build_cleanup_stale_cmd as _build_cleanup_stale_cmd,
+    get_launch_arg as _get,
+    load_yaml_params as _load_yaml_params,
+)
 
 
 def _build_sensor_bridges(ns: str, mjcf_path: str, base_body: str, imu_site: str,
@@ -644,7 +578,29 @@ def _build_fastlio_nav_stack(
                     go2w_config_pkg, "config", "control",
                     "go2w_hybrid_motion.yaml",
                 ),
-                {"use_sim_time": use_sim_time},
+                {
+                    "use_sim_time": use_sim_time,
+                    # Single controller_manager for both robots → all
+                    # JointStateBroadcasters share /mujoco_sim/joint_states.
+                    # Default `joint_states` (relative) would resolve to
+                    # /<ns>/joint_states which has pub_count=0. Override.
+                    "wheel_state_topic": "/mujoco_sim/joint_states",
+                    # Per-robot wheel joint names: Robot A unprefixed,
+                    # Robot B b_*-prefixed. Without this override, both
+                    # routers default to unprefixed names → Robot B reads
+                    # Robot A's wheel ω → publishes A's ω as B's setpoint
+                    # → B's wheel actuator brake-locks against the wrong target.
+                    "wheel_joint_names": (
+                        ["FL_foot_joint", "FR_foot_joint",
+                         "RL_foot_joint", "RR_foot_joint"]
+                        if ns == "robot_a" else
+                        ["b_FL_foot_joint", "b_FR_foot_joint",
+                         "b_RL_foot_joint", "b_RR_foot_joint"]
+                    ),
+                    # Wheel command topic — same per-namespace pattern as mixed.
+                    "wheel_command_topic":
+                        f"/mujoco_sim/{ns}_wheel_velocity_controller/commands",
+                },
             ],
             output="screen",
         ),

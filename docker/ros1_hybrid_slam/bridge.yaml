@@ -1,0 +1,38 @@
+topics:
+  - {topic: /clock, type: rosgraph_msgs/msg/Clock, queue_size: 10}
+
+  # ROS2 simulation sensors to ROS1 SLAM side.
+  - {topic: /mujoco_sim/mujoco_lidar_sensor/registered_scan, type: sensor_msgs/msg/PointCloud2, queue_size: 5}
+  - {topic: /mujoco_sim/b_mujoco_lidar_sensor/registered_scan, type: sensor_msgs/msg/PointCloud2, queue_size: 5}
+  - {topic: /robot_a/velodyne_points, type: sensor_msgs/msg/PointCloud2, queue_size: 5}
+  - {topic: /robot_b/velodyne_points, type: sensor_msgs/msg/PointCloud2, queue_size: 5}
+  - {topic: /robot_a/imu, type: sensor_msgs/msg/Imu, queue_size: 50}
+  - {topic: /robot_b/imu, type: sensor_msgs/msg/Imu, queue_size: 50}
+  - {topic: /robot_a/imu/data, type: sensor_msgs/msg/Imu, queue_size: 50}
+  - {topic: /robot_b/imu/data, type: sensor_msgs/msg/Imu, queue_size: 50}
+
+  # Swarm-LIO2 shadow and raw adapter feeds.
+  - {topic: /robot_a/swarm_lio2_raw/Odometry, type: nav_msgs/msg/Odometry, queue_size: 20}
+  - {topic: /robot_b/swarm_lio2_raw/Odometry, type: nav_msgs/msg/Odometry, queue_size: 20}
+  - {topic: /robot_a/swarm_lio2_raw/cloud_static, type: sensor_msgs/msg/PointCloud2, queue_size: 5}
+  - {topic: /robot_b/swarm_lio2_raw/cloud_static, type: sensor_msgs/msg/PointCloud2, queue_size: 5}
+  - {topic: /robot_a/swarm_lio2_raw/cloud_dynamic, type: sensor_msgs/msg/PointCloud2, queue_size: 5}
+  - {topic: /robot_b/swarm_lio2_raw/cloud_dynamic, type: sensor_msgs/msg/PointCloud2, queue_size: 5}
+  - {topic: /robot_a/swarm_lio2_raw/cloud_map, type: sensor_msgs/msg/PointCloud2, queue_size: 5}
+  - {topic: /robot_b/swarm_lio2_raw/cloud_map, type: sensor_msgs/msg/PointCloud2, queue_size: 5}
+  - {topic: /robot_a/swarm_lio2_raw/relative_transform, type: geometry_msgs/msg/TransformStamped, queue_size: 10}
+  - {topic: /robot_b/swarm_lio2_raw/relative_transform, type: geometry_msgs/msg/TransformStamped, queue_size: 10}
+
+  # Dynamic-LIO wrapper feeds.
+  - {topic: /robot_a/dynamic_lio/cloud_static, type: sensor_msgs/msg/PointCloud2, queue_size: 5}
+  - {topic: /robot_b/dynamic_lio/cloud_static, type: sensor_msgs/msg/PointCloud2, queue_size: 5}
+  - {topic: /robot_a/dynamic_lio/cloud_dynamic, type: sensor_msgs/msg/PointCloud2, queue_size: 5}
+  - {topic: /robot_b/dynamic_lio/cloud_dynamic, type: sensor_msgs/msg/PointCloud2, queue_size: 5}
+
+  # ERASOR async cleanup outputs.
+  - {topic: /team_slam/cleaned_static_map, type: sensor_msgs/msg/PointCloud2, queue_size: 2}
+  - {topic: /team_slam/erasor_removed_dynamic_cloud, type: sensor_msgs/msg/PointCloud2, queue_size: 2}
+  - {topic: /team_slam/erasor_metrics, type: std_msgs/msg/String, queue_size: 5}
+
+services_1_to_2: []
+services_2_to_1: []

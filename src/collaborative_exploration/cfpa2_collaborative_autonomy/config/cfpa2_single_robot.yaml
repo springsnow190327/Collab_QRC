@@ -35,6 +35,14 @@
     marker_frame_override: map
     frontier_stride: 2
     max_targets: 180
+    # Stable-challenger override (2026-05-09): lets a freshly-seen better
+    # frontier preempt a held goal mid-flight. Anti-jitter via consecutive
+    # top-1 streak; anti-marginal via score-improvement factor. Bypasses
+    # goal_lock_sec but respects its own min_lock_age. Set streak_required=0
+    # to revert to legacy commit-and-hold behavior.
+    cfpa2_challenger_streak_required: 3        # ticks (≈1.5s @ 2Hz)
+    cfpa2_challenger_improvement_factor: 1.20  # candidate > 1.20× held score
+    cfpa2_challenger_min_lock_age_sec: 2.0     # earliest tick after assignment
     switch_hysteresis: 0.50
     # 2026-05-05: 0.60 → 0.45m. Must be ≥ Nav2's xy_goal_tolerance (0.40m
     # in nav2_go2w_real.yaml) so CFPA2's "held goal reached?" check fires

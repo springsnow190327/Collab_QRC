@@ -1,0 +1,12 @@
+dynamic_filter_backend: dynamic_lio_wrapper
+input_cloud_topic: cloud_registered_body
+wrapper_static_topic: dynamic_lio/cloud_static
+wrapper_dynamic_topic: dynamic_lio/cloud_dynamic
+temporal_voxel_fallback:
+  dynamic_voxel_size: 0.25
+  dynamic_static_min_observations: 3
+  dynamic_static_min_lifetime_sec: 2.0
+  dynamic_decay_time_sec: 5.0
+  dynamic_obstacle_ttl_sec: 2.0
+  dynamic_max_static_velocity: 0.15
+  dynamic_min_dynamic_velocity: 0.35

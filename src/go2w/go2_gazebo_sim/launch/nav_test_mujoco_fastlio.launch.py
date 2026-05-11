@@ -33,8 +33,8 @@ Usage:
 from __future__ import annotations
 
 import os
+import sys
 
-import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
@@ -52,34 +52,22 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
+# sys.path must be amended BEFORE the `from modules.*` import below — when
+# ros2 launch loads this file it doesn't add the launch dir to sys.path.
+_here = os.path.dirname(os.path.abspath(__file__))
+if _here not in sys.path:
+    sys.path.insert(0, _here)
+
+from modules.launch_helpers import (  # noqa: E402
+    as_bool as _as_bool,
+    get_launch_arg as _get,
+    load_yaml_params as _load_yaml_params,
+)
+
 
 _ws_root = os.path.abspath(os.path.join(
     os.path.dirname(os.path.realpath(__file__)), "..", "..", "..", ".."
 ))
-
-
-def _as_bool(value: str) -> bool:
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _get(context, key: str) -> str:
-    return LaunchConfiguration(key).perform(context)
-
-
-def _load_yaml_params(yaml_path: str) -> dict:
-    """Load a ROS2 YAML param file and return the ros__parameters dict.
-
-    CMU autonomy stack YAML files are keyed by unqualified node name
-    (e.g. ``far_planner:``), which doesn't match when the node is
-    launched in a namespace. Strip the outer key and return just the
-    parameter dict so it can be merged into the launch params list.
-    """
-    with open(yaml_path, "r") as f:
-        data = yaml.safe_load(f) or {}
-    for _node_name, inner in data.items():
-        if isinstance(inner, dict) and "ros__parameters" in inner:
-            return dict(inner["ros__parameters"])
-    return data
 
 
 def _launch_setup(context):
@@ -140,14 +128,14 @@ def _launch_setup(context):
     # Bounded session + wall-checker toggles (for headless benchmark runs).
     session_duration_sec = float(_get(context, "session_duration_sec"))
     session_output_path = _get(context, "session_output_path").strip()
-    enable_wall_checker = _as_bool(_get(context, "enable_wall_checker"))
+    # enable_wall_checker / enable_velocity_supervisor: removed 2026-05-09 with
+    # scripts/runtime/{far_wall_checker,velocity_safety_supervisor}.py — they
+    # were sim-only debug helpers gated default-off and never enabled in any
+    # benchmark / production path.
     # Ground-truth observable area for coverage_ratio_of_scene. 96 m² is
     # the 12 m × 8 m inner room of demo1.xml.
     scene_area_m2 = float(_get(context, "scene_area_m2"))
-    # Velocity-aware safety supervisor (LiDAR-scan based velocity clamp).
-    # When true, inserts scripts/velocity_safety_supervisor.py between
-    # pathFollower and twist_bridge on the cmd_vel path. Real-robot safe.
-    enable_velocity_supervisor = _as_bool(_get(context, "enable_velocity_supervisor"))
+    # (enable_velocity_supervisor removed 2026-05-09; see top-of-file note.)
     # FAR's goal_point subscription topic. Default is CFPA2's direct output.
     # When TARE+mux is layered on top (nav_test_go2_tare.launch.py), we flip
     # this to /{ns}/way_point_coord_nav so FAR reads the muxed TARE/CFPA2
@@ -180,21 +168,23 @@ def _launch_setup(context):
         mujoco_model_path = os.path.join(go2_gazebo_pkg, "mujoco", "demo1.xml")
 
     tf_remaps = [("/tf", f"/{robot_ns}/tf"), ("/tf_static", f"/{robot_ns}/tf_static")]
-    nav_backend = _get(context, "nav_backend").strip().lower() or "far"
-    # Back-compat aliases — rrt_star/mppi → astar (deleted 2026-04-24).
-    if nav_backend == "rrt_star":
-        nav_backend = "astar"
-    # `hybrid`  → hybrid_astar (Ceres-smoothed Hybrid A*, our v0.1)
-    # `nav2`    → nav2_hybrid_astar (B-route: nav2_smac_planner lib)
-    if nav_backend == "hybrid":
-        nav_backend = "hybrid_astar"
-    if nav_backend == "nav2":
-        nav_backend = "nav2_hybrid_astar"
-    if nav_backend not in {"astar", "hybrid_astar", "nav2_hybrid_astar",
-                           "nav2_mppi", "far"}:
+    nav_backend = _get(context, "nav_backend").strip().lower() or "nav2_mppi"
+    # 2026-05-09: removed astar / hybrid_astar / nav2_hybrid_astar backends —
+    # superseded by nav2_mppi production stack since 2026-04-29.
+    # The aliases below silently upgrade legacy invocations that still pass
+    # the old names so older ops scripts keep working.
+    legacy_alias = {
+        "rrt_star": "nav2_mppi",
+        "hybrid": "nav2_mppi",
+        "nav2": "nav2_mppi",
+        "astar": "nav2_mppi",
+        "hybrid_astar": "nav2_mppi",
+        "nav2_hybrid_astar": "nav2_mppi",
+    }
+    nav_backend = legacy_alias.get(nav_backend, nav_backend)
+    if nav_backend not in {"nav2_mppi", "far"}:
         raise ValueError(
-            f"nav_backend must be 'astar' | 'hybrid_astar' | 'nav2_hybrid_astar' | "
-            f"'nav2_mppi' | 'far'; got '{nav_backend}'")
+            f"nav_backend must be 'nav2_mppi' | 'far'; got '{nav_backend}'")
     # Optional Nav2 SE2-holonomic profile overlay. Only meaningful when
     # nav_backend=nav2_mppi. Mirrors the real-Go2W profile from 2026-05-02:
     #   off            → SmacPlannerHybrid + DiffDrive MPPI (default)
@@ -636,28 +626,14 @@ def _launch_setup(context):
             output="screen",
         )
 
-        # hybrid_cmd_router: only Go2W needs it (splits cmd_vel into
-        # wheel + legged components based on curvature). Go2 (no wheels)
-        # has CHAMP listening to /<ns>/cmd_vel directly.
-        if has_wheels:
-            router_node = Node(
-                package="go2w_control",
-                executable="go2w_hybrid_cmd_router.py",
-                namespace=robot_ns,
-                name="go2w_hybrid_cmd_router",
-                parameters=[
-                    os.path.join(go2w_config_pkg, "config", "control",
-                                 "go2w_hybrid_motion.yaml"),
-                    {
-                        "use_sim_time": use_sim_time,
-                        "wheel_command_topic":
-                            f"/mujoco_sim/{robot_ns}_wheel_velocity_controller/commands",
-                    },
-                ],
-                output="screen",
-            )
-        else:
-            router_node = None
+        # NOTE (2026-05-10): The hybrid_cmd_router is spawned by the
+        # included single_go2w_mujoco_cfpa2.launch.py (line ~488). Spawning
+        # it again here was a duplicate — both instances took the same
+        # name+ns, both subscribed to /<ns>/cmd_vel, both published to
+        # /<ns>/cmd_vel_legged → CHAMP saw 2× messages. Worse, the duplicate
+        # here had `wheel_command_topic=/mujoco_sim/...` which had zero
+        # subscribers (real controller is at /<ns>/robot_wheel_velocity_controller/commands).
+        # Removed.
 
         _nav2_actions = [
             GroupAction(actions=nav2_inner_nodes),
@@ -665,144 +641,17 @@ def _launch_setup(context):
             path_relay_node,
             stuck_watchdog_node,
         ]
-        if router_node is not None:
-            _nav2_actions.append(router_node)
         actions.append(
             TimerAction(period=nav_delay, actions=_nav2_actions)
         )
 
-    elif nav_backend in ("astar", "hybrid_astar", "nav2_hybrid_astar"):
-        # All three share the same I/O contract and supporting infra
-        # (octomap_server + map_merger). They differ only in the nav
-        # executable + yaml config:
-        #   astar              → astar_nav_node            (8-conn A* + Option B)
-        #   hybrid_astar       → hybrid_astar_nav_node     (our v0.1: OMPL RS + Ceres)
-        #   nav2_hybrid_astar  → nav2_hybrid_astar_nav_node (B-route: nav2_smac lib)
-        if nav_backend == "astar":
-            nav_config_path = os.path.join(
-                go2w_config_pkg, "config", "nav", "astar_nav_go2w.yaml")
-            nav_executable = "astar_nav_node"
-            nav_node_name  = "astar_nav"
-        elif nav_backend == "hybrid_astar":
-            nav_config_path = os.path.join(
-                go2w_config_pkg, "config", "nav", "hybrid_astar_nav_go2w.yaml")
-            nav_executable = "hybrid_astar_nav_node"
-            nav_node_name  = "hybrid_astar_nav"
-        else:  # nav2_hybrid_astar
-            nav_config_path = os.path.join(
-                go2w_config_pkg, "config", "nav", "nav2_hybrid_astar_nav_go2w.yaml")
-            nav_executable = "nav2_hybrid_astar_nav_node"
-            nav_node_name  = "nav2_hybrid_astar_nav"
-        nav_remappings = [
-            ("/way_point", f"/{robot_ns}/way_point_coord"),
-            ("/odom/ground_truth", f"/{robot_ns}/odom/nav"),
-            ("/scan", f"/{robot_ns}/scan_3d"),
-            ("/cmd_vel_stamped", f"/{robot_ns}/cmd_vel_stamped"),
-            ("/nav_status", f"/{robot_ns}/nav_status"),
-            ("/planned_path", f"/{robot_ns}/planned_path"),
-            ("/robot_trajectory", f"/{robot_ns}/robot_trajectory"),
-            ("/final_goal_marker", f"/{robot_ns}/final_goal_marker"),
-            ("/robot_pose_marker", f"/{robot_ns}/robot_pose_marker"),
-        ]
-
-        # octomap_server: 3D voxel grid from the reliable registered scan
-        # projected to 2D. In Fast-LIO mode it IS the /{ns}/map source
-        # (no Cartographer to merge with), so the map_merger below is a
-        # pass-through and astar reads /{ns}/map directly.
-        octomap_node = Node(
-            package="octomap_server",
-            executable="octomap_server_node",
-            namespace=robot_ns,
-            name="octomap_server",
-            parameters=[{
-                "use_sim_time": use_sim_time,
-                "resolution": 0.05,
-                "frame_id": "map",
-                "base_frame_id": "base_link",
-                "sensor_model.max_range": 6.0,
-                "sensor_model.hit": 0.8,
-                "sensor_model.miss": 0.35,
-                "sensor_model.min": 0.12,
-                "sensor_model.max": 0.97,
-                "point_cloud_min_z": 0.05,
-                "point_cloud_max_z": 1.10,
-                "occupancy_min_z": 0.05,
-                "occupancy_max_z": 1.00,
-                "filter_ground_plane": False,
-                "incremental_2D_projection": False,
-                "filter_speckles": False,
-                "compress_map": True,
-                # latch=True → TRANSIENT_LOCAL, matches CFPA2 map sub QoS.
-                "latch": True,
-                "publish_free_space": False,
-            }],
-            remappings=[
-                ("cloud_in", f"/{robot_ns}/registered_scan_reliable"),
-                # Publish directly as /robot/map in Fast-LIO mode.
-                ("projected_map", f"/{robot_ns}/map"),
-            ] + tf_remaps,
-            output="screen",
-        )
-
-        # map_merger pass-through kept for topic-name parity with the
-        # Cartographer launch variant; same source on primary + secondary.
-        map_merger_node = Node(
-            package="go2w_perception",
-            executable="map_merger.py",
-            namespace=robot_ns,
-            name="map_merger",
-            parameters=[{
-                "use_sim_time": use_sim_time,
-                "primary_topic": f"/{robot_ns}/map",
-                "secondary_topic": f"/{robot_ns}/map",
-                "output_topic": f"/{robot_ns}/map_merged",
-                "secondary_occupied_thresh": 50,
-                "publish_rate_hz": 4.0,
-            }],
-            output="screen",
-        )
-
-        astar_nav_node = Node(
-            package="go2w_nav",
-            executable=nav_executable,
-            namespace=robot_ns,
-            name=nav_node_name,
-            parameters=[
-                nav_config_path,
-                {"use_sim_time": use_sim_time},
-                {
-                    "map_frame": "map",
-                    "map_topic": f"/{robot_ns}/map_merged",
-                    "frontier_replan_topic": f"/{robot_ns}/frontier_replan",
-                    "stop_topic": f"/{robot_ns}/stop",
-                },
-            ],
-            remappings=nav_remappings + tf_remaps,
-            output="screen",
-        )
-
-        actions.append(
-            TimerAction(
-                period=nav_delay,
-                actions=[octomap_node, map_merger_node, astar_nav_node],
-            )
-        )
     else:  # nav_backend == "far"
         far_scan_topic = f"/{robot_ns}/registered_scan_map"
         far_odom_topic = f"/{robot_ns}/odom/nav"
-        # Iter 6 (2026-04-15): 0.2 m/s is the proven-safe default at the
-        # position-based checks. A 0.4 m/s ceiling only makes sense when
-        # the velocity-aware supervisor is enabled (enable_velocity_supervisor
-        # launch arg), which caps cmd_vel to v_cap = sqrt(2·a·(d_nearest-
-        # d_safe)) based on live scan clearance. Without the supervisor,
-        # stay at 0.2 — position checks + twoWayDrive + checkRotObstacle
-        # give 7/10 PASS at 120s with two failure modes (corner-wedge +
-        # yaw-drift stall).
+        # 0.2 m/s is the proven-safe default at the position-based checks
+        # (twoWayDrive + checkRotObstacle give 7/10 PASS @ 120s).
         far_max_speed_override = _get(context, "far_max_speed").strip()
-        if far_max_speed_override:
-            far_max_speed = float(far_max_speed_override)
-        else:
-            far_max_speed = 0.4 if enable_velocity_supervisor else 0.2
+        far_max_speed = float(far_max_speed_override) if far_max_speed_override else 0.2
 
         # Reverse drive — controls twoWayDrive in both localPlanner and
         # pathFollower. On Go2W wheels can spin backward trivially; on pure
@@ -815,12 +664,7 @@ def _launch_setup(context):
         else:
             two_way_drive = has_wheels  # inherit: Go2W=reverse-ok, Go2=no-reverse
 
-        # pathFollower output topic: canonical cmd_vel_stamped when no
-        # supervisor, or a "_raw" sibling that the supervisor consumes.
-        if enable_velocity_supervisor:
-            pf_cmd_out_topic = f"/{robot_ns}/cmd_vel_stamped_raw"
-        else:
-            pf_cmd_out_topic = f"/{robot_ns}/cmd_vel_stamped"
+        pf_cmd_out_topic = f"/{robot_ns}/cmd_vel_stamped"
         local_planner_pkg = get_package_share_directory("local_planner")
 
         far_nodes = [
@@ -1059,51 +903,11 @@ def _launch_setup(context):
 
         actions.append(TimerAction(period=nav_delay, actions=far_nodes))
 
-        # ── 4b. Velocity-aware safety supervisor (optional) ──
-        # Caps commanded velocity by live scan-based nearest-obstacle
-        # clearance. Only wired into the FAR path because pathFollower is
-        # the cmd_vel source there; astar branch would need a separate
-        # hookup on astar_nav_node's output.
-        if enable_velocity_supervisor:
-            supervisor_script = os.path.join(_ws_root, "scripts/runtime/velocity_safety_supervisor.py")
-            supervisor_proc = ExecuteProcess(
-                cmd=[
-                    "python3", "-u", supervisor_script,
-                    "--ros-args",
-                    "-p", f"scan_topic:=/{robot_ns}/scan_3d",
-                    "-p", f"cmd_in_topic:=/{robot_ns}/cmd_vel_stamped_raw",
-                    "-p", f"cmd_out_topic:=/{robot_ns}/cmd_vel_stamped",
-                    "-p", f"max_linear_speed_m_s:={far_max_speed}",
-                    "-p", "max_decel_m_s2:=2.0",
-                    "-p", "safety_margin_m:=0.10",
-                    "-p", "forward_arc_half_rad:=1.047",
-                    "-p", "publish_rate_hz:=50.0",
-                ],
-                name="velocity_safety_supervisor",
-                output="screen",
-            )
-            actions.append(
-                TimerAction(period=nav_delay, actions=[supervisor_proc])
-            )
+        # (4b. velocity_safety_supervisor removed 2026-05-09 — see top of file.)
 
-    # ── 5. RViz goal relay (always on — click "2D Goal Pose" to send manual goals) ──
-    actions.append(
-        TimerAction(
-            period=nav_delay,
-            actions=[
-                Node(
-                    package="go2w_nav",
-                    executable="rviz_goal_relay.py",
-                    namespace=robot_ns,
-                    name="rviz_goal_relay",
-                    parameters=[
-                        {"output_topic": f"/{robot_ns}/way_point_coord"},
-                    ],
-                    output="screen",
-                ),
-            ],
-        )
-    )
+    # (5. rviz_goal_relay removed 2026-05-09 — Nav2 path uses /goal_pose
+    #  → bt_navigator NavigateToPose action directly. The legacy relay
+    #  formed a 30 cm-debounced loop with cfpa2_to_nav2_bridge.)
 
     # ── 5b. FAR debug monitor ──
     # Integrated into launch — prints 1-line/sec summary of FAR I/O
@@ -1123,40 +927,7 @@ def _launch_setup(context):
         )
     )
 
-    # ── 6. Wall / tip-over fail checker (optional — terminal) ──
-    # Runs scripts/far_wall_checker.py as a launch process. On robot-body
-    # contact with wall_/divider_ geoms OR tip-over (|roll|, |pitch| > 45°),
-    # the checker prints a FAIL banner and exits 1. The OnProcessExit event
-    # handler then shuts down the entire launch so the failure is terminal.
-    # Disabled via `enable_wall_checker:=false` for benchmark runs that
-    # want to measure contact count without the launch dying on first hit.
-    if enable_wall_checker:
-        wall_checker_script = os.path.join(_ws_root, "scripts/runtime/far_wall_checker.py")
-        wall_checker_proc = ExecuteProcess(
-            cmd=["python3", "-u", wall_checker_script],
-            name="far_wall_checker",
-            output="screen",
-        )
-        actions.append(
-            TimerAction(
-                period=nav_delay + 3.0,  # wait until standup + nav are done
-                actions=[wall_checker_proc],
-            )
-        )
-        actions.append(
-            RegisterEventHandler(
-                OnProcessExit(
-                    target_action=wall_checker_proc,
-                    on_exit=[
-                        LogInfo(
-                            msg="far_wall_checker exited — shutting down launch "
-                            "(robot hit a wall or tipped over)"
-                        ),
-                        Shutdown(reason="far_wall_checker detected failure"),
-                    ],
-                )
-            )
-        )
+    # (6. far_wall_checker removed 2026-05-09 — see top of file.)
 
     # ── 6b. Bounded session reporter (optional — graceful exit on timeout) ──
     # Runs scripts/session_reporter.py for `session_duration_sec` seconds.
@@ -1282,20 +1053,9 @@ def generate_launch_description():
                               description="Sim ground-truth observable area (m²) "
                               "used as denominator for coverage_ratio_of_scene. "
                               "Default 96 for vlm_exploration_scene_no_artifacts."),
-        DeclareLaunchArgument("enable_wall_checker", default_value="false",
-                              description="Test mode: crash-stop on first wall contact. "
-                              "Default false (benchmark mode — session reporter "
-                              "captures all contacts without killing the launch). "
-                              "Use enable_wall_checker:=true when developing to "
-                              "get instant feedback on wall hits."),
-        DeclareLaunchArgument("enable_velocity_supervisor", default_value="false",
-                              description="Enable LiDAR-scan velocity-aware safety "
-                              "supervisor between pathFollower and twist_bridge; "
-                              "allows far_max_speed=0.4 to be safe"),
         DeclareLaunchArgument("far_max_speed", default_value="",
                               description="Override localPlanner/pathFollower maxSpeed "
-                              "(m/s). Empty = use default (0.2 without supervisor, "
-                              "0.4 with). Untested >0.4 — tune at your own risk."),
+                              "(m/s). Empty = 0.2 default. Untested >0.4 — tune at your own risk."),
         DeclareLaunchArgument("has_wheels", default_value="true",
                               description="Set to false for pure Go2 (non-W) — skips "
                               "the wheel_velocity_controller spawn and go2w_hybrid_"

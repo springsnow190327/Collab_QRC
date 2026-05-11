@@ -1,0 +1,58 @@
+# FAST-LIO2 configuration for MuJoCo simulation with Unitree L1 / UTLidar.
+# Used by demo3_mixed robot_a (Go2W) to model the weaker built-in LiDAR.
+# Sensor approximation: 360 horizontal rays x 60 vertical rays, 11 Hz,
+# 360 deg horizontal FOV, 0..90 deg vertical FOV, 20 m max range.
+#
+# NOTE: Must use the /**:/ros__parameters: wrapper for ROS 2 param loading.
+
+/**:
+    ros__parameters:
+        feature_extract_enable: false
+        point_filter_num: 1
+        max_iteration: 4
+        filter_size_surf: 0.15
+        filter_size_map: 0.15
+        cube_side_length: 1000.0
+        runtime_pos_log_enable: false
+        map_file_path: ""
+
+        common:
+            lid_topic: "/velodyne_points"
+            imu_topic: "/imu/data"
+            time_sync_en: false
+            time_offset_lidar_to_imu: 0.0
+
+        preprocess:
+            lidar_type: 2
+            scan_line: 60
+            scan_rate: 11
+            timestamp_unit: 2
+            blind: 0.4
+
+        mapping:
+            acc_cov: 0.1
+            gyr_cov: 0.1
+            b_acc_cov: 0.0001
+            b_gyr_cov: 0.0001
+            fov_degree: 360.0
+            det_range: 20.0
+            extrinsic_est_en: false
+            # Extrinsic: LiDAR frame relative to IMU frame for the sim L1.
+            # MJCF/URDF frames:
+            #   imu         at base xyz=(-0.02557, 0, 0.04232)
+            #   unitree_l1  at base xyz=( 0.29000, 0,-0.04000)
+            # Difference = (0.31557, 0, -0.08232), no relative rotation.
+            extrinsic_T: [0.31557, 0.0, -0.08232]
+            extrinsic_R: [1.0, 0.0, 0.0,
+                          0.0, 1.0, 0.0,
+                          0.0, 0.0, 1.0]
+
+        publish:
+            path_en: true
+            scan_publish_en: true
+            dense_publish_en: true
+            scan_bodyframe_pub_en: true
+
+        pcd_save:
+            pcd_save_en: false
+            interval: -1

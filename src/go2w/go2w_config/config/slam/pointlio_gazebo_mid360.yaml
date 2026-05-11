@@ -1,0 +1,62 @@
+# FAST-LIO2 configuration for MuJoCo simulation with Livox Mid-360.
+# Used by demo3_mixed robot_b (Go2). This keeps the historical
+# pointlio_gazebo.yaml untouched while matching the MuJoCo Mid-360 plugin's
+# default 20 vertical samples.
+#
+# NOTE: Must use the /**:/ros__parameters: wrapper for ROS 2 param loading.
+
+/**:
+    ros__parameters:
+        feature_extract_enable: false
+        point_filter_num: 1
+        max_iteration: 4
+        filter_size_surf: 0.15
+        filter_size_map: 0.15
+        cube_side_length: 1000.0
+        runtime_pos_log_enable: false
+        map_file_path: ""
+
+        common:
+            lid_topic: "/velodyne_points"
+            imu_topic: "/imu/data"
+            time_sync_en: false
+            time_offset_lidar_to_imu: 0.0
+
+        preprocess:
+            lidar_type: 2
+            scan_line: 20
+            scan_rate: 10
+            timestamp_unit: 2
+            blind: 0.4
+
+        mapping:
+            # 2026-04-30 Stage 3a: was acc 0.1 / gyr 0.1; raised to 0.3
+            # because Go2W wheel skid produces high-frequency IMU
+            # accel/gyro noise that Fast-LIO over-trusted with the lower
+            # cov, causing yaw catastrophic divergence on robot_a in
+            # ~33 % of 180 s trials. Higher cov = the EKF down-weights
+            # IMU pre-integration in favour of the lidar match — slower
+            # convergence on rotation but no divergence.
+            acc_cov: 0.3
+            gyr_cov: 0.3
+            b_acc_cov: 0.0001
+            b_gyr_cov: 0.0001
+            fov_degree: 360.0
+            det_range: 20.0
+            extrinsic_est_en: false
+            # Extrinsic: LiDAR frame relative to IMU frame from the Go2W/Go2
+            # sim URDF Mid-360 mount.
+            extrinsic_T: [0.187, 0.0, 0.0803]
+            extrinsic_R: [0.9744,  0.0, 0.2249,
+                          0.0,     1.0, 0.0,
+                         -0.2249,  0.0, 0.9744]
+
+        publish:
+            path_en: true
+            scan_publish_en: true
+            dense_publish_en: true
+            scan_bodyframe_pub_en: true
+
+        pcd_save:
+            pcd_save_en: false
+            interval: -1
