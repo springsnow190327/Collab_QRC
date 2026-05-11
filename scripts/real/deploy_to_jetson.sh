@@ -153,6 +153,12 @@ if [[ -f "$REPO_ROOT/scripts/real/onboard_slam.sh" ]]; then
   $SSH "chmod +x ${JETSON_WS}/scripts/onboard_slam.sh" 2>/dev/null || true
 fi
 
+# Onboard data-collection script (sister to onboard_slam.sh).
+if [[ -f "$REPO_ROOT/scripts/real/onboard_record.sh" ]]; then
+  rsync_to_jetson  scripts/real/onboard_record.sh         scripts/
+  $SSH "chmod +x ${JETSON_WS}/scripts/onboard_record.sh" 2>/dev/null || true
+fi
+
 # CycloneDDS XML for the Jetson (deployed if present).
 if [[ -f "$REPO_ROOT/scripts/real/cyclonedds_jetson.xml" ]]; then
   rsync_to_jetson  scripts/real/cyclonedds_jetson.xml     config/
