@@ -1,0 +1,88 @@
+<?xml version="1.0"?>
+<!--
+  Go2 / Go2W mission launch for gbplanner3.
+
+  Drop this into:
+    $GBPLANNER_WS/src/exploration/gbplanner_ros/gbplanner/launch/gbplanner_go2.launch
+
+  It launches:
+    1. voxblox_node — consumes bridged Fast-LIO cloud + odom, builds TSDF/ESDF
+    2. gbplanner_node — the actual GBPlanner3 planner
+    3. pci_general — Planner Control Interface, publishes /pci_command_path
+
+  TF assumption: bridged /tf from Foxy gives us map → odom → base_link → mid360.
+  If the Fast-LIO TF tree on your robot uses different frame names, fix in
+  Voxblox params below.
+-->
+<launch>
+  <arg name="robot_ns" default="robot"/>
+  <arg name="cloud_topic" default="/robot/cloud_registered_body"/>
+  <arg name="odom_topic" default="/robot/Odometry"/>
+  <arg name="world_frame" default="map"/>
+  <arg name="sensor_frame" default="mid360_link"/>
+  <arg name="config_dir" default="$(find gbplanner)/config/go2"/>
+
+  <!-- ============================================================ -->
+  <!-- Voxblox TSDF/ESDF server                                     -->
+  <!-- ============================================================ -->
+  <node pkg="voxblox_ros" type="esdf_server" name="voxblox_node" output="screen">
+    <remap from="pointcloud" to="$(arg cloud_topic)"/>
+    <remap from="odometry"   to="$(arg odom_topic)"/>
+
+    <param name="world_frame"            value="$(arg world_frame)"/>
+    <param name="sensor_frame"           value="$(arg sensor_frame)"/>
+    <param name="use_tf_transforms"      value="true"/>
+
+    <!-- Map resolution: Mid-360 sparse cloud, start coarse to keep RAM low -->
+    <param name="tsdf_voxel_size"        value="0.15"/>
+    <param name="tsdf_voxels_per_side"   value="16"/>
+    <param name="truncation_distance"    value="0.3"/>
+
+    <param name="max_ray_length_m"       value="8.0"/>
+    <param name="min_ray_length_m"       value="0.5"/>
+
+    <param name="method"                 value="fast"/>
+    <param name="use_const_weight"       value="false"/>
+    <param name="allow_clear"            value="true"/>
+
+    <!-- Publish maps for gbplanner -->
+    <param name="publish_tsdf_map"       value="true"/>
+    <param name="publish_esdf_map"       value="true"/>
+    <param name="publish_pointclouds"    value="true"/>
+    <param name="update_mesh_every_n_sec" value="1.0"/>
+  </node>
+
+  <!-- ============================================================ -->
+  <!-- GBPlanner3 main planner node                                 -->
+  <!-- ============================================================ -->
+  <node pkg="gbplanner" type="gbplanner_node" name="gbplanner_node" output="screen">
+    <remap from="odometry" to="$(arg odom_topic)"/>
+    <remap from="/gbplanner_node/tsdf_map_in" to="/voxblox_node/tsdf_map_out"/>
+    <remap from="/gbplanner_node/esdf_map_in" to="/voxblox_node/esdf_map_out"/>
+
+    <rosparam command="load" file="$(arg config_dir)/gbplanner_config.yaml"/>
+    <rosparam command="load" file="$(arg config_dir)/robot_config.yaml"/>
+  </node>
+
+  <!-- ============================================================ -->
+  <!-- Planner Control Interface (PCI)                              -->
+  <!-- ============================================================ -->
+  <node pkg="pci_general" type="planner_control_interface_node" name="pci">
+    <remap from="odometry" to="$(arg odom_topic)"/>
+
+    <!-- Output as topic (PoseArray) — easier to bridge than action server -->
+    <param name="output_type" value="kTopic"/>
+    <remap from="command/trajectory" to="/pci_command_path"/>
+
+    <rosparam command="load" file="$(arg config_dir)/pci_config.yaml"/>
+  </node>
+
+  <!-- ============================================================ -->
+  <!-- rviz (optional — Orin headless typically skips this)         -->
+  <!-- Run separately on laptop instead.                            -->
+  <!-- ============================================================ -->
+  <!--
+  <node pkg="rviz" type="rviz" name="rviz"
+        args="-d $(arg config_dir)/rviz_config.rviz"/>
+  -->
+</launch>

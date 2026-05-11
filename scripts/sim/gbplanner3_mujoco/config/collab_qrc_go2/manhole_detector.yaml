@@ -1,0 +1,3 @@
+# Manhole detector — disabled for Collab_QRC sim (no manholes in our scenes)
+# Kept as a stub because gbplanner_sim.launch unconditionally loads it.
+detect_manhole: false

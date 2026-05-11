@@ -80,6 +80,7 @@ core
 core.*
 # MuJoCo runtime log (regenerated each run)
 MUJOCO_LOG.TXT
+*.pdf
 
 # =============================================
 # SLAM output artifacts

@@ -1,0 +1,98 @@
+#-------------------------------------------------------------------------------
+# Go2 mission for GBPlanner3 inside Collab_QRC MuJoCo sim
+#  - Sensor: single Livox Mid-360 (vertical ±52°, horizontal 360°, range ~8 m indoor)
+#  - Robot: Unitree Go2 (legged, 0.6×0.4×0.3 m, max inclination ~26° via CHAMP)
+#  - World frame: "world" (kept identical to ugv_sim convention; static TF map→world
+#                 is added by gbplanner_sim.launch so Collab_QRC's "map" still works)
+#-------------------------------------------------------------------------------
+RobotParams:
+  type:               kGroundRobot
+  size:               [0.6, 0.4, 0.3]
+  size_extension_min: [0.0, 0.0, 0.0]
+  size_extension:     [0.15, 0.15, 0.0]
+  center_offset:      [0.0, 0.0, 0.0]
+  relax_ratio:        0.5
+  bound_mode:         kExtendedBound
+  safety_extension:   [0.4, 0.4, 0.05]
+
+#-------------------------------------------------------------------------------
+# SENSOR CONFIGURATION — single Mid-360 panoramic.
+#  fov:   horizontal × vertical (radians)
+#  resolution: degree spacing of rays for raycast IG.
+#-------------------------------------------------------------------------------
+SensorParams:
+  sensor_list:      ["Mid360"]
+  Mid360:
+    type:           kLidar
+    max_range:      8.0           # effective indoor range, matches Collab_QRC lidar_range
+    center_offset:  [0.16143, 0.0, 0.12262]   # matches site "livox_mid360" in MJCF
+    rotations:      [0.0, 0.2269, 0.0]         # match MJCF euler
+    fov:            [rad(2*pi), rad(60*pi/180)]
+    resolution:     [rad(10.0*pi/180), rad(10.0*pi/180)]
+    frontier_percentage_threshold: 0.05
+
+#-------------------------------------------------------------------------------
+# LOCAL PLANNER (RRG)
+#-------------------------------------------------------------------------------
+LocalPlannerParams:
+  bound_min:                  [-5.0, -5.0, -1.0]
+  bound_max:                  [ 5.0,  5.0,  1.5]
+  bound_min_relaxed:          [-7.5, -7.5, -2.0]
+  bound_max_relaxed:          [ 7.5,  7.5,  3.0]
+  bound_min_extended:         [-10.0, -10.0, -2.0]
+  bound_max_extended:         [ 10.0,  10.0,  3.5]   # 3.5m up: enough for stair traversal
+  num_vertices_max:           700
+  num_edges_max:              3500
+  num_loops_cutoff:           2000
+  num_loops_max:              5000
+  edge_length_min:            0.20
+  edge_length_max:            0.50
+  edge_overshoot:             0.05
+  sampling_policy:            kUniform
+  sample_around_robot:        true
+  edge_collision_check_distance: 0.10
+  sample_collision_check_distance: 0.15
+  global_traversability:      true
+  free_frustum_check_enable:  true
+
+#-------------------------------------------------------------------------------
+# EXPLORATION (information gain)
+#-------------------------------------------------------------------------------
+ExplorationParams:
+  yaw_sampling_resolution: 0.5235987755   # π/6 (30°)
+  exp_sensor_list: ["Mid360"]
+  exp_sensor_id:   "Mid360"
+  cluster_vertex_gain: true
+  num_path_max:        15
+
+  # Information-gain weights
+  free_voxel_gain:     0.0
+  occupied_voxel_gain: 0.0
+  unknown_voxel_gain:  1.0
+  no_gain_zone_init:   true
+  no_gain_zone_origin: [0.0, 0.0, 0.0]
+  no_gain_zone_size:   [0.0, 0.0, 0.0]
+  hanging_vertex_gain_factor: 2.0
+
+  path_length_penalty: 0.10
+  path_direction_penalty: 0.05
+
+  exp_gain_threshold:  20.0
+  best_path_score_threshold: 0.0
+
+#-------------------------------------------------------------------------------
+# GROUND TRAVERSABILITY (the stair-climb knob)
+#  max_inclination_rad ≈ 26°. Default Go2 CHAMP gait comfortable max.
+#-------------------------------------------------------------------------------
+GroundParams:
+  max_inclination_rad:  0.45        # rad (≈26°); raise to 0.61 with stair-climb RL policy
+  height_above_ground:  0.28
+  ground_plane_offset:  0.0
+
+#-------------------------------------------------------------------------------
+# MULTILEVEL / PROJECTION
+#-------------------------------------------------------------------------------
+GlobalPlannerParams:
+  reset_map_after_planning: false
+  reset_map_when_starting:  false
+  homing_path_density:      0.5

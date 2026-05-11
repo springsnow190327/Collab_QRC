@@ -2,17 +2,12 @@
   ros__parameters:
     robot_namespace: robot
     namespaces: [robot]
-    algorithm_mode: cfpa2
     publish_rate: 2.0
-    output_mode: waypoint_coord
     # Set true to restore the previous loud throttled debug logs (every
     # ~2 s, full per-ns target/utility/distance dumps). Default false:
     # only state-change INFO lines come through, leaving exploration_metrics_logger
     # to emit the structured event stream.
     verbose_logs: false
-    tare_goal_topic_suffix: /way_point_tare
-    relocation_goal_topic_suffix: /goal_point
-    grid_world_status_topic_suffix: /grid_world_status
     use_shared_map: false
     shared_map_topic: /disco_slam/global_map
     shared_map_wait_sec: 8.0
@@ -81,10 +76,6 @@
     # Go2W body half-width is ~0.25 m; below that, a picked frontier can
     # wedge the robot against a wall. 0.35 = half-width + small margin.
     cfpa2_frontier_obstacle_clearance_m: 0.35
-    communication_timeout_sec: 0.0
-    prediction_horizon_sec: 0.0
-    pursuit_weight: 0.0
-    pursuit_switch_margin: 0.10
     # IG box = (2r+1)² cells. At octomap res 0.05 m, r=40 → 4.0 × 4.0 m
     # sampling box. Old r=12 (1.2 m) saturated for both tiny pockets and
     # huge unexplored rooms, making cost dominate → CFPA2 picked the
@@ -92,8 +83,6 @@
     # the robot. r=40 resolves big regions while staying O(n²) cheap
     # (C++ batch_info_gain caps this fine).
     exploration_gain_radius_cells: 40
-    meeting_min_distance: 0.0
-    teammate_stale_ttl_sec: 0.0
     perf_enable: true
     perf_tick_window_size: 240
     perf_min_samples: 20

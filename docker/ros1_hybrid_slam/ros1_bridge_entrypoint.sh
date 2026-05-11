@@ -28,10 +28,13 @@ if [[ ! -f "${BRIDGE_YAML}" ]]; then
   exec ros2 run ros1_bridge dynamic_bridge --bridge-all-topics
 fi
 
-# parameter_bridge reads its topic list from rosparam under its own node
-# namespace. Load the YAML there.
-echo "[bridge] loading ${BRIDGE_YAML} into rosparam /ros_bridge/"
-rosparam load "${BRIDGE_YAML}" /ros_bridge
+# parameter_bridge (foxy) reads its topic list from rosparam at ROOT
+# namespace (`ros::NodeHandle().getParam("topics", ...)`), NOT from its
+# private namespace as the previous version of this script assumed.
+# Loading under /ros_bridge/ produced "topics doesn't exist or isn't an
+# array" and the bridge ran with zero topics. Load at /.
+echo "[bridge] loading ${BRIDGE_YAML} into rosparam /"
+rosparam load "${BRIDGE_YAML}" /
 
 echo "[bridge] starting parameter_bridge (static topic list from ${BRIDGE_YAML})"
 exec /opt/ros/${ROS2_DISTRO_IN_BRIDGE:-foxy}/lib/ros1_bridge/parameter_bridge \

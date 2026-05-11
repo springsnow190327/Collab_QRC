@@ -65,11 +65,6 @@ except Exception:
 import rclpy
 from geometry_msgs.msg import Point, PointStamped
 from .map_merge_utils import build_fallback_map, build_shared_with_local_patches
-from .mdvrp_solver import first_goal_for_route, solve_mdvrp
-try:
-    from mtare_ros2.msg import GridWorldStatus
-except ImportError:
-    GridWorldStatus = None
 from nav_msgs.msg import OccupancyGrid, Odometry
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
@@ -152,10 +147,6 @@ class CFPA2Coordinator(Node):
         self.declare_parameter("frontier_stride", 2)
         self.declare_parameter("max_targets", 800)
         self.declare_parameter("goal_topic_suffix", "/way_point_coord")
-        self.declare_parameter("output_mode", "waypoint_coord")
-        self.declare_parameter("tare_goal_topic_suffix", "/way_point_tare")
-        self.declare_parameter("relocation_goal_topic_suffix", "/goal_point")
-        self.declare_parameter("grid_world_status_topic_suffix", "/grid_world_status")
         self.declare_parameter("nav_status_topic_suffix", "/nav_status")
         # Map source for frontier extraction + BFS reachability. Two practical choices:
         #   "/map"                       — raw octomap projection (legacy default).
@@ -289,18 +280,7 @@ class CFPA2Coordinator(Node):
         self.declare_parameter("cfpa2_space_time_max_speed_mps", 0.60)
         self.declare_parameter("cfpa2_frontier_min_cluster_area_m2", 0.20)
         self.declare_parameter("cfpa2_frontier_obstacle_clearance_m", 0.40)
-        self.declare_parameter("communication_timeout_sec", 6.0)
-        self.declare_parameter("prediction_horizon_sec", 4.0)
-        self.declare_parameter("pursuit_weight", 2.0)
-        self.declare_parameter("pursuit_switch_margin", 0.1)
         self.declare_parameter("exploration_gain_radius_cells", 4)
-        self.declare_parameter("meeting_min_distance", 1.5)
-        self.declare_parameter("teammate_stale_ttl_sec", 120.0)
-        self.declare_parameter("mui_resolve_period_sec", 5.0)
-        self.declare_parameter("mui_mdvrp_time_limit_sec", 1.0)
-        self.declare_parameter("mui_max_exploring_cells", 120)
-        self.declare_parameter("mui_cell_merge_resolution_m", 1.0)
-        self.declare_parameter("mui_unreachable_penalty_m", 200.0)
         self.declare_parameter("marker_frame_override", "world")
         self.declare_parameter("coordinator_map_topic", "/mtare/coordinator_map")
         self.declare_parameter("robot_markers_topic", "/mtare/robot_markers")
@@ -330,14 +310,13 @@ class CFPA2Coordinator(Node):
         self.frontier_stride = max(1, int(self.get_parameter("frontier_stride").value))
         self.max_targets = max(50, int(self.get_parameter("max_targets").value))
         self.goal_topic_suffix = str(self.get_parameter("goal_topic_suffix").value)
-        self.output_mode = str(self.get_parameter("output_mode").value).strip().lower()
-        if self.output_mode not in {"waypoint_coord", "exact_split"}:
-            self.get_logger().warn(
-                f"Unknown output_mode='{self.output_mode}', falling back to waypoint_coord"
-            )
-            self.output_mode = "waypoint_coord"
-        self.tare_goal_topic_suffix = str(self.get_parameter("tare_goal_topic_suffix").value)
-        self.relocation_goal_topic_suffix = str(self.get_parameter("relocation_goal_topic_suffix").value)
+        # output_mode used to be a parameter (cfpa2_single_robot.yaml + ROS
+        # param) with values 'waypoint_coord' (default) and 'exact_split'
+        # (split publish into way_point_tare + relocation_goal_point for
+        # the legacy mtare planner). exact_split was removed 2026-05-10
+        # along with the rest of the mtare path. Kept as a literal so log
+        # lines that reference it don't break.
+        self.output_mode = "waypoint_coord"
         # Validate planning_map_topic_suffix: must start with '/' and be non-empty
         # (we concatenate with /<ns>{suffix}). Empty / malformed values silently
         # fall back to the legacy /map topic.
@@ -345,9 +324,6 @@ class CFPA2Coordinator(Node):
         if not _pm.startswith("/"):
             _pm = "/" + _pm if _pm else "/map"
         self.planning_map_topic_suffix = _pm
-        self.grid_world_status_topic_suffix = str(
-            self.get_parameter("grid_world_status_topic_suffix").value
-        )
         self.nav_status_topic_suffix = str(self.get_parameter("nav_status_topic_suffix").value)
         self.use_shared_map = bool(self.get_parameter("use_shared_map").value)
         self.shared_map_topic = str(self.get_parameter("shared_map_topic").value)
@@ -362,12 +338,13 @@ class CFPA2Coordinator(Node):
         self.switch_min_dist = max(0.1, float(self.get_parameter("switch_min_dist").value))
         self.min_assign_distance = max(0.0, float(self.get_parameter("min_assign_distance").value))
 
-        self.algorithm_mode = str(self.get_parameter("algorithm_mode").value).strip().lower()
-        if self.algorithm_mode != "cfpa2":
-            self.get_logger().warn(
-                f"CFPA2Coordinator forcing algorithm_mode=cfpa2 (received '{self.algorithm_mode}')."
-            )
-            self.algorithm_mode = "cfpa2"
+        # algorithm_mode used to be a parameter with values cfpa2 / mui_tare /
+        # mtare / committed. The mui_tare / mtare / committed implementations
+        # were removed 2026-05-10 (dead since the algorithm_mode override
+        # was hardcoded to "cfpa2" months ago, with mtare_ros2 msg unavailable
+        # at runtime). The attribute is kept as a literal for log lines and
+        # policy_reason strings that already expect it.
+        self.algorithm_mode = "cfpa2"
 
         self.goal_lock_sec = max(0.0, float(self.get_parameter("goal_lock_sec").value))
         self.progress_window_sec = max(0.5, float(self.get_parameter("progress_window_sec").value))
@@ -546,24 +523,7 @@ class CFPA2Coordinator(Node):
         self.cfpa2_frontier_obstacle_clearance_m = max(
             0.0, float(self.get_parameter("cfpa2_frontier_obstacle_clearance_m").value)
         )
-        self.communication_timeout_sec = max(0.0, float(self.get_parameter("communication_timeout_sec").value))
-        self.prediction_horizon_sec = max(0.0, float(self.get_parameter("prediction_horizon_sec").value))
-        self.pursuit_weight = max(0.0, float(self.get_parameter("pursuit_weight").value))
-        self.pursuit_switch_margin = float(self.get_parameter("pursuit_switch_margin").value)
         self.exploration_gain_radius_cells = max(1, int(self.get_parameter("exploration_gain_radius_cells").value))
-        self.meeting_min_distance = max(0.0, float(self.get_parameter("meeting_min_distance").value))
-        self.teammate_stale_ttl_sec = max(0.0, float(self.get_parameter("teammate_stale_ttl_sec").value))
-        self.mui_resolve_period_sec = max(0.2, float(self.get_parameter("mui_resolve_period_sec").value))
-        self.mui_mdvrp_time_limit_sec = max(0.1, float(self.get_parameter("mui_mdvrp_time_limit_sec").value))
-        self.mui_max_exploring_cells = max(10, int(self.get_parameter("mui_max_exploring_cells").value))
-        self.mui_cell_merge_resolution_m = max(
-            0.05,
-            float(self.get_parameter("mui_cell_merge_resolution_m").value),
-        )
-        self.mui_unreachable_penalty_m = max(
-            0.0,
-            float(self.get_parameter("mui_unreachable_penalty_m").value),
-        )
         self.marker_frame_override = str(self.get_parameter("marker_frame_override").value).strip()
         self.coordinator_map_topic = str(self.get_parameter("coordinator_map_topic").value).strip()
         self.robot_markers_topic = str(self.get_parameter("robot_markers_topic").value).strip()
@@ -613,8 +573,6 @@ class CFPA2Coordinator(Node):
         self.maps: dict[str, OccupancyGrid] = {}
         self.shared_map: Optional[OccupancyGrid] = None
         self.odoms: dict[str, Odometry] = {}
-        self.grid_world_status: dict[str, GridWorldStatus] = {}
-        self.grid_world_status_rx_time_ns: dict[str, int] = {}
         self.nav_status: dict[str, dict[str, Any]] = {}
         self.nav_status_rx_time_ns: dict[str, int] = {}
         self.last_goal: dict[str, tuple[float, float]] = {}
@@ -676,7 +634,6 @@ class CFPA2Coordinator(Node):
 
         self._warned_missing_shared_map = False
         self._shared_map_fallback_active = False
-        self._warned_cfpa2_two_robot_only = False
         self._cfpa2_last_close_stop_log_ns = 0
         self._start_ns = self.get_clock().now().nanoseconds
         self._summary_interval_sec = 10.0
@@ -693,14 +650,8 @@ class CFPA2Coordinator(Node):
         self._adaptive_exploration_gain_radius_cells = self.exploration_gain_radius_cells
         self._adaptive_skip_ticks = 0
         self._adaptive_tick_skip_counter = 0
-        self._mui_last_solve_ns = 0
-        self._mui_last_cell_keys: set[tuple[int, int, int]] = set()
-        self._mui_routes: dict[str, list[int]] = {ns: [] for ns in self.namespaces}
-        self._mui_cover_by_others: dict[str, set[int]] = {ns: set() for ns in self.namespaces}
 
         self.goal_pubs = {}
-        self.tare_goal_pubs = {}
-        self.relocation_goal_pubs = {}
         self.goal_marker_pubs = {}
         coordinator_map_qos = QoSProfile(
             history=QoSHistoryPolicy.KEEP_LAST,
@@ -724,13 +675,6 @@ class CFPA2Coordinator(Node):
                 f"[{ns}] planning map ← {map_topic} "
                 f"(occ_thresh={self.occ_thresh}, unknown={self.unknown_value})")
             self.create_subscription(Odometry, f"/{ns}/odom/nav", lambda m, n=ns: self._odom_cb(m, n), 10)
-            if GridWorldStatus is not None:
-                self.create_subscription(
-                    GridWorldStatus,
-                    f"/{ns}{self.grid_world_status_topic_suffix}",
-                    lambda m, n=ns: self._grid_world_status_cb(m, n),
-                    10,
-                )
             self.create_subscription(
                 String,
                 f"/{ns}{self.nav_status_topic_suffix}",
@@ -744,10 +688,6 @@ class CFPA2Coordinator(Node):
                 10,
             )
             self.goal_pubs[ns] = self.create_publisher(PointStamped, f"/{ns}{self.goal_topic_suffix}", 10)
-            self.tare_goal_pubs[ns] = self.create_publisher(PointStamped, f"/{ns}{self.tare_goal_topic_suffix}", 10)
-            self.relocation_goal_pubs[ns] = self.create_publisher(
-                PointStamped, f"/{ns}{self.relocation_goal_topic_suffix}", 10
-            )
             self.goal_marker_pubs[ns] = self.create_publisher(Marker, f"/{ns}/mtare_goal_marker", 10)
         if self.use_shared_map:
             self.create_subscription(OccupancyGrid, self.shared_map_topic, self._shared_map_cb, 1)
@@ -802,10 +742,6 @@ class CFPA2Coordinator(Node):
         cutoff_ns = now_ns - int(self.cfpa2_stuck_window_sec * 1e9)
         while len(history) >= 2 and history[0][0] < cutoff_ns:
             history.popleft()
-
-    def _grid_world_status_cb(self, msg: GridWorldStatus, ns: str) -> None:
-        self.grid_world_status[ns] = msg
-        self.grid_world_status_rx_time_ns[ns] = self.get_clock().now().nanoseconds
 
     def _nav_status_cb(self, msg: String, ns: str) -> None:
         try:
@@ -1503,18 +1439,6 @@ class CFPA2Coordinator(Node):
         idx = self._grid_index(g[0], g[1], int(map_msg.info.width))
         return idx in dist_map
 
-    def _update_progress_samples(self, ns: str, now_ns: int) -> None:
-        goal = self.last_goal.get(ns)
-        if goal is None:
-            return
-
-        samples = self.goal_progress_samples[ns]
-        samples.append((now_ns, self._distance_robot_to_goal(ns, goal)))
-
-        cutoff_ns = now_ns - int(self.progress_window_sec * 1e9)
-        while len(samples) >= 2 and samples[0][0] < cutoff_ns:
-            samples.popleft()
-
     def _progress_delta(self, ns: str) -> Optional[float]:
         samples = self.goal_progress_samples[ns]
         if len(samples) < 2:
@@ -2155,15 +2079,7 @@ class CFPA2Coordinator(Node):
         msg.point.x = goal_w[0]
         msg.point.y = goal_w[1]
         msg.point.z = 0.0
-        if self.output_mode == "exact_split":
-            policy_reason = self.last_policy_reason.get(ns, "")
-            # Relocation targets are currently tied to pursuit decisions.
-            if "pursuit" in policy_reason:
-                self.relocation_goal_pubs[ns].publish(msg)
-            else:
-                self.tare_goal_pubs[ns].publish(msg)
-        else:
-            self.goal_pubs[ns].publish(msg)
+        self.goal_pubs[ns].publish(msg)
         self._publish_goal_marker(ns=ns, frame_id=msg.header.frame_id, goal_w=goal_w)
 
     def _publish_goal_marker(self, ns: str, frame_id: str, goal_w: tuple[float, float]) -> None:
@@ -2388,15 +2304,6 @@ class CFPA2Coordinator(Node):
     def _robot_xy(self, ns: str) -> tuple[float, float]:
         od = self.odoms[ns]
         return (float(od.pose.pose.position.x), float(od.pose.pose.position.y))
-
-    def _predict_teammate_xy(self, ns: str, now_ns: int) -> tuple[float, float]:
-        rx, ry = self._robot_xy(ns)
-        vx, vy = self.odom_velocity_xy.get(ns, (0.0, 0.0))
-        dt = self.prediction_horizon_sec
-        if ns in self.odom_rx_time_ns:
-            age_sec = max(0.0, (now_ns - self.odom_rx_time_ns[ns]) / 1e9)
-            dt += age_sec
-        return (rx + vx * dt, ry + vy * dt)
 
     def _frontier_information_gain(self, msg: OccupancyGrid, goal: tuple[float, float]) -> float:
         g = self._world_to_grid(msg, goal[0], goal[1])
@@ -2976,263 +2883,6 @@ class CFPA2Coordinator(Node):
             self._cfpa2_last_close_stop_log_ns = now_ns
         return {stop_ns}
 
-    def _exploration_utility(
-        self,
-        *,
-        ns: str,
-        goal: tuple[float, float],
-        map_msg: OccupancyGrid,
-        dist_maps: dict[str, dict[int, int]],
-        assigned_goals: dict[str, tuple[float, float]],
-    ) -> tuple[float, Optional[float]]:
-        self_dist = self._grid_path_cost_m(map_msg, dist_maps.get(ns, {}), goal)
-        if self_dist is None or self_dist <= 0.0:
-            return (-1e18, None)
-
-        info_gain = self._frontier_information_gain(map_msg, goal)
-        base_score = info_gain / max(self_dist, 0.1)
-
-        overlap_penalty = 0.0
-        for other in self.namespaces:
-            if other == ns:
-                continue
-            other_dist = self._grid_path_cost_m(map_msg, dist_maps.get(other, {}), goal)
-            if other_dist is None or other_dist <= 0.0:
-                continue
-            if other_dist < self_dist:
-                overlap_penalty += self.overlap_weight / max(other_dist, 0.25)
-
-            assigned = assigned_goals.get(other)
-            if assigned is not None:
-                d_assigned = math.hypot(goal[0] - assigned[0], goal[1] - assigned[1])
-                if d_assigned < self.sensor_range:
-                    overlap_penalty += self.overlap_weight / max(d_assigned, 0.25)
-
-        return (base_score - overlap_penalty, self_dist)
-
-    def _best_pursuit_target(
-        self,
-        *,
-        ns: str,
-        now_ns: int,
-    ) -> tuple[Optional[tuple[float, float]], float]:
-        if self.communication_timeout_sec <= 0.0:
-            return (None, -1e18)
-
-        local_xy = self._robot_xy(ns)
-        best_target: Optional[tuple[float, float]] = None
-        best_utility = -1e18
-
-        for other in self.namespaces:
-            if other == ns:
-                continue
-            last_rx_ns = self.odom_rx_time_ns.get(other, 0)
-            if last_rx_ns <= 0:
-                continue
-
-            stale_sec = max(0.0, (now_ns - last_rx_ns) / 1e9)
-            if stale_sec < self.communication_timeout_sec:
-                continue
-            if self.teammate_stale_ttl_sec > 0.0 and stale_sec > self.teammate_stale_ttl_sec:
-                continue
-
-            predicted = self._predict_teammate_xy(other, now_ns)
-            meeting_dist = math.hypot(predicted[0] - local_xy[0], predicted[1] - local_xy[1])
-            if meeting_dist < self.meeting_min_distance:
-                continue
-
-            expected_overlap_reduction = max(1.0, stale_sec)
-            utility = self.pursuit_weight * expected_overlap_reduction / max(meeting_dist, 0.25)
-            if utility > best_utility:
-                best_utility = utility
-                best_target = predicted
-
-        return (best_target, best_utility)
-
-    def _mui_cell_key(self, point: tuple[float, float, float]) -> tuple[int, int, int]:
-        q = self.mui_cell_merge_resolution_m
-        qz = max(0.05, q)
-        return (
-            int(round(point[0] / q)),
-            int(round(point[1] / q)),
-            int(round(point[2] / qz)),
-        )
-
-    def _collect_mui_exploring_cells(
-        self,
-    ) -> tuple[list[tuple[float, float, float]], list[tuple[int, int, int]], dict[str, int]]:
-        merged: dict[tuple[int, int, int], tuple[float, float, float]] = {}
-        per_ns_frontiers: dict[str, int] = {}
-
-        for ns in self.namespaces:
-            status = self.grid_world_status.get(ns)
-            if status is None:
-                per_ns_frontiers[ns] = 0
-                continue
-            count = 0
-            for pt in status.exploring_cell_positions:
-                x = float(pt.x)
-                y = float(pt.y)
-                z = float(pt.z)
-                if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(z)):
-                    continue
-                key = self._mui_cell_key((x, y, z))
-                merged.setdefault(key, (x, y, z))
-                count += 1
-            per_ns_frontiers[ns] = count
-
-        keys = sorted(merged.keys())
-        if len(keys) > self.mui_max_exploring_cells:
-            robot_xy = [self._robot_xy(ns) for ns in self.namespaces]
-
-            def _score(k: tuple[int, int, int]) -> float:
-                x, y, _ = merged[k]
-                return min(math.hypot(x - rx, y - ry) for rx, ry in robot_xy)
-
-            keys = sorted(keys, key=_score)[: self.mui_max_exploring_cells]
-
-        cells = [merged[k] for k in keys]
-        return (cells, keys, per_ns_frontiers)
-
-    def _build_mui_distance_matrix(
-        self,
-        map_msg: OccupancyGrid,
-        exploring_cells: list[tuple[float, float, float]],
-        robot_positions: list[tuple[float, float, float]],
-    ) -> list[list[int]]:
-        locations = list(exploring_cells) + list(robot_positions)
-        if not locations:
-            return []
-
-        map_res = max(1e-3, float(map_msg.info.resolution))
-        unreachable_cm = int(round(self.mui_unreachable_penalty_m * 100.0))
-        xy_locations = [(loc[0], loc[1]) for loc in locations]
-        dist_maps = [self._distance_transform(map_msg, (x, y)) for x, y in xy_locations]
-        map_w = int(map_msg.info.width)
-
-        matrix: list[list[int]] = []
-        for i, (fx, fy) in enumerate(xy_locations):
-            dist_map = dist_maps[i]
-            row: list[int] = []
-            for j, (tx, ty) in enumerate(xy_locations):
-                if i == j:
-                    row.append(0)
-                    continue
-                target_grid = self._world_to_grid(map_msg, tx, ty)
-                if target_grid is not None:
-                    tidx = self._grid_index(target_grid[0], target_grid[1], map_w)
-                    if tidx in dist_map:
-                        row.append(max(1, int(round(float(dist_map[tidx]) * map_res * 100.0))))
-                        continue
-                euclid_cm = int(round(math.hypot(tx - fx, ty - fy) * 100.0))
-                row.append(max(1, euclid_cm + unreachable_cm))
-            matrix.append(row)
-        return matrix
-
-    def _should_resolve_mui(self, now_ns: int, cell_keys: list[tuple[int, int, int]]) -> bool:
-        if self._mui_last_solve_ns <= 0:
-            return True
-        elapsed_ns = now_ns - self._mui_last_solve_ns
-        # Only re-solve on timer expiry or when a robot has reached its goal
-        timer_expired = elapsed_ns >= int(self.mui_resolve_period_sec * 1e9)
-        robot_reached_goal = False
-        for ns in self.namespaces:
-            goal = self.last_goal.get(ns)
-            if goal is None:
-                robot_reached_goal = True
-                break
-            if self._distance_robot_to_goal(ns, goal) <= self.switch_min_dist:
-                robot_reached_goal = True
-                break
-        return timer_expired or robot_reached_goal
-
-    def _tick_impl_mui_tare(
-        self,
-        *,
-        now_ns: int,
-        planning_map: OccupancyGrid,
-    ) -> bool:
-        missing_status = [ns for ns in self.namespaces if ns not in self.grid_world_status]
-        if missing_status:
-            if now_ns - self._last_prereq_warn_ns > int(2e9):
-                self.get_logger().warn(
-                    f"Waiting for grid status topics from: {missing_status}; "
-                    "no MUI-TARE goals will be published yet."
-                )
-                self._last_prereq_warn_ns = now_ns
-            return True
-
-        exploring_cells, cell_keys, per_ns_frontiers = self._collect_mui_exploring_cells()
-
-        if not exploring_cells:
-            return True
-
-        should_resolve = self._should_resolve_mui(now_ns, cell_keys)
-        if should_resolve:
-            robot_positions = []
-            for ns in self.namespaces:
-                rx, ry = self._robot_xy(ns)
-                robot_positions.append((rx, ry, 0.0))
-            distance_matrix = self._build_mui_distance_matrix(planning_map, exploring_cells, robot_positions)
-            routes = solve_mdvrp(
-                exploring_cell_positions=exploring_cells,
-                robot_positions=robot_positions,
-                distance_matrix=distance_matrix,
-                time_limit_sec=self.mui_mdvrp_time_limit_sec,
-            )
-            if not routes:
-                if now_ns - self._last_prereq_warn_ns > int(2e9):
-                    self.get_logger().warn(
-                        "MUI-TARE MDVRP solve failed; keeping previous MUI assignments."
-                    )
-                    self._last_prereq_warn_ns = now_ns
-            else:
-                self._mui_last_solve_ns = now_ns
-                self._mui_last_cell_keys = set(cell_keys)
-                all_cell_indices = set(range(len(exploring_cells)))
-                for idx, ns in enumerate(self.namespaces):
-                    own_route = routes.get(idx, [])
-                    self._mui_routes[ns] = own_route
-                    self._mui_cover_by_others[ns] = set(int(i) for i in (all_cell_indices - set(own_route)))
-
-        robot_xy = {ns: self._robot_xy(ns) for ns in self.namespaces}
-        indexed_routes = {i: self._mui_routes.get(ns, []) for i, ns in enumerate(self.namespaces)}
-        candidate_goals = select_first_route_goals(
-            namespaces=self.namespaces,
-            routes=indexed_routes,
-            exploring_cells=exploring_cells,
-            robot_xy=robot_xy,
-            min_assign_distance=self.min_assign_distance,
-        )
-
-        per_ns_assigned: dict[str, tuple[float, float]] = {}
-        for ns in self.namespaces:
-            candidate = candidate_goals.get(ns)
-            if candidate is None:
-                held = self.last_goal.get(ns)
-                if held is None:
-                    self._set_policy_reason(ns, "hold/mui_no_candidate")
-                    continue
-                self._set_policy_reason(ns, "hold/mui_keep_previous")
-                goal = held
-            else:
-                self._set_policy_reason(ns, "switch/mui_tare_mdvrp")
-                goal = self._apply_switch_hysteresis(ns, candidate, 1.0)
-
-            self._set_active_goal(ns, goal, now_ns)
-            publish_map = self.maps.get(ns, planning_map)
-            self._publish_goal(ns, publish_map, goal)
-            per_ns_assigned[ns] = goal
-
-        per_ns_reachable = {ns: len(self._mui_routes.get(ns, [])) for ns in self.namespaces}
-        self._maybe_log_summary(
-            targets_total=len(exploring_cells),
-            per_ns_frontiers=per_ns_frontiers,
-            per_ns_reachable=per_ns_reachable,
-            per_ns_assigned=per_ns_assigned,
-        )
-        return True
-
     def _tick_impl(self) -> None:
         now_ns = self.get_clock().now().nanoseconds
         using_shared_map = self.use_shared_map and self.shared_map is not None
@@ -3323,13 +2973,6 @@ class CFPA2Coordinator(Node):
 
         self._publish_frontier_markers(planning_map, targets)
 
-        if self.algorithm_mode == "mui_tare":
-            self._tick_impl_mui_tare(
-                now_ns=now_ns,
-                planning_map=planning_map,
-            )
-            return
-
         if not targets:
             self._log_no_goal_debug(
                 now_ns=now_ns,
@@ -3368,12 +3011,10 @@ class CFPA2Coordinator(Node):
                 dist_maps[ns] = {}
                 continue
             dist_maps[ns] = self._distance_transform(cost_map, (od.pose.pose.position.x, od.pose.pose.position.y))
-            if self.algorithm_mode == "committed":
-                self._update_progress_samples(ns, now_ns)
 
         local_nav_forced_switch_namespaces = self._consume_local_nav_stall_blacklists(now_ns)
 
-        if self.algorithm_mode == "cfpa2" and len(self.namespaces) == 2:
+        if len(self.namespaces) == 2:
             ns_a, ns_b = self.namespaces[0], self.namespaces[1]
             map_a = planning_map if using_shared_map else self.maps.get(ns_a)
             map_b = planning_map if using_shared_map else self.maps.get(ns_b)
@@ -3677,97 +3318,9 @@ class CFPA2Coordinator(Node):
                 )
             return
 
-        if self.algorithm_mode == "cfpa2" and not self._warned_cfpa2_two_robot_only:
-            self.get_logger().warn(
-                "algorithm_mode=cfpa2 requires exactly two namespaces; falling back to collaborative mode."
-            )
-            self._warned_cfpa2_two_robot_only = True
-
-        if self.algorithm_mode == "mtare":
-            per_ns_assigned: dict[str, tuple[float, float]] = {}
-            assigned_goals: dict[str, tuple[float, float]] = {}
-
-            for ns in self.namespaces:
-                map_msg = planning_map if using_shared_map else self.maps.get(ns)
-                if map_msg is None:
-                    self._set_policy_reason(ns, "hold/no_local_map")
-                    continue
-                best_explore_goal: Optional[tuple[float, float]] = None
-                best_explore_utility = -1e18
-                for goal in targets:
-                    if self._goal_too_close(ns, goal):
-                        continue
-                    if self._is_blacklisted(ns, goal, now_ns):
-                        continue
-                    utility, _ = self._exploration_utility(
-                        ns=ns,
-                        goal=goal,
-                        map_msg=map_msg,
-                        dist_maps=dist_maps,
-                        assigned_goals=assigned_goals,
-                    )
-                    if utility > best_explore_utility:
-                        best_explore_utility = utility
-                        best_explore_goal = goal
-
-                pursuit_goal, pursuit_utility = self._best_pursuit_target(ns=ns, now_ns=now_ns)
-
-                selected_goal: Optional[tuple[float, float]] = None
-                if (
-                    pursuit_goal is not None
-                    and pursuit_utility > (best_explore_utility + self.pursuit_switch_margin)
-                ):
-                    selected_goal = pursuit_goal
-                    self._set_policy_reason(ns, "switch/mtare_pursuit")
-                elif best_explore_goal is not None:
-                    selected_goal = best_explore_goal
-                    self._set_policy_reason(ns, "switch/mtare_explore")
-
-                if selected_goal is None:
-                    held = self.last_goal.get(ns)
-                    if held is None:
-                        self._set_policy_reason(ns, "hold/mtare_no_candidate")
-                        continue
-                    selected_goal = held
-                else:
-                    selected_goal = self._apply_switch_hysteresis(
-                        ns,
-                        selected_goal,
-                        max(best_explore_utility, pursuit_utility),
-                    )
-
-                self._set_active_goal(ns, selected_goal, now_ns)
-                publish_map = self.maps.get(ns, planning_map)
-                self._publish_goal(ns, publish_map, selected_goal)
-                per_ns_assigned[ns] = selected_goal
-                assigned_goals[ns] = selected_goal
-
-            per_ns_reachable: dict[str, int] = {}
-            for ns in self.namespaces:
-                msg = planning_map if using_shared_map else self.maps.get(ns)
-                if msg is None:
-                    per_ns_reachable[ns] = 0
-                    continue
-                dist_map = dist_maps.get(ns, {})
-                reachable = 0
-                for goal in targets:
-                    if self._goal_too_close(ns, goal):
-                        continue
-                    if self._is_blacklisted(ns, goal, now_ns):
-                        continue
-                    if self._goal_reachable(msg, dist_map, goal):
-                        reachable += 1
-                per_ns_reachable[ns] = reachable
-
-            per_ns_frontiers = {ns: len(per_ns_targets.get(ns, [])) for ns in self.namespaces}
-            self._maybe_log_summary(
-                targets_total=len(targets),
-                per_ns_frontiers=per_ns_frontiers,
-                per_ns_reachable=per_ns_reachable,
-                per_ns_assigned=per_ns_assigned,
-            )
-            return
-
+        # 3+ robots: fall back to the collaborative greedy allocator below.
+        # The 2-robot cfpa2 joint allocator returned earlier. Single-robot
+        # path is handled by CFPA2SingleRobotNode (which overrides _tick_impl).
         utilities = [1.0 for _ in targets]
         unassigned = set(self.namespaces)
         assigned: dict[str, int] = {}

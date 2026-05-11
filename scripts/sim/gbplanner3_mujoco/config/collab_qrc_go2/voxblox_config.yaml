@@ -1,0 +1,31 @@
+### Voxblox TSDF + ESDF — Go2 / Mid-360 indoor + multi-floor
+
+# Match GBPlanner3's voxel-size factor convention
+occupancy_distance_voxelsize_factor: 1.0
+
+world_frame: world
+use_tf_transforms: True
+use_freespace_pointcloud: True
+
+# Mid-360 noise is higher than Ouster; bigger voxels = more robust TSDF integration
+tsdf_voxels_per_side: 16
+tsdf_voxel_size: 0.15
+max_ray_length_m: 8.0
+min_ray_length_m: 0.5
+truncation_distance: 0.4
+
+voxel_carving_enabled: True
+color_mode: "color"
+verbose: False
+
+update_mesh_every_n_sec: 1.0
+
+mesh_min_weight: 1e-4
+slice_level: 0.5
+method: "fast"
+integration_order_mode: "sorted"
+max_consecutive_ray_collisions: 0
+publish_slices: False
+publish_pointclouds: True
+publish_tsdf_map: True
+publish_esdf_map: True
