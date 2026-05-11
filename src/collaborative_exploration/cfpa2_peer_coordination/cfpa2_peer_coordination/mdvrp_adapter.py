@@ -23,7 +23,7 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING
 
-from cfpa2_collaborative_autonomy.mdvrp_solver import (
+from cfpa2_peer_coordination.mdvrp_solver import (
     build_mdvrp_distance_matrix,
     solve_mdvrp,
 )
