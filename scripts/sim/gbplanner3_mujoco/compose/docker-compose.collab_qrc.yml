@@ -92,13 +92,9 @@ services:
       source /workspace/devel/setup.bash &&
       rosrun topic_tools relay /robot/tf /tf &
       rosrun topic_tools relay /robot/tf_static /tf_static &
-      roslaunch robot_bringup gbplanner_sim.launch
-        robot_name:=robot
-        config_name:=collab_qrc_go2
-        ele_map_enable:=false
-        rviz_en:=true
-        odometry_topic:=/robot/Odometry
-        /pointcloud:=/robot/cloud_registered_body
+      rosrun topic_tools relay /robot/Odometry /rmf/odom &
+      rosrun topic_tools relay /robot/cloud_registered_body /rmf/lidar/points_downsampled &
+      roslaunch robot_bringup gbplanner_sim.launch config_name:=collab_qrc_go2 ele_map_enable:=false rviz_en:=true
       '
 
   # --- ROS1↔ROS2 dynamic bridge (Humble Fast-LIO → Noetic gbplanner) ---
