@@ -131,7 +131,7 @@ def _filter_nearby_frontiers(
     filtered: list[Point3] = []
     for frontier in frontiers:
         too_close = any(
-            _distance_xy(frontier, robot_position) <= min_dist
+            distance_xy(frontier, robot_position) <= min_dist
             for robot_position in robot_positions
         )
         if not too_close:
@@ -190,7 +190,7 @@ def _route_indices_to_positions(
 
     return assignments
 
-def _distance_xy(a: Point3, b: Point3) -> float:
+def distance_xy(a: Point3, b: Point3) -> float:
     """Return 2D Euclidean distance using only the x and y elements of the input tuples"""
     return math.hypot(a[0] - b[0], a[1] - b[1])
 

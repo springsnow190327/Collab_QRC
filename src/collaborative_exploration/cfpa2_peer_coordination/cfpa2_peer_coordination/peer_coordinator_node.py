@@ -9,6 +9,7 @@ This is the skeleton; protocol logic is not yet implemented.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from visualization_msgs.msg import MarkerArray 
 
 import rclpy
 from rclpy.node import Node
@@ -18,14 +19,24 @@ from std_msgs.msg import Header
 from geometry_msgs.msg import Pose
 from nav_msgs.msg import Odometry
 
+from cfpa2_peer_coordination.mdvrp_adapter import (
+    Point3,
+    distance_xy,
+    point_msg_to_tuple,
+)
+
 from cfpa2_peer_coordination_msgs.msg import (
-    ClaimedFrontier,         # noqa: F401 
+    ClaimedFrontier,         
     NegotiationRequest,      # noqa: F401
     NegotiationResponse,     # noqa: F401
     PeerState,
 )
 
 PROTOCOL_VERSION = 1   # bump when message formats change incompatibly
+
+# Both peers must use the same value for claim equity
+"""if two frontiers are within this distance of each other, they are considered the same frontier for the purpose of claim equity calculations"""
+FRONTIER_MATCH_TOLERANCE = 0.5  # metres
 
 # Topic naming convention
 # PeerState is published under the sender's namespace:
@@ -37,6 +48,9 @@ PROTOCOL_VERSION = 1   # bump when message formats change incompatibly
 PEER_STATE_TOPIC = "cfpa2_peer_coordination/peer_state"
 NEGOTIATION_REQUEST_TOPIC = "cfpa2_peer_coordination/inbox/negotiation_request"
 NEGOTIATION_RESPONSE_TOPIC = "cfpa2_peer_coordination/inbox/negotiation_response"
+
+# Existing CFPA2 frontier visualisation markers use this namespace
+CFPA2_FRONTIER_MARKER_NS = "cfpa2_frontiers"  # ns = namespace
 
 # QoS profile for peer-state heartbeats: best-effort, latest-only.
 # Heartbeats are intentionally lossy; a missed message means we use the previous state (and eventually trigger a freshness timeout).
@@ -80,6 +94,7 @@ class PeerCoordinatorNode(Node):
         self.declare_parameter("negotiation_cooldown_sec", 2.0)
 
         self.declare_parameter("odom_topic_suffix", "/odom/nav")
+        self.declare_parameter("frontier_markers_topic", "/mtare/frontier_markers")
 
         # Read parameters into fields for easy access.
         self.robot_id: str = self.get_parameter("robot_id").value
@@ -108,6 +123,9 @@ class PeerCoordinatorNode(Node):
         )
 
         self.odom_topic_suffix: str = self.get_parameter("odom_topic_suffix").value
+        self.frontier_markers_topic: str = str(
+            self.get_parameter("frontier_markers_topic").value
+        )
 
         # Per-peer storage. Initialised with a placeholder for every known peer. Updated by _peer_state_received(), read by negotiation logic (later).
         self.peer_info: dict[str, PeerInfo] = {
@@ -116,6 +134,16 @@ class PeerCoordinatorNode(Node):
 
         # Local pose storage. Updated by _odom_received(), published in PeerState
         self._latest_pose: Pose | None = None
+
+        # Frontier + claim storage
+        """local_frontiers is updated from the existing CFPA2 frontier MarkerArray
+        own_claims will be filled by the future negotiation logic
+        peer_claims is updated from received PeerState messages"""
+        self.local_frontiers: list[Point3] = []
+        self.own_claims: list[ClaimedFrontier] = []
+        self.peer_claims: dict[str, list[ClaimedFrontier]] = {
+            peer_id: [] for peer_id in self.peer_ids
+        }
 
         # Topic names
         self.own_peer_state_topic = f"/{self.robot_namespace}/{PEER_STATE_TOPIC}"
@@ -150,6 +178,18 @@ class PeerCoordinatorNode(Node):
             10,
         )
         self.get_logger().info(f"Subscribed to own odometry on {self.own_odom_topic}")
+
+        # Local frontier marker subscriber
+        # v1 uses existing CFPA2 visualisation markers as a pragmatic frontier input
+        self.frontier_markers_sub = self.create_subscription(
+            MarkerArray,
+            self.frontier_markers_topic,
+            self._frontier_markers_received,
+            10,
+        )
+        self.get_logger().info(
+            f"Subscribed to frontier markers on {self.frontier_markers_topic}"
+        )
 
         # PeerState publisher/subscribers
         self.peer_state_pub = self.create_publisher(
@@ -222,6 +262,34 @@ class PeerCoordinatorNode(Node):
         """Store this robot's latest pose for inclusion in PeerState heartbeats."""
         self._latest_pose = msg.pose.pose
 
+    # Function for receiving frontier markers
+    def _frontier_markers_received(self, msg: MarkerArray) -> None:
+        """Store local frontier candidates from existing CFPA2 frontier markers."""
+        frontiers: list[Point3] = []
+
+        for marker in msg.markers:
+            # Ignore DELETE/DELETEALL markers
+            if marker.action != marker.ADD:
+                continue
+
+            # Existing CFPA2 frontier visualisation markers use this namespace
+            if marker.ns != CFPA2_FRONTIER_MARKER_NS:
+                continue
+
+            frontiers.append(
+                (
+                    float(marker.pose.position.x),
+                    float(marker.pose.position.y),
+                    float(marker.pose.position.z),
+                )
+            )
+        
+        self.local_frontiers = sorted(frontiers, key=lambda p: (p[0], p[1], p[2]))  # sort for consistency
+
+        self.get_logger().debug(
+            f"Stored {len(self.local_frontiers)} local frontier candidates"
+        )
+
     # Function for publishing PeerState   
     def _publish_peer_state(self) -> None:
         """Broadcast this robot's current PeerState heartbeat."""
@@ -239,7 +307,8 @@ class PeerCoordinatorNode(Node):
                 throttle_duration_sec=2.0,
             )
 
-        msg.claimed_frontiers = []
+        self._expire_stale_claims()
+        msg.claimed_frontiers = list(self.own_claims) 
 
         # These become meaningful once negotiation is implemented. For now, use zero/default timesteps
         msg.last_interaction_attempt_stamp.sec = 0
@@ -283,8 +352,15 @@ class PeerCoordinatorNode(Node):
         info.last_state = msg
         info.last_received_ns = self.get_clock().now().nanoseconds
 
+        self.peer_claims[peer_id] = list(msg.claimed_frontiers)
+
+        # Eager expiry is intentional for v1 simplicity; this can become lazy if claim counts grow 
+        self._expire_stale_claims()
+        self._resolve_own_claim_conflicts()
+
         self.get_logger().debug(
-            f"Received PeerState from {peer_id} at ns={info.last_received_ns}"
+            f"Received PeerState from {peer_id} at ns={info.last_received_ns}; "
+            f"stored {len(self.peer_claims[peer_id])} peer claims"
         )
 
     # Function for checking peer freshness and deciding whether to negotiate
@@ -303,7 +379,7 @@ class PeerCoordinatorNode(Node):
         ) / 1e9
         return age_sec <= self.peer_timeout_sec
 
-    # Helper functions
+    # Helper functions for freshness
     def _fresh_peer_ids(self) -> list[str]:
         """Return configured peers whose latest heartbeat is still fresh."""
         return [
@@ -316,22 +392,123 @@ class PeerCoordinatorNode(Node):
             peer_id for peer_id in self.peer_ids if not self._peer_is_fresh(peer_id)
         ]
 
+    # Functions for claim management and conflict resolution
+    def _claim_stamp_ns(self, claim: ClaimedFrontier) -> int:
+        """Convert a claim timestamp to nanoseconds."""
+        return (
+            int(claim.claim_stamp.sec) * 1_000_000_000
+            + int(claim.claim_stamp.nanosec)
+        )
+
+    def _claim_is_fresh(self, claim: ClaimedFrontier) -> bool:
+        """Return True if a claim is still within claim_timeout_sec."""
+        claim_ns = self._claim_stamp_ns(claim)
+        now_ns = self.get_clock().now().nanoseconds
+        age_sec = (now_ns - claim_ns) / 1e9
+        return age_sec <= self.claim_timeout_sec 
+
+    def _expire_stale_claims(self) -> None:
+        """Remove expired own and peer claims. Eager expiry is intentional for v1 simplicity; this can become lazy if claim counts grow."""
+        self.own_claims = [claim for claim in self.own_claims if self._claim_is_fresh(claim)]
+
+        for peer_id, claims in self.peer_claims.items():
+            self.peer_claims[peer_id] = [claim for claim in claims if self._claim_is_fresh(claim)]
+
+    def _same_frontier_position(self, a: Point3, b: Point3) -> bool:
+        """Return True if two frontier positions refer to the same frontier."""
+        return distance_xy(a, b) <= FRONTIER_MATCH_TOLERANCE
+
+    def _claim_wins_against(self, a: ClaimedFrontier, b: ClaimedFrontier) -> bool:
+        """Return True if claim a wins over claim b for the same frontier.
+
+        Conflict rule:
+            1. Earlier claim_stamp wins.
+            2. If timestamps tie, lexicographically smaller claimed_by wins.
+        """
+        a_ns = self._claim_stamp_ns(a)
+        b_ns = self._claim_stamp_ns(b)
+
+        if a_ns != b_ns:
+            return a_ns < b_ns  # earlier timestamp wins
+
+        return a.claimed_by < b.claimed_by  # tie-breaker: lex (string comparison of robot IDs) smaller wins
+
+    def _resolve_own_claim_conflicts(self) -> None:
+        """Drop own claims when a peer has a winning claim for the same frontier."""
+        surviving_claims: list[ClaimedFrontier] = []
+
+        for own_claim in self.own_claims:
+            own_point = point_msg_to_tuple(own_claim.position)
+            peer_wins = False
+
+            for peer_claim_list in self.peer_claims.values():
+                for peer_claim in peer_claim_list:
+                    peer_point = point_msg_to_tuple(peer_claim.position)
+
+                    if not self._same_frontier_position(own_point, peer_point):
+                        continue  # not the same frontier, skip
+                    
+                    if self._claim_wins_against(peer_claim, own_claim):
+                        peer_wins = True
+                        break  # no need to check other peer claims for this frontier
+
+                if peer_wins:
+                    break  # no need to check other peers
+
+            if not peer_wins:
+                surviving_claims.append(own_claim)
+
+        dropped = len(self.own_claims) - len(surviving_claims)
+        self.own_claims = surviving_claims
+
+        if dropped > 0:
+            self.get_logger().warn(
+                f"Dropped {dropped} own claim(s) due to deterministic peer conflict resolution"
+            )
+
+    # Helper functions for frontier matching 
+    def _frontier_blocked_by_peer_claim(self, frontier: Point3) -> bool:
+        """Return True if a frontier is already claimed by a peer."""
+        for claims in self.peer_claims.values():
+            for claim in claims:
+                claim_point = point_msg_to_tuple(claim.position)
+                if self._same_frontier_position(frontier, claim_point):
+                    return True
+        return False
+
+    def _available_local_frontiers(self) -> list[Point3]:
+        """Return local frontiers not blocked by fresh peer claims."""
+        self._expire_stale_claims()  # ensure we are checking against only fresh claims
+
+        return [
+            frontier for frontier in self.local_frontiers
+            if not self._frontier_blocked_by_peer_claim(frontier)
+        ]
+
     # Function for negotiation logic 
     def _decide_negotiation(self) -> None:
         """Decide whether to initiate negotiation with a peer. Stub"""
         fresh_peers = self._fresh_peer_ids()
         stale_peers = self._stale_peer_ids()
+        available_frontiers = self._available_local_frontiers()
 
         if not self._logged_negotiation_stub:
             self.get_logger().info(
                 "_decide_negotiation stub reached; "
                 f"fresh_peers={fresh_peers}; "
                 f"stale_peers={stale_peers}; "
+                f"local_frontiers={len(self.local_frontiers)}; "
+                f"available_frontiers={len(available_frontiers)}; "
                 "negotiation logic not yet implemented"
             )
             self._logged_negotiation_stub = True
         
-        self.get_logger().debug(f"Fresh peers: {fresh_peers}; Stale peers: {stale_peers}")
+        self.get_logger().debug(
+            f"Fresh peers: {fresh_peers}; "
+            f"Stale peers: {stale_peers}; "
+            f"local_frontiers={len(self.local_frontiers)}; "
+            f"available_frontiers={len(available_frontiers)}"
+        )
 
 def main(args=None) -> None:
     rclpy.init(args=args)
