@@ -112,6 +112,9 @@ void LidarSensor::update()
         std::fill(ray_dist_.begin(), ray_dist_.end(), range_max_);
         std::fill(ray_geomid_.begin(), ray_geomid_.end(), -1);
 
+        // MuJoCo 3.2 (mjVERSION_HEADER 320) removed the `normals` output
+        // argument from mj_multiRay. Gate by version so this builds on both
+        // pre-3.2 and 3.2+ MuJoCo without forking the vendor.
         mj_multiRay(model_, data_,
                     origin_copy,              // single origin (3,)
                     ray_dirs_world.data(),    // directions (n_rays*3,)
@@ -120,7 +123,9 @@ void LidarSensor::update()
                     body_id_,                 // bodyexclude: skip robot body
                     ray_geomid_.data(),       // output geom IDs
                     ray_dist_.data(),         // output distances
-                    nullptr,                  // normals: not needed
+#if mjVERSION_HEADER < 320
+                    nullptr,                  // normals: removed in MuJoCo 3.2
+#endif
                     n_rays_,
                     range_max_);              // cutoff
     }  // mutex released — remaining work is read-only on local copies

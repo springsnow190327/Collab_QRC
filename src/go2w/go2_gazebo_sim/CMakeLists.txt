@@ -1,6 +1,15 @@
 cmake_minimum_required(VERSION 3.8)
 project(go2_gazebo_sim)
 
+# CMake 4.x removed compatibility with cmake_policy(VERSION < 3.5), but system
+# jsoncppConfig.cmake (pulled via gazebo_ros -> gazebo -> ignition-fuel_tools)
+# still emits cmake_policy(VERSION 3.0). Force a minimum policy floor so the
+# build works under any cmake the toolchain happens to invoke. Unknown to
+# CMake < 3.24, where it is silently ignored.
+if(NOT DEFINED CMAKE_POLICY_VERSION_MINIMUM)
+  set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+endif()
+
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
