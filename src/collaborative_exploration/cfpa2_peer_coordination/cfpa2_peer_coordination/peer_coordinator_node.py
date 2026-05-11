@@ -16,13 +16,15 @@ from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSReliabilityPolicy, QoSProfile
 
 from std_msgs.msg import Header
-from geometry_msgs.msg import Pose
+from geometry_msgs.msg import Point, Pose
 from nav_msgs.msg import Odometry
 
 from cfpa2_peer_coordination.mdvrp_adapter import (
     Point3,
     distance_xy,
     point_msg_to_tuple,
+    pose_msg_to_tuple,
+    solve_frontier_assignment,
 )
 
 from cfpa2_peer_coordination_msgs.msg import (
@@ -96,6 +98,12 @@ class PeerCoordinatorNode(Node):
         self.declare_parameter("odom_topic_suffix", "/odom/nav")
         self.declare_parameter("frontier_markers_topic", "/mtare/frontier_markers")
 
+        # Interim milestone parameters
+        # This is NOT the final request/response protocol yet. It lets the node generate local own_claims from the shared MDVRP solver so claim broadcast and conflict resolution can be tested before full negotiation exists
+        self.declare_parameter("enable_mdvrp_auto_claims", True)
+        self.declare_parameter("mdvrp_time_limit_sec", 0.5)
+        self.declare_parameter("mdvrp_span_cost_coefficient", 100)
+
         # Read parameters into fields for easy access.
         self.robot_id: str = self.get_parameter("robot_id").value
         self.robot_namespace: str = (
@@ -127,6 +135,17 @@ class PeerCoordinatorNode(Node):
             self.get_parameter("frontier_markers_topic").value
         )
 
+        # Interim milestone parameters
+        self.enable_mdvrp_auto_claims: bool = bool(
+            self.get_parameter("enable_mdvrp_auto_claims").value
+        )
+        self.mdvrp_time_limit_sec: float = float(
+            self.get_parameter("mdvrp_time_limit_sec").value
+        )
+        self.mdvrp_span_cost_coefficient: int = int(
+            self.get_parameter("mdvrp_span_cost_coefficient").value
+        )
+
         # Per-peer storage. Initialised with a placeholder for every known peer. Updated by _peer_state_received(), read by negotiation logic (later).
         self.peer_info: dict[str, PeerInfo] = {
             peer_id: PeerInfo() for peer_id in self.peer_ids
@@ -144,6 +163,10 @@ class PeerCoordinatorNode(Node):
         self.peer_claims: dict[str, list[ClaimedFrontier]] = {
             peer_id: [] for peer_id in self.peer_ids
         }
+
+        # Cooldown for interim MDVRP auto-claim generation
+        # Final request/response negotiation will use the same cooldown concept
+        self._last_negotiation_attempt_ns: int = 0
 
         # Topic names
         self.own_peer_state_topic = f"/{self.robot_namespace}/{PEER_STATE_TOPIC}"
@@ -205,7 +228,7 @@ class PeerCoordinatorNode(Node):
             sub = self.create_subscription(
                 PeerState,
                 peer_topic,
-                lambda msg, pid=peer_id: self._peer_state_received(msg, pid),
+                lambda msg, pid=peer_id: self._peer_state_received(msg, pid),  # pid=peer_id
                 PEER_STATE_QOS,
             )
             self.peer_state_subs.append(sub)
@@ -248,6 +271,14 @@ class PeerCoordinatorNode(Node):
         )
         self.get_logger().info(
             f"Peer response inbox publishers planned: {self.peer_response_inbox_topics}"
+        )
+
+        # Interim MDVRP auto-claim generation log
+        self.get_logger().info(
+            "Interim MDVRP auto-claims | "
+            f"enabled={self.enable_mdvrp_auto_claims} "
+            f"time_limit_sec={self.mdvrp_time_limit_sec:.2f}s "
+            f"span_cost={self.mdvrp_span_cost_coefficient}"
         )
     
     # Function for making message headers
@@ -319,11 +350,6 @@ class PeerCoordinatorNode(Node):
         msg.protocol_version = PROTOCOL_VERSION
 
         self.peer_state_pub.publish(msg)
-
-        # self.get_logger().debug(
-        #     f"_publish_peer_state: would publish {msg.robot_id} "
-        #     f"v{msg.protocol_version}"
-        # )
 
     # Function for receiving PeerState messages from peers
     def _peer_state_received(self, msg: PeerState, peer_id: str) -> None:
@@ -485,12 +511,107 @@ class PeerCoordinatorNode(Node):
             if not self._frontier_blocked_by_peer_claim(frontier)
         ]
 
+    # Interim MDVRP claim generation. This is deliberately not the final request/response protocol. It lets us create own_claims from the same MDVRP solver that the centralised CFPA2 mode uses, so claim broadcasting and conflict resolution can be tested before negotiation messages exist
+    def _point3_to_claim(self, point: Point3, *, information_gain: float = 0.0) -> ClaimedFrontier:
+        """Convert a frontier point into an owned ClaimedFrontier message."""
+        claim = ClaimedFrontier()
+        
+        claim.position = Point(
+            x=float(point[0]),
+            y=float(point[1]),
+            z=float(point[2]),
+        )
+        claim.claimed_by = self.robot_id
+        claim.claim_stamp = self.get_clock().now().to_msg()
+        claim.information_gain = float(information_gain)
+
+        return claim
+
+    def _generate_mdvrp_own_claims(
+        self,
+        *,
+        fresh_peers: list[str],
+        available_frontiers: list[Point3],
+    ) -> None:
+        """Generate local own_claims using the reusable MDVRP adapter.
+
+        This is an interim step only: the final decentralised implementation
+        will place the resulting proposal inside NegotiationRequest and only
+        commit it after the peer accepts. For now, we commit local own_claims
+        directly so the heartbeat/claim/conflict pipeline can be tested.
+        """
+        if not self.enable_mdvrp_auto_claims:
+            return
+
+        if self._latest_pose is None:
+            self.get_logger().debug("Skipping MDVRP auto-claim: no local odom yet")
+            return
+        
+        if not fresh_peers:
+            self.get_logger().debug("Skipping MDVRP auto-claim: no fresh peers")
+            return
+
+        if not available_frontiers:
+            # No candidates means any old own claims should naturally expire, but we should not fabricate new ones
+            self.get_logger().debug("Skipping MDVRP auto-claim: no available frontiers")
+            return
+
+        now_ns = self.get_clock().now().nanoseconds
+        if self._last_negotiation_attempt_ns > 0:
+            cooldown_age_sec = (now_ns - self._last_negotiation_attempt_ns) / 1e9
+            if cooldown_age_sec < self.negotiation_cooldown_sec:
+                return  # still in cooldown
+
+        robot_poses: dict[str, Point3] = {
+            self.robot_id: pose_msg_to_tuple(self._latest_pose)
+        }
+
+        for peer_id in fresh_peers:
+            info = self.peer_info.get(peer_id)
+            if info is None or info.last_state is None:
+                continue  # should not happen since we check for fresh peers, but be defensive
+            robot_poses[peer_id] = pose_msg_to_tuple(info.last_state.pose)
+
+        if len(robot_poses) <= 1:
+            self.get_logger().debug(
+                "Skipping MDVRP auto-claim: no usable fresh peer poses"
+            )
+            return
+
+        assignment = solve_frontier_assignment(
+            robot_poses=robot_poses,
+            candidate_frontiers=available_frontiers,
+            time_limit_sec=self.mdvrp_time_limit_sec,
+            span_cost_coefficient=self.mdvrp_span_cost_coefficient,
+        )
+
+        assigned_to_self = assignment.get(self.robot_id, [])
+        
+        self.own_claims = [
+            self._point3_to_claim(frontier) for frontier in assigned_to_self
+        ]
+
+        self._resolve_own_claim_conflicts()  # resolve against peer claims in case of overlap
+        self._last_negotiation_attempt_ns = now_ns  # start cooldown
+
+        self.get_logger().info(
+            "MDVRP auto-claim proposal generated | "
+            f"robots={sorted(robot_poses.keys())} "
+            f"candidate_frontiers={len(available_frontiers)} "
+            f"own_claims={len(self.own_claims)}"
+        )
+
     # Function for negotiation logic 
     def _decide_negotiation(self) -> None:
         """Decide whether to initiate negotiation with a peer. Stub"""
         fresh_peers = self._fresh_peer_ids()
         stale_peers = self._stale_peer_ids()
         available_frontiers = self._available_local_frontiers()
+
+        self._generate_mdvrp_own_claims(
+            fresh_peers=fresh_peers,
+            available_frontiers=available_frontiers,
+        )
 
         if not self._logged_negotiation_stub:
             self.get_logger().info(
