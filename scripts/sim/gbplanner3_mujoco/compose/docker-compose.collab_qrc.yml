@@ -1,0 +1,128 @@
+# Docker-compose for GBPlanner3 ↔ Collab_QRC MuJoCo integration.
+#
+# Run via:
+#   make launch DOCKER_COMPOSE_FILE=$(realpath compose/docker-compose.collab_qrc.yml)
+# from inside ~/Research/uas_deploy/unified_autonomy_stack.
+#
+# Disables:
+#   - ros2_launch_ugv_sim   (NTNU Gazebo + smb_arl — we use Collab_QRC MuJoCo instead)
+#   - ros1_launch_bridge_params (loads smb_arl-specific bridge params)
+#
+# Activates:
+#   - ros1_launch_roscore
+#   - ros1_launch_gbplanner   (now configured for Collab_QRC Go2 via volume-mounted config)
+#   - ros2_launch_ros1_bridge (uses our bridge_topics_collab_qrc.yaml white-listing
+#                              Fast-LIO outputs from Humble → Noetic)
+
+# ==================== ANCHORS ====================
+x-system-template: &system-template
+  working_dir: /workspace
+  network_mode: host
+  ipc: host
+  restart: "no"
+  stdin_open: true
+  tty: true
+  environment:
+  - DISPLAY=${DISPLAY:-:0}
+  - NVIDIA_VISIBLE_DEVICES=all
+  - NVIDIA_DRIVER_CAPABILITIES=all
+  - QT_X11_NO_MITSHM=1
+  - DISABLE_ROS1_EOL_WARNINGS=1
+  - ROS_DOMAIN_ID=${DOMAIN_ID:-0}
+  volumes:
+    - /tmp/.X11-unix:/tmp/.X11-unix:rw
+
+x-ros1-wait-for-roscore: &ros1-wait-for-roscore
+  depends_on:
+    ros1_launch_roscore:
+      condition: service_healthy
+
+# ==================== SERVICES ====================
+services:
+
+  # --- roscore (Noetic) ---
+  ros1_launch_roscore:
+    <<: [*system-template]
+    image: unified_autonomy:ros1_base
+    profiles: ["launch"]
+    command: roscore
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'source /opt/ros/noetic/setup.bash && rostopic list || exit 1'"]
+      interval: 2s
+      timeout: 2s
+      retries: 5
+      start_period: 3s
+
+  # --- GBPlanner3 (Collab_QRC Go2 mission) ---
+  # Pass roslaunch args + CLI remaps to point gbplanner_sim.launch at the
+  # exact topics that Humble + the bridge will deliver on the Noetic side:
+  #   /robot/Odometry             (Fast-LIO, bridged 1:1 from Humble)
+  #   /robot/cloud_registered_body (Mid-360 cloud, bridged 1:1 from Humble)
+  #   /robot/tf, /robot/tf_static  (bridged 1:1 from Humble — see launcher
+  #                                 which adds Humble-side ros2 topic relay
+  #                                 to publish /tf as well, so default tf2
+  #                                 lookups still work on the Noetic side)
+  ros1_launch_gbplanner:
+    <<: [*system-template, *ros1-wait-for-roscore]
+    image: unified_autonomy:ros1_gbplanner
+    profiles: ["launch"]
+    privileged: true
+    devices:
+      - /dev/dri:/dev/dri
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ${UAS_REPO_ROOT}/workspaces/robot_bringup:/workspace/src/robot_bringup:rw
+      - ${UAS_REPO_ROOT}/workspaces/ws_gbplanner:/workspace:rw
+      - ${COLLAB_QRC_ROOT}/scripts/sim/gbplanner3_mujoco/config/collab_qrc_go2:/workspace/src/robot_bringup/config/ros1/gbplanner/collab_qrc_go2:ro
+    # Pre-step: Noetic-side relay /robot/tf → /tf and /robot/tf_static → /tf_static
+    # so gbplanner's default tf2 lookups work, WITHOUT touching Humble's
+    # namespaced /robot/tf (multi-robot ready — golden rule 10).
+    # Then run gbplanner with topic remaps matching Humble's native names
+    # (which dynamic_bridge passes through 1:1).
+    command: >
+      bash -c '
+      source /opt/ros/noetic/setup.bash &&
+      source /workspace/devel/setup.bash &&
+      rosrun topic_tools relay /robot/tf /tf &
+      rosrun topic_tools relay /robot/tf_static /tf_static &
+      roslaunch robot_bringup gbplanner_sim.launch
+        robot_name:=robot
+        config_name:=collab_qrc_go2
+        ele_map_enable:=false
+        rviz_en:=true
+        odometry_topic:=/robot/Odometry
+        /pointcloud:=/robot/cloud_registered_body
+      '
+
+  # --- ROS1↔ROS2 dynamic bridge (Humble Fast-LIO → Noetic gbplanner) ---
+  # We use dynamic_bridge --bridge-all-topics (auto-discovers + bridges any
+  # topic with matching subscriber on the other side) rather than
+  # parameter_bridge because:
+  #  1. parameter_bridge's YAML format does NOT support topic renames.
+  #     For renames we'd need a separate ros1_launch_bridge_params service
+  #     that calls `rosparam load` then runs parameter_bridge — overkill.
+  #  2. We arranged the Noetic-side topic names (via gbplanner's launch
+  #     args + CLI remaps above) to exactly match Humble's names, so
+  #     no rename is needed; dynamic_bridge just passes through.
+  ros2_launch_ros1_bridge:
+    <<: [*system-template]
+    image: unified_autonomy:ros2_ros1_bridge
+    profiles: ["launch"]
+    depends_on:
+      ros1_launch_roscore:
+        condition: service_healthy
+    volumes:
+      - ${UAS_REPO_ROOT}/workspaces/ws_ros1_bridge:/workspace:rw
+    command: >
+      bash -c '
+      source /opt/ros/humble/setup.bash &&
+      source /workspace/install/setup.bash 2>/dev/null || true &&
+      ros2 run ros1_bridge dynamic_bridge --bridge-all-topics
+      '

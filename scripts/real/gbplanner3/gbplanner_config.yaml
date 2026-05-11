@@ -1,0 +1,115 @@
+# GBPlanner3 — Go2 / Go2W ground-robot configuration.
+#
+# Place at: $GBPLANNER_WS/src/exploration/gbplanner_ros/gbplanner/config/go2/gbplanner_config.yaml
+#
+# Tuned for Mid-360 (single LiDAR, ±52° vertical, 8m effective indoor range)
+# + single-floor and multi-floor indoor with stairs.
+#
+# Cross-reference: paper Kulkarni et al. 2022, parameters defined per
+# Algorithm 1-3 in fr_2021_gbplanner_2.pdf.
+
+# ===========================================================
+# Robot parameters
+# ===========================================================
+RobotParams:
+  type: kGroundRobot
+  size:               [0.60, 0.40, 0.30]    # Go2 length × width × height (m)
+  size_extension_min: [0.05, 0.05, 0.05]
+  size_extension:     [0.10, 0.10, 0.10]
+  safety_extension:   [0.15, 0.15, 0.10]
+  center_offset:      [0.00, 0.00, 0.00]
+
+  # Per-robot inclination limit (the stair-climb knob).
+  #   ~26° (0.45 rad) is conservative for Go2 default CHAMP gait.
+  #   Raise to 35° (0.61 rad) if you have stair-climb RL policy active.
+  max_inclination: 0.45
+
+  # Ground clearance offset for vertices to be considered "on ground"
+  height_above_ground: 0.28
+
+# ===========================================================
+# Local planner (RRG)
+# ===========================================================
+LocalPlannerParams:
+  # Adaptive 3D bounding box for sampling (paper §IV.B). Z=3.5 lets RRG
+  # sample one floor above current — enables stair-climb discovery.
+  bounding_box_size:       [10.0, 10.0, 3.5]
+  bounding_box_offset:     [ 0.0,  0.0, 0.5]
+
+  num_vertices_max: 700
+  num_edges_max:    3500
+  edge_length_min:  0.20
+  edge_length:      0.50           # δ in Algo 2
+
+  # v3 batch sampling — major v2→v3 improvement
+  batch_sampling: true
+  batch_size: 50
+
+  # Path quality
+  sample_around_robot: true
+  edge_collision_check_distance: 0.10
+  sample_collision_check_distance: 0.15
+
+  path_safety_distance: 0.25
+  path_length_penalty:  0.10
+
+  goal_threshold: 0.5
+
+# ===========================================================
+# Global planner (sparse graph, for re-positioning when local empty)
+# ===========================================================
+GlobalPlannerParams:
+  reset_map_after_planning: false
+
+# ===========================================================
+# Exploration (NBV / IG raycasting)
+# ===========================================================
+ExplorationParams:
+  # FoV for visibility ray-casting at each candidate vertex.
+  # Mid-360 panoramic: full horizontal, ±52° vertical.
+  FoV_H: 360.0   # deg
+  FoV_V:  60.0   # deg (a bit narrower than ±52 for noise margin)
+
+  max_ray_length:  8.0    # m, matches Collab_QRC `lidar_range` default
+  ray_cast_step:   0.15   # voxel-aligned
+
+  # Yaw sampling — yaw matters less for 360° panoramic LiDAR but kept
+  # so the planner reasons about it for SanD-Planner's heading goal.
+  yaw_sampling_resolution: 0.5235987755   # π/6 (30°)
+
+  # Set false: Mid-360 fixed mount, no pitch DoF.
+  sensor_pitch_enabled: false
+
+  # Gain weighting
+  voxel_gain:                  1.0
+  occupied_voxel_gain:         0.0
+  free_voxel_gain:             0.0
+  unknown_voxel_gain:          1.0
+  exp_gain:                    5.0      # exploration vs path-length weight
+  free_frustum_gain:           0.0
+  exp_sensor_gain:             1.0
+  hanging_vertex_penalty:      2.0      # γ_H (penalty for vertices with no ground)
+
+  # Stop when local gain falls below this (triggers global re-positioning)
+  exp_gain_threshold: 50.0
+
+# ===========================================================
+# Sensor model (matches Mid-360)
+# ===========================================================
+SensorParams:
+  sensor_type:    kLidar
+  has_color:      false
+  horizontal_fov: 360.0
+  vertical_fov:    60.0
+  max_range:        8.0
+  min_range:        0.5
+  resolution:       0.10
+
+# ===========================================================
+# Voxblox interface (must match voxblox_node params in launch)
+# ===========================================================
+MapParams:
+  voxel_size:               0.15
+  voxels_per_side:         16
+  occupancy_threshold:      0.50
+  truncation_distance:      0.30

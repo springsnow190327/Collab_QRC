@@ -1,0 +1,87 @@
+# ros1_bridge topic whitelist — Collab_QRC MuJoCo (Humble) ↔ GBPlanner3 (Noetic).
+#
+# Direction codes for ros1_bridge parameter_bridge:
+#   "2to1"  = ROS 2 (Humble) → ROS 1 (Noetic)
+#   "1to2"  = ROS 1 (Noetic) → ROS 2 (Humble)
+#   "both"  = bidirectional (used for /tf, /tf_static)
+
+topics:
+
+  # ====================  Humble Fast-LIO outputs  →  Noetic GBPlanner3  ====================
+  #
+  # gbplanner_sim.launch expects:
+  #   odometry        — /<robot_name>/odom         (nav_msgs/Odometry)
+  #   pointcloud      — /<robot_name>/lidar/points_downsampled (PointCloud2)
+  #   transform (TF)  — base_link → lidar
+  #
+  # Collab_QRC publishes:
+  #   /robot/Odometry                  ← Fast-LIO odom (in odom frame)
+  #   /robot/cloud_registered_body     ← Fast-LIO registered cloud in body frame
+  #
+  # We bridge with RENAME so the Noetic side sees what robot_bringup expects.
+
+  - topic: /robot/Odometry
+    ros1_topic: /robot/odom
+    type: nav_msgs/msg/Odometry
+    ros1_type: nav_msgs/Odometry
+    queue_size: 10
+    direction: 2to1
+
+  - topic: /robot/cloud_registered_body
+    ros1_topic: /robot/lidar/points_downsampled
+    type: sensor_msgs/msg/PointCloud2
+    ros1_type: sensor_msgs/PointCloud2
+    queue_size: 1
+    direction: 2to1
+
+  # Bridge the FULL TF stack — gbplanner needs world↔base_link, base_link↔mid360.
+  # parameter_bridge handles tf2_msgs/TFMessage natively; Noetic side will see
+  # the same tree.  (Collab_QRC uses namespaced TF: /robot/tf, /robot/tf_static.)
+  - topic: /robot/tf
+    ros1_topic: /tf
+    type: tf2_msgs/msg/TFMessage
+    ros1_type: tf2_msgs/TFMessage
+    queue_size: 100
+    direction: 2to1
+  - topic: /robot/tf_static
+    ros1_topic: /tf_static
+    type: tf2_msgs/msg/TFMessage
+    ros1_type: tf2_msgs/TFMessage
+    queue_size: 100
+    direction: 2to1
+
+  # ====================  Noetic GBPlanner outputs  →  Humble  ====================
+  #
+  # We re-export key topics so a Humble-side adapter (pci_to_sand_adapter)
+  # can convert PCI waypoints to SanD-Planner goals.
+  #
+  # NB: voxblox_msgs/Layer (the TSDF/ESDF map) is ROS 1 only and has no Humble
+  # equivalent — we do NOT bridge it.  The map is internal to gbplanner.
+
+  - topic: /command/trajectory
+    ros1_topic: /command/trajectory
+    type: trajectory_msgs/msg/MultiDOFJointTrajectory
+    ros1_type: trajectory_msgs/MultiDOFJointTrajectory
+    queue_size: 5
+    direction: 1to2
+
+  - topic: /pci_command_trajectory_vis
+    ros1_topic: /pci_command_trajectory_vis
+    type: nav_msgs/msg/Path
+    ros1_type: nav_msgs/Path
+    queue_size: 5
+    direction: 1to2
+
+  - topic: /gbplanner_path
+    ros1_topic: /gbplanner_path
+    type: nav_msgs/msg/Path
+    ros1_type: nav_msgs/Path
+    queue_size: 5
+    direction: 1to2
+
+  - topic: /gbplanner_status
+    ros1_topic: /gbplanner_status
+    type: std_msgs/msg/String
+    ros1_type: std_msgs/String
+    queue_size: 5
+    direction: 1to2

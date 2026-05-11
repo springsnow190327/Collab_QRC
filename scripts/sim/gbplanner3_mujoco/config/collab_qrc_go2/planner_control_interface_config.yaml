@@ -1,0 +1,44 @@
+### Planner Control Interface — Go2 conservative dynamics
+# Receives gbplanner waypoints, produces a smoothed trajectory for the
+# downstream controller (which on Collab_QRC is a SanD-Planner adapter
+# bridged back to Humble — see pci_to_sand_adapter.py).
+
+run_mode: kReal
+trigger_mode: kManual            # require explicit service call to start
+init_motion_enable: false
+planner_trigger_lead_time: 0.01
+
+smooth_heading_enable: false      # Go2 yaw can rotate fast; gbplanner heading is fine
+smooth_homing_enable: false
+
+# Path tracking thresholds — Go2 small footprint, looser than UAV
+path_end_dist_thr: 1.0
+path_end_yaw_thr: 1.5
+path_end_dist_scale: 1.0
+path_progression_dist_thr: 1.5
+path_progression_dist_thr_min: 1.0
+path_progression_yaw_thr: 1.5
+path_progression_yaw_thr_min: 0.6
+path_progression_pitch_thr: 3.14
+
+z_offset_a: 0.0
+z_offset_b: 0.0
+z_off_t_start: 0
+max_mission_time: 0
+pub_singple_wp: false
+interpolate_traj: true
+
+trajectory_lead_time: 0.0
+
+# Not used (init_motion_enable=false) — kept for schema compat
+init_motion:
+  z_takeoff: 0.0
+  z_drop: 0.0
+  x_forward: 0.0
+
+# Robot dynamics: Go2 default CHAMP gait ~0.5 m/s nominal
+RobotDynamics:
+  v_max: 0.5
+  v_init_max: 0.3
+  v_homing_max: 0.4
+  yaw_rate_max: 1.0    # rad/s, conservative

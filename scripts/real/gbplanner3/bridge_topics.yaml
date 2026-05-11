@@ -1,0 +1,52 @@
+# ros1_bridge parameter_bridge config (Orin: Foxy <-> Noetic, local).
+#
+# Foxy publishers (Fast-LIO outputs) → bridged to Noetic (Voxblox consumes them)
+# Noetic publishers (gbplanner PCI output) → bridged to Foxy (laptop SanD-Planner subscribes via DDS)
+#
+# This file is loaded into `ros2 run ros1_bridge parameter_bridge __params:=...`
+# Param names follow ros1_bridge convention.
+
+topics:
+  # =====  ROS 2 Foxy  --->  ROS 1 Noetic  =====
+  - topic: /robot/cloud_registered_body
+    type: sensor_msgs/msg/PointCloud2
+    queue_size: 1
+    direction: 2to1
+
+  - topic: /robot/Odometry
+    type: nav_msgs/msg/Odometry
+    queue_size: 10
+    direction: 2to1
+
+  - topic: /tf
+    type: tf2_msgs/msg/TFMessage
+    queue_size: 100
+    direction: 2to1
+
+  - topic: /tf_static
+    type: tf2_msgs/msg/TFMessage
+    queue_size: 100
+    direction: 2to1
+
+  # =====  ROS 1 Noetic  --->  ROS 2 Foxy  =====
+  # gbplanner PCI publishes a PoseArray of waypoints; we cross this back so
+  # laptop Humble (DDS-connected to Orin Foxy) can subscribe.
+  - topic: /pci_command_path
+    type: geometry_msgs/msg/PoseArray
+    queue_size: 5
+    direction: 1to2
+
+  - topic: /gbplanner/exploration_status
+    type: std_msgs/msg/String
+    queue_size: 5
+    direction: 1to2
+
+services:
+  # =====  Allow laptop to call Noetic services for mission control  =====
+  - service: /planner_control_interface/std_srvs/automatic_planning
+    type: std_srvs/srv/Empty
+    direction: 2to1
+
+  - service: /planner_control_interface/stop_request
+    type: std_srvs/srv/Empty
+    direction: 2to1
