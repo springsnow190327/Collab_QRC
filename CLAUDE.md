@@ -4,6 +4,13 @@ Multi-robot autonomy with Unitree Go2W wheeled-legged quadrupeds + Go2 walking q
 
 Door task (Phase 2 dual-robot VLM coordination) and the legacy A*/default Python nav backends were removed in the 2026-05 cleanup; see [CLAUDE1.md](CLAUDE1.md) for Phase 1 VLM exploration history, Phase 2 FSM archive, archived 2026-04 operational notes, and the deletion log.
 
+## Active state (2026-05-11) — Noetic FAST-LIO2 onboard (gbplanner3 prep)
+
+- **Native ROS 1 FAST-LIO2 brought up on the Jetson** in a separate catkin ws (`~/noetic_fastlio_ws/`), parallel to the existing Foxy `~/onboard_ws/`. Eliminates ros1_bridge bandwidth bottleneck for the gbplanner3 voxblox path (heavy `/robot/cloud_registered_body` stream now stays in ROS 1 natively; only the tiny `/pci_command_path` PoseArray still crosses to ROS 2).
+- New scripts: [`deploy_noetic_to_jetson.sh`](scripts/real/deploy_noetic_to_jetson.sh) (laptop rsync), [`onboard_fastlio_noetic.sh`](scripts/real/onboard_fastlio_noetic.sh) (Jetson launcher), [`onboard_record_noetic.sh`](scripts/real/onboard_record_noetic.sh) (`rosbag record`, nohup-protected), [`stream_cloud_live.sh`](scripts/real/stream_cloud_live.sh) (Open3D live viewer over ssh binary pipe — replaces X-forwarded RViz which renders black on Jammy + Ogre).
+- 11 patches against HKU upstream `FAST_LIO` + `livox_ros_driver2` (livox driver rename, Mid-360s enum, absolute topic paths, launch param-override bug, ...). **Full pitfall list and tuning notes:** [docs/claude/noetic_fastlio_onboard.md](docs/claude/noetic_fastlio_onboard.md).
+- Tuning ported from Foxy real-robot yaml: `point_filter_num=1`, `filter_size_*=0.10`, `extrinsic_est_en=true`, `pcd_save_en=false`. Effective rate ~8 Hz on Orin (was 10 Hz with default 0.50 voxel — extra CPU buys ICP correspondence density for sparse outdoor scenes).
+
 ## Active state (2026-05-10) — CFPA2 policy + Go2W wheel-skid fix
 
 - **CFPA2 stable-challenger goal override** ([commit 0505ff0](src/collaborative_exploration/cfpa2_collaborative_autonomy/cfpa2_collaborative_autonomy/cfpa2_coordinator_node.py)).
@@ -82,6 +89,7 @@ Door task (Phase 2 dual-robot VLM coordination) and the legacy A*/default Python
 | **Dual-robot FAR safety stack (2026-04-26): pivot-lock + path_safety_filter + cmd_vel_safety_shield. Why A\* was retired for dual.** | [CLAUDE1.md archive](CLAUDE1.md#archive-2026-04-26--dual-robot-far--3-tier-safety-stack) |
 | **Nav2 MPPI migration journey (2026-04-29): A\* → FAR → MPPI, brake bug, freewheel, stuck_watchdog, TF/SLAM chain. Two real-robot blockers.** | [docs/claude/nav2_mppi_journey.md](docs/claude/nav2_mppi_journey.md) |
 | **Onboard SLAM split (2026-04-30): Fast-LIO + Livox onto Go2 Jetson Foxy. 5 source patches, the 13-GB-per-node bloat, the `ulimit -v` fix.** | [CLAUDE1.md archive](CLAUDE1.md#archive-2026-04-30--onboard-slam-split-fast-lio--livox-on-jetson) + [docs/claude/real_robot.md](docs/claude/real_robot.md#onboard-slam-split-shipped-2026-04-30--fast-lio--livox-on-jetson) |
+| **Noetic FAST-LIO2 onboard (2026-05-11): ROS 1 native build of HKU FAST-LIO + Livox driver on Jetson for gbplanner3. 11 patches, conda-poison guard, X11-free Open3D streaming.** | [docs/claude/noetic_fastlio_onboard.md](docs/claude/noetic_fastlio_onboard.md) |
 | **Go2W real Nav2 profile split (2026-05-02): `off` / `omni_2d` / `se2_holonomic`, SmacPlanner2D XY-only finding, no-crab final SE2 tuning.** | This file's "Active state (2026-05-02)" entry |
 
 ## Scripts layout

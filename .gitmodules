@@ -1,0 +1,5 @@
+[submodule "src/vendor/fast_lio_ros1"]
+	path = src/vendor/fast_lio_ros1
+	url = https://github.com/hku-mars/FAST_LIO.git
+	branch = main
+	ignore = dirty
