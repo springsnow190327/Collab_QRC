@@ -74,6 +74,7 @@ class PeerInfo:
 
     last_state: PeerState | None = None
     last_received_ns: int = 0
+    was_fresh: bool = False
 
 
 class PeerCoordinatorNode(Node):
@@ -89,7 +90,7 @@ class PeerCoordinatorNode(Node):
         # assumption: peer_id == peer_namespace. Used for both protocol identity and topic addressing. Split into separate parameters if this assumption ever needs to break
         self.declare_parameter("peer_namespaces", ["robot_b"])
 
-        self.declare_parameter("peer_timeout_sec", 5.0)
+        self.declare_parameter("peer_timeout_sec", 10.0) 
         self.declare_parameter("claim_timeout_sec", 30.0)
         self.declare_parameter("peer_state_rate_hz", 2.0)
         self.declare_parameter("negotiation_rate_hz", 1.0)
@@ -377,6 +378,7 @@ class PeerCoordinatorNode(Node):
         info = self.peer_info[peer_id]
         info.last_state = msg
         info.last_received_ns = self.get_clock().now().nanoseconds
+        info.was_fresh = True  # reset staleness on new message
 
         self.peer_claims[peer_id] = list(msg.claimed_frontiers)
 
@@ -417,6 +419,45 @@ class PeerCoordinatorNode(Node):
         return [
             peer_id for peer_id in self.peer_ids if not self._peer_is_fresh(peer_id)
         ]
+
+    def _handle_peer_staleness(self) -> None:
+        """Drop claims from peers whose heartbeat has become stale.
+
+        Supervisor decision: Option B.
+        If a peer's heartbeat times out, all claims from that peer are treated
+        as stale immediately. This supports graceful degradation under comms loss:
+        the local robot falls back to its own frontier observations instead of
+        preserving possibly-dead peer claims.
+        """
+        now_ns = self.get_clock().now().nanoseconds
+
+        for peer_id in self.peer_ids:
+            info = self.peer_info.get(peer_id)
+            is_fresh = self._peer_is_fresh(peer_id)
+
+            if is_fresh:
+                if info is not None:
+                    info.was_fresh = True  # update was_fresh for next time
+                continue
+
+            # Only log/drop on transition from fresh -> stale
+            if info is not None and info.was_fresh:
+                dropped_claims = len(self.peer_claims.get(peer_id, []))
+                self.peer_claims[peer_id] = []  # drop all claims from this peer
+                info.was_fresh = False  # update was_fresh for next time
+
+                age_sec = (
+                    (now_ns - info.last_received_ns) / 1e9 if info.last_received_ns > 0 else float('inf')
+                )
+
+                self.get_logger().warn(
+                    "Peer became stale; dropping peer claims | "
+                    f"peer_id={peer_id}; "
+                    f"age_sec={age_sec:.2f}; "
+                    f"peer_timeout_sec={self.peer_timeout_sec:.2f}; "
+                    f"dropped_claims={dropped_claims}"
+                )
+
 
     # Functions for claim management and conflict resolution
     def _claim_stamp_ns(self, claim: ClaimedFrontier) -> int:
@@ -462,10 +503,11 @@ class PeerCoordinatorNode(Node):
     def _resolve_own_claim_conflicts(self) -> None:
         """Drop own claims when a peer has a winning claim for the same frontier."""
         surviving_claims: list[ClaimedFrontier] = []
+        dropped_details: list[str] = []
 
         for own_claim in self.own_claims:
             own_point = point_msg_to_tuple(own_claim.position)
-            peer_wins = False
+            winning_peer_claim: ClaimedFrontier | None = None
 
             for peer_claim_list in self.peer_claims.values():
                 for peer_claim in peer_claim_list:
@@ -475,21 +517,30 @@ class PeerCoordinatorNode(Node):
                         continue  # not the same frontier, skip
                     
                     if self._claim_wins_against(peer_claim, own_claim):
-                        peer_wins = True
+                        winning_peer_claim = peer_claim
                         break  # no need to check other peer claims for this frontier
 
-                if peer_wins:
+                if winning_peer_claim is not None:
                     break  # no need to check other peers
 
-            if not peer_wins:
+            if winning_peer_claim is None:
                 surviving_claims.append(own_claim)
+            else:
+                dropped_details.append(
+                    "own_claim="
+                    f"({own_point[0]:.2f}, {own_point[1]:.2f}) "
+                    f"lost_to={winning_peer_claim.claimed_by} "
+                    f"peer_claim_stamp={self._claim_stamp_ns(winning_peer_claim)} "
+                    f"own_claim_stamp={self._claim_stamp_ns(own_claim)}"
+                )
 
         dropped = len(self.own_claims) - len(surviving_claims)
         self.own_claims = surviving_claims
 
         if dropped > 0:
             self.get_logger().warn(
-                f"Dropped {dropped} own claim(s) due to deterministic peer conflict resolution"
+                "Dropped own claim(s) due to deterministic peer conflict resolution | "
+                f"dropped={dropped}; details={dropped_details}"
             )
 
     # Helper functions for frontier matching 
@@ -504,6 +555,7 @@ class PeerCoordinatorNode(Node):
 
     def _available_local_frontiers(self) -> list[Point3]:
         """Return local frontiers not blocked by fresh peer claims."""
+        self._handle_peer_staleness()  # ensure we are not blocking on stale peers
         self._expire_stale_claims()  # ensure we are checking against only fresh claims
 
         return [
