@@ -1,0 +1,43 @@
+### Elevation mapping config — Go2 + Mid-360 on Collab_QRC MuJoCo
+# gbplanner3 v3 with type=kGroundRobot requires this layer to determine
+# traversability. Without it, the planner repeatedly logs
+# "No 'elevation' layer in map." and never produces commands.
+#
+# Input: the same Fast-LIO cloud the rest of the stack uses,
+# bridged into the Noetic container as /robot/cloud_registered_body.
+input_sources:
+  livox:
+    type: pointcloud
+    topic: /robot/cloud_registered_body
+    queue_size: 1
+    publish_on_update: true
+    sensor_processor:
+      type: perfect
+
+map_frame_id: "world"
+robot_base_frame_id: "base_link"      # Collab_QRC convention (not "smb_arl/base_link")
+robot_pose_with_covariance_topic: ""
+robot_pose_cache_size: 200
+track_point_frame_id: "base_link"
+track_point_x: 0.0
+track_point_y: 0.0
+track_point_z: 0.0
+
+# Demo3 area is 24×16 m; size the elevation map slightly bigger to give
+# gbplanner some look-ahead margin.
+length_in_x: 30.0
+length_in_y: 20.0
+position_x: 0.0
+position_y: 0.0
+resolution: 0.15      # match voxblox_config.yaml tsdf_voxel_size
+
+min_variance: 0.0001
+max_variance: 0.05
+mahalanobis_distance_threshold: 2.5
+multi_height_noise: 0.01
+surface_normal_positive_axis: z
+enable_visibility_cleanup: false
+visibility_cleanup_rate: 1.0
+scanning_duration: 1.0
+
+target_frame_init_submap: world
