@@ -1,14 +1,18 @@
 ### Elevation mapping config — Go2 + Mid-360 on Collab_QRC MuJoCo
 # gbplanner3 v3 with type=kGroundRobot requires this layer to determine
 # traversability. Without it, the planner repeatedly logs
-# "No 'elevation' layer in map." and never produces commands.
+# "No 'elevation' layer in map." and never produces commands — this in
+# turn fills docker json.log at multi-kHz until the container OOMs.
 #
-# Input: the same Fast-LIO cloud the rest of the stack uses,
-# bridged into the Noetic container as /robot/cloud_registered_body.
+# Input topic: /rmf/lidar/points_downsampled — same source gbplanner
+# uses (via the topic_tools relay added in eff1a87: dynamic_bridge brings
+# /robot/cloud_registered_body from Humble Fast-LIO into Noetic, then
+# the relay renames to /rmf/lidar/points_downsampled so default
+# robot_name=rmf in gbplanner_sim.launch picks it up).
 input_sources:
   livox:
     type: pointcloud
-    topic: /robot/cloud_registered_body
+    topic: /rmf/lidar/points_downsampled
     queue_size: 1
     publish_on_update: true
     sensor_processor:
