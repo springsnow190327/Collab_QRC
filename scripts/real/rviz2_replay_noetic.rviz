@@ -1,0 +1,88 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+Visualization Manager:
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Plane Cell Count: 30
+      Cell Size: 1.0
+      Color: 100; 100; 100
+      Alpha: 0.4
+    - Class: rviz_default_plugins/Path
+      Name: Trajectory
+      Enabled: true
+      Topic:
+        Value: /robot/path
+        # rosbag2 replays Best Effort by default; RViz defaults to Reliable
+        # → QoS mismatch silently drops 70%+ of Path msgs, making the loop
+        # look truncated. Match the bag publisher.
+        Reliability Policy: Best Effort
+        History Policy: Keep Last
+        Depth: 50
+      Color: 255; 165; 0
+      Line Style: Billboards
+      Line Width: 0.20
+      Pose Style: Axes
+      Axes Length: 0.30
+      Axes Radius: 0.04
+    - Class: rviz_default_plugins/Odometry
+      Name: OdomTrail
+      Enabled: true
+      Topic:
+        Value: /robot/Odometry
+        Reliability Policy: Best Effort
+        History Policy: Keep Last
+        Depth: 50
+      Shape:
+        Color: 255; 50; 50
+        Length: 0.40
+        Radius: 0.05
+      # Keep raised 500 → 2000 so the full 1023 odom poses of a 180 s
+      # recording stay rendered (otherwise the oldest get evicted).
+      Keep: 2000
+      Position Tolerance: 0.001
+      Angle Tolerance: 0.001
+    - Class: rviz_default_plugins/MarkerArray
+      Name: OctoMap-Voxels
+      Enabled: true
+      Topic:
+        Value: /occupied_cells_vis_array
+    - Class: rviz_default_plugins/PointCloud2
+      Name: SLAM-Cloud
+      Enabled: true
+      Topic:
+        Value: /robot/cloud_registered
+        Reliability Policy: Best Effort
+        History Policy: Keep Last
+        Depth: 10
+        Durability Policy: Volatile
+      Style: Points
+      Size (Pixels): 2
+      Color Transformer: AxisColor
+      Axis: Z
+      Autocompute Intensity Bounds: true
+      Use Fixed Frame: true
+      Decay Time: 1000
+      Queue Size: 10
+      Selectable: false
+      # Decay Time: 1000 → accumulate all frames over a single bag playback
+      # (180 s for ops* recordings). Drop to 0 for live runs where only the
+      # latest scan matters.
+  Global Options:
+    Background Color: 32; 32; 32
+    Fixed Frame: camera_init
+    Frame Rate: 20
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/FocusCamera
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 20.0
+      Focal Point: {X: 0.0, Y: 0.0, Z: 0.0}
+      Pitch: 0.8
+      Yaw: 0.6
+      Target Frame: <Fixed Frame>
