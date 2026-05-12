@@ -11,6 +11,7 @@ The goal is to replace the current centralised CFPA2 frontier coordination with 
 
 ## Reference
 RACER (Zhou et al., 2022) — arxiv 2209.08533
+M-TARE/TARE (Cao et al., 2021) - DOI:10.15607/RSS.2021.XVII.018
 
 ## Current centralisation (to verify) - DONE 30/04/2026
 - cfpa2_coordinator_node.py — single node sees both robots
@@ -18,14 +19,25 @@ RACER (Zhou et al., 2022) — arxiv 2209.08533
 - (need to check map_merge_utils.py — is fusion centralised or per-robot?)
 - Verified centralisation pattern: single node, namespace-parametric, dispatches via goal_pubs[ns].
 
-## Open questions for Dimitrios (5-day meeting)
-- Confirm scope: full Jetson deployment (a) vs nearby Jetson (b)?
-- Is "graceful degradation under comms loss" a required demo feature?
-- Cross-robot map fusion under SLAM drift — in scope or out?
-- Decentralised map fusion in this implementation works because both robots share a world frame via common-origin Fast-LIO initialisation. The system inherits the existing centralised version's vulnerability to long-run drift (which would cause ghost walls in either implementation). Proper SLAM-frame alignment via inter-robot loop closure is out of scope and listed as future work — see the CLAUDE.md co-drift property notes for the existing system's stance.
+## Open questions for Dimitrios - DONE 11/05/2026
+Responses:
+1) Peer-stale vs claim-stale behaviour. 
+  Q: Each ClaimedFrontier carries a claim_stamp and expires locally after claim_timeout_sec (currently 30s). Peer heartbeats are tracked separately, with peers marked stale after peer_timeout_sec (currently 5s). The question is what happens between those two — i.e. when a peer's heartbeat has expired but its claims are still individually fresh.
+
+  A: Option B: drop all of a stale peer's claims immediately. Treats staleness as "I cannot trust any of this peer's state," reverting to single-robot behaviour faster. 
+
+  Maps cleanly onto the decentralisation criterion, and the responsiveness argument outweighs A's conservatism. The WiFi-blip sensitivity is real but the fix is the one you suggest: bump peer_timeout_sec somewhat (I'd start at 10–15s and tune empirically). I'd rather not pay the state-machine complexity of C upfront when B plus a more forgiving timeout will likely cover it; we can revisit if testing shows genuine thrash. Worth instrumenting from the start: log every peer-stale event so you can see post-hoc whether dropouts are real peer loss or transient comms.
+
+2. Decentralised map fusion. 
+  Q: The existing map_merge_utils.py exposes a stateless overlay_map primitive that overlays one occupancy grid on another (occupied beats free beats unknown). Both robots already share a world frame via common-origin Fast-LIO initialisation, so a per-robot map fusion node would only need to subscribe to the peer's /map and call overlay_map locally, which would perhaps be a day's wiring.
+  A: Include it. A day's wiring for a materially better demo is a good trade, and the drift limitation is inherited from the centralised baseline rather than introduced by your work: listing it explicitly as future work is the honest framing. Inter-robot loop closure is correctly out of scope. If the wiring stretches past ~2 days, stop and reassess, but I don't expect that given overlay_map is already stateless.
+
+3. Success criterion for the demo. 
+  Q: I've been working on the assumption that the demonstrable proof of decentralisation is graceful degradation under simulated comms loss, which is kill one peer coordinator mid-run, show the other robot continues exploring without it. This maps directly onto how the literature (RACER, etc.) characterises decentralised systems.
+
+  A: Yes, graceful degradation under simulated comms loss is what I want to see, not a head-to-head efficiency comparison. Three reasons: it directly demonstrates the property you're claiming (an efficiency comparison would be confounded and may not even favour the decentralised mode, which isn't the point); it's what the RACER-style framing supports; and the testing infrastructure is lighter. If you can additionally show recovery when the peer rejoins, not just survival when it leaves, that strengthens the demo without much extra cost, but the kill-mid-run scenario is the headline. Build accordingly; treat Q3 as settled.
 
 ## MDVRP solver audit - DONE 07/05/2026
-
 - `mdvrp_solver.py` is pure Python and reusable outside the central coordinator,
 - It exposes `solve_mdvrp(...) -> dict[int, list[int]]`, where robot identities are represented only by integer indices. It does not depend on `rclpy` or ROS message types.
 
@@ -47,6 +59,7 @@ solve_mdvrp(
     span_cost_coefficient=100,
 ) -> dict[int, list[int]]
 ```
+After upstream removal on main (10/05/2026), mdvrp_solver.py was vendored into cfpa2_peer_coordination/ to keep the decentralised package self-contained and avoid future breakage.
 
 ### MDVRP Adapter Determinism Note - TESTED 08/05/2026
 
@@ -159,10 +172,9 @@ def _next_request_id(self) -> str:
 - Launch flag: `use_decentralised:=true|false` to select between existing centralised coordinator and new peer-based system (avoids dual-publisher conflict on `/<ns>/goal`)
 
 ### Hardware deployment
-- Two Jetson Orin Nano units, one per Go2
-- ROS 2 Humble + the relevant subset of the Collab_QRC stack built on each Jetson
-- Peer-to-peer DDS communication over WiFi between Jetsons
-- Documented build/setup process in `docs/claude/jetson_setup.md`
+- Onboard Jetson on each Go2 (built-in, no separate units required)
+- ROS 2 code maintained throughout; ROS 1 bridge to the Go2 SDK
+- Peer-to-peer DDS over the existing Go2 WiFi
 
 ### Documentation
 - `docs/claude/decentralisation.md` — design rationale, architectural decisions, supervisor questions, status
@@ -173,6 +185,7 @@ def _next_request_id(self) -> str:
 - Two robots exploring collaboratively with peer-based frontier negotiation
 - Comms-cut survival demo: kill one peer coordinator mid-run, show graceful degradation to independent exploration (the demonstrable proof of decentralisation)
 - Optional stretch: side-by-side comparison with centralised mode via the launch flag
+- (Stretch) Peer rejoin and resume
 
 ## Notes on  `peer_coordination_node.py`
 ### PeerState Heartbeat Design
@@ -187,7 +200,7 @@ PeerState topics use publisher-scoped namespacing:
 
 Each robot publishes under its own namespace and subscribes to the configured peer namespaces.
 
-### Claim and Frontier Management Checkpoint
+### Claim and Frontier Management
 For the first integration, the peer coordinator ingests local frontier candidates from the existing CFPA2 frontier MarkerArray output. This avoids invasive changes to the existing planner while giving the decentralised layer access to the same frontier positions already used for visualisation. A future cleaner integration would expose frontier candidates through a dedicated typed topic rather than parsing visualisation markers.
 
 Implemented and manually tested the first claim-management layer for decentralised exploration.
@@ -215,22 +228,7 @@ Manual ROS testing verified the full claim-blocking lifecycle:
 
 This confirms that local frontier ingestion, peer claim storage, stale-claim expiry, and peer-claim blocking are working. The deterministic conflict-resolution helper is implemented, but should still be unit-tested with hand-crafted claims before being marked fully verified.
 
-## Milestone
-local frontiers + peer pose + own pose
-        ↓
-MDVRP adapter
-        ↓
-proposed own claims
-        ↓
-debug visibility only for now
-
-✅ import solve_frontier_assignment + pose_msg_to_tuple
-✅ import Point
-✅ parameters for MDVRP proposal generation
-✅ cooldown tracking
-✅ _point3_to_claim()
-✅ _generate_mdvrp_own_claims()
-✅ _decide_negotiation() now generates own claims from MDVRP when possible
+Claim storage, peer-claim ingestion, claim expiry, frontier blocking, and deterministic conflict resolution have been implemented and tested. The deterministic rule uses earliest claim timestamp as the winner, with robot ID lexicographic ordering as a tie-break. Current testing uses interim MDVRP-generated own claims before the full request/response negotiation protocol is implemented.
 
 ## Status
 - [X] Verify centralisation in cfpa2_coordinator_node.py
@@ -239,12 +237,13 @@ debug visibility only for now
 - [ ] Jetson environment setup
 - [X] PeerState heartbeat publish + subscribe
 - [X] Peer state freshness tracking (timeout detection)
+- [X] Log peer-stale events
 - [X] Bonus: real-pose ingestion from `/odom/nav`
 - [ ] Pairwise frontier negotiation (request/response protocol)
 - [X] Claim management: storage, expiry, and peer-claim blocking implemented/tested
 - [X] Frontier management: local frontier ingestion from CFPA2 MarkerArray and peer-claim filtering implemented
 - [X] MDVRP-generated own-claim proposal
-- [ ] Claim conflict resolution rule implemented/tested
+- [X] Claim conflict resolution rule implemented/tested
 - [ ] Frontier filter output (so single_robot_node respects claims)
 - [ ] Peer map subscriber + overlay_map fusion
 - [ ] Integration with existing single_robot_node
