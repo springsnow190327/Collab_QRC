@@ -193,6 +193,26 @@ private:
     mapper_->integrateDepth(pc, T, *lidar_, /*motion_comp=*/false);
     mapper_->updateEsdf(nvblox::UpdateFullLayer::kNo);
 
+    // Sparse-Lidar free-space workaround.
+    // nvblox's projective integrator skips voxels whose image projection
+    // lands on an empty range-image pixel (see lidar_impl.h TODO: "add
+    // clearing rays even if both interpolations fail"). Livox Mid-360
+    // produces ~4882 pts → only 3.7% of the 1024×128 grid is filled →
+    // interpolate2DClosest() returns false for most pixels → CUDA kernel
+    // returns without updating → zero free-space voxels carved.
+    // Fix: after each integration, mark every UNOBSERVED voxel (lo≈0)
+    // within sensor range as slightly free (lo=-2e-4). Occupied surfaces
+    // (lo>0 from real LiDAR hits) satisfy |lo-0|>eps so are NOT touched.
+    // The traversability publisher's free-run fallback then finds these
+    // free columns and infers traversable floor / ramp.
+    {
+      const float free_radius_m =
+          mapper_->lidar_occupancy_integrator().max_integration_distance_m();
+      mapper_->lidar_occupancy_integrator().markUnobservedFreeInsideRadius(
+          T.translation(), free_radius_m, &mapper_->occupancy_layer(),
+          nullptr);
+    }
+
     {
       std::lock_guard<std::mutex> lk(state_mtx_);
       latest_robot_xyz_ = T.translation();
@@ -615,7 +635,14 @@ private:
 
 int main(int argc, char** argv) {
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<nvbf::MapperNode>());
+  try {
+    rclcpp::spin(std::make_shared<nvbf::MapperNode>());
+  } catch (const std::exception& e) {
+    RCLCPP_FATAL(rclcpp::get_logger("mapper_node"),
+                 "Unhandled exception in MapperNode: %s", e.what());
+    rclcpp::shutdown();
+    return 1;
+  }
   rclcpp::shutdown();
   return 0;
 }
