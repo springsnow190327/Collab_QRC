@@ -193,28 +193,17 @@ private:
     mapper_->integrateDepth(pc, T, *lidar_, /*motion_comp=*/false);
     mapper_->updateEsdf(nvblox::UpdateFullLayer::kNo);
 
-    // Sparse-Lidar free-space workaround.
-    // nvblox's projective integrator skips voxels whose image projection
-    // lands on an empty range-image pixel (see lidar_impl.h TODO: "add
-    // clearing rays even if both interpolations fail"). Livox Mid-360
-    // produces ~4882 pts → only 3.7% of the 1024×128 grid is filled →
-    // interpolate2DClosest() returns false for most pixels → CUDA kernel
-    // returns without updating → zero free-space voxels carved.
-    // Fix: after each integration, mark every UNOBSERVED voxel (lo≈0)
-    // within sensor range as slightly free (lo=-2e-4). Occupied surfaces
-    // (lo>0 from real LiDAR hits) satisfy |lo-0|>eps so are NOT touched.
-    // The traversability publisher's free-run fallback then finds these
-    // free columns and infers traversable floor / ramp.
-    {
-      const float free_radius_m =
-          mapper_->lidar_occupancy_integrator().max_integration_distance_m();
-      mapper_->lidar_occupancy_integrator().markUnobservedFreeInsideRadius(
-          T.translation(), free_radius_m, &mapper_->occupancy_layer(),
-          nullptr);
-    }
+    // Build world-frame scan for ray-casting in traversability publisher.
+    // Done outside the lock (pure math, no shared state) then swapped in.
+    std::vector<nvblox::Vector3f> cloud_world;
+    cloud_world.reserve(pts.size());
+    for (const auto& p : pts)
+      cloud_world.push_back(T * p);
 
     {
       std::lock_guard<std::mutex> lk(state_mtx_);
+      latest_cloud_world_ = std::move(cloud_world);
+      latest_sensor_world_ = T.translation();
       latest_robot_xyz_ = T.translation();
       have_map_data_ = true;
     }
@@ -228,15 +217,18 @@ private:
   // Periodic publisher
   // ============================================================
   void publish_outputs() {
-    Eigen::Vector3f robot_xyz;
+    Eigen::Vector3f robot_xyz, sensor_world;
     rclcpp::Time stamp;
+    std::vector<nvblox::Vector3f> cloud_world;
     {
       std::lock_guard<std::mutex> lk(state_mtx_);
       if (!have_map_data_) return;
-      robot_xyz = latest_robot_xyz_;
-      stamp = now();
+      robot_xyz    = latest_robot_xyz_;
+      sensor_world = latest_sensor_world_;
+      stamp        = now();
+      cloud_world  = latest_cloud_world_;  // ~5000 × 12 bytes, fast copy
     }
-    publish_traversability(robot_xyz, stamp);
+    publish_traversability(robot_xyz, stamp, cloud_world, sensor_world);
     publish_voxels_3d(robot_xyz, stamp);
 
     if ((++publish_count_) % 20 == 1)
@@ -246,7 +238,10 @@ private:
   // ============================================================
   // Block-based traversability publisher (2.5D)
   // ============================================================
-  void publish_traversability(const Eigen::Vector3f& robot_xyz, const rclcpp::Time& stamp) {
+  void publish_traversability(
+      const Eigen::Vector3f& robot_xyz, const rclcpp::Time& stamp,
+      const std::vector<nvblox::Vector3f>& cloud_world,
+      const nvblox::Vector3f& sensor_world) {
     const float vs = static_cast<float>(voxel_size_m_);
     const float bs = vs * kVPS;  // block size in metres (8 voxels × 0.1 m = 0.8 m)
     const int   nxy = static_cast<int>(std::lround(trav_xy_extent_m_ / vs));
@@ -268,6 +263,34 @@ private:
     std::vector<float>   H(ncells, std::numeric_limits<float>::quiet_NaN());
     std::vector<int8_t>  cls(ncells, -1);
     std::vector<uint64_t> free_bits(ncells, 0ULL);
+
+    // --- 2D Bresenham ray coverage ---
+    // For each scan point draw a 2D line from sensor(xy) to hit(xy) and mark
+    // every grid cell on that path. The classify step only applies the
+    // free-run fallback to ray-covered columns, so uncharted cells behind
+    // walls (which markUnobservedFreeInsideRadius would otherwise reach)
+    // remain UNKNOWN instead of being incorrectly inferred as traversable.
+    std::vector<bool> ray_covered(ncells, false);
+    {
+      const int sci = static_cast<int>((sensor_world.x() - ox) / vs);
+      const int scj = static_cast<int>((sensor_world.y() - oy) / vs);
+      for (const auto& pt : cloud_world) {
+        int x0 = sci, y0 = scj;
+        const int x1 = static_cast<int>((pt.x() - ox) / vs);
+        const int y1 = static_cast<int>((pt.y() - oy) / vs);
+        int dx = std::abs(x1 - x0), sx = (x0 < x1) ? 1 : -1;
+        int dy = -std::abs(y1 - y0), sy = (y0 < y1) ? 1 : -1;
+        int err = dx + dy;
+        while (true) {
+          if (x0 >= 0 && x0 < nxy && y0 >= 0 && y0 < nxy)
+            ray_covered[static_cast<size_t>(y0) * nxy + x0] = true;
+          if (x0 == x1 && y0 == y1) break;
+          const int e2 = 2 * err;
+          if (e2 >= dy) { err += dy; x0 += sx; }
+          if (e2 <= dx) { err += dx; y0 += sy; }
+        }
+      }
+    }
 
     // --- Pass 1: find HIGHEST occupied z per column from allocated blocks ---
     // We want the top surface, not the underside. Thin inclined slabs (like
@@ -387,30 +410,32 @@ private:
       for (int i = 0; i < nxy; ++i) {
         const size_t idx = static_cast<size_t>(j) * nxy + i;
         if (std::isnan(H[idx])) {
-          // No occupied surface voxel found in this (x,y) column. Fall back to
-          // a grounded FREE-run test: if the column contains a long contiguous
-          // stack of FREE voxels that starts low enough, infer that the support
-          // surface lives just below the first FREE voxel.
+          // No occupied surface. Only infer traversable if a sensor ray
+          // actually passed through this column (2D Bresenham coverage).
+          // Without this gate, markUnobservedFreeInsideRadius-style sphere
+          // marking would let cells behind walls appear as free floor.
+          if (!ray_covered[idx]) continue;
+
           const uint64_t bits = free_bits[idx];
           if (bits != 0ULL) {
+            // Grounded FREE-run test: long contiguous free run starting low
+            // → infer traversable support surface.
             const int first_k = __builtin_ctzll(bits);
             uint64_t shifted = bits >> first_k;
             int run_voxels = 0;
-            while ((shifted & 1ULL) != 0ULL) {
-              ++run_voxels;
-              shifted >>= 1;
-            }
+            while ((shifted & 1ULL) != 0ULL) { ++run_voxels; shifted >>= 1; }
             const float first_free_z = z_min + (static_cast<float>(first_k) + 0.5f) * vs;
             if (first_free_z <= free_surface_max_start_z &&
                 run_voxels >= free_surface_min_run_voxels) {
-              // Do NOT set H[idx] here. Leaving H as NaN means the step/slope
-              // filter skips this cell (both for the cell itself and as a
-              // neighbour). Without this, fallback-inferred cells at H≈floor
-              // sit adjacent to real-hit ramp cells at H≈0.3-1 m, and the
-              // step filter sees |real_H - fallback_H| > step_max → lethal arc
-              // bands at every Livox scan-ring boundary on the ramp surface.
+              // Leave H as NaN: step/slope filter skips NaN neighbours,
+              // preventing lethal arc-bands at Livox scan-ring boundaries.
               cls[idx] = 0;
             }
+          } else {
+            // No free voxels yet (sparse LiDAR → nvblox didn't carve free
+            // space). Ray coverage means the sensor had line-of-sight here
+            // with no hit → infer traversable floor.
+            cls[idx] = 0;
           }
           continue;
         }
@@ -622,6 +647,11 @@ private:
   bool have_map_data_{false};
 
   std::vector<Eigen::Vector3f> occ_pts_;  // scratch buffer for PointCloud2 build
+
+  // World-frame scan + sensor position, updated each cloud_cb; copied by
+  // publish_outputs for 2D Bresenham ray-coverage computation.
+  std::vector<nvblox::Vector3f> latest_cloud_world_;
+  nvblox::Vector3f latest_sensor_world_{0.f, 0.f, 0.f};
 
   int missing_odom_warn_{0};
   int empty_cloud_warn_{0};
