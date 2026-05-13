@@ -235,6 +235,9 @@ This confirms that local frontier ingestion, peer claim storage, stale-claim exp
 
 Claim storage, peer-claim ingestion, claim expiry, frontier blocking, and deterministic conflict resolution have been implemented and tested. The deterministic rule uses earliest claim timestamp as the winner, with robot ID lexicographic ordering as a tie-break. Current testing uses interim MDVRP-generated own claims before the full request/response negotiation protocol is implemented.
 
+### Frontier Filter Output
+peer coordinator claim → blocked_frontiers PoseArray → single_robot_node receives → _peer_has_claimed() returns True
+
 ## Status
 - [X] Verify centralisation in cfpa2_coordinator_node.py
 - [X] Audit map_merge_utils.py for centralised assumptions
