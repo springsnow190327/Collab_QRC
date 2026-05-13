@@ -162,6 +162,9 @@ class CFPA2SingleRobotNode(CFPA2Coordinator):
         gx, gy = goal
         for bx, by in self._peer_blocked_frontiers:
             if math.hypot(gx - bx, gy - by) <= _PEER_BLOCKED_MATCH_TOLERANCE:
+                self.get_logger().info(  # TEMPORARY for verification
+                f"Blocking goal ({gx:.2f}, {gy:.2f}) - matches peer claim at ({bx:.2f}, {by:.2f})"
+                )
                 return True
 
         return False
