@@ -71,6 +71,15 @@ from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReli
 from std_msgs.msg import Empty, String
 from visualization_msgs.msg import Marker, MarkerArray
 
+# Optional 3D voxel input (nvblox_frontend). Imported lazily so CFPA2 can
+# still run when ig_dimension == "2d" and the msg pkg isn't installed.
+try:
+    from nvblox_frontend_msgs.msg import VoxelGrid3D as _VoxelGrid3DMsg
+    _HAVE_VOXEL_GRID3D = True
+except Exception:
+    _VoxelGrid3DMsg = None  # type: ignore[assignment]
+    _HAVE_VOXEL_GRID3D = False
+
 
 def _resolve_cfpa2_overlap_penalty_fn():
     candidates: list[Path] = []
@@ -167,6 +176,19 @@ class CFPA2Coordinator(Node):
         self.declare_parameter("free_value", 0)
         self.declare_parameter("unknown_value", -1)
         self.declare_parameter("occupancy_block_threshold", 50)
+        # --- 3D information-gain source (nvblox_frontend integration) ---
+        # ig_dimension:
+        #   "2d" — count unknown cells in a square radius on the 2D map (default,
+        #          back-compat). Uses the existing C++ batch_info_gain path.
+        #   "3d" — count unknown voxels in a vertical cylinder above the goal XY,
+        #          drawn from a nvblox_frontend_msgs/VoxelGrid3D topic. Rewards
+        #          frontiers near ramps/stairs whose elevated unknown volume is
+        #          invisible to a 2D scan. Requires nvblox_frontend running.
+        self.declare_parameter("ig_dimension", "2d")
+        self.declare_parameter("voxels_3d_topic_suffix", "/voxels_3d")
+        # Cylinder height (m) above the goal XY for 3D IG counting. Default 2.0m
+        # captures the full robot-traversable column from floor to head clearance.
+        self.declare_parameter("cfpa2_ig_height_m", 2.0)
         self.declare_parameter("switch_hysteresis", 0.02)
         self.declare_parameter("switch_min_dist", 0.35)
         self.declare_parameter("min_assign_distance", 0.30)
@@ -334,6 +356,22 @@ class CFPA2Coordinator(Node):
         self.free_value = int(self.get_parameter("free_value").value)
         self.unknown_value = int(self.get_parameter("unknown_value").value)
         self.occ_thresh = int(self.get_parameter("occupancy_block_threshold").value)
+        # 3D IG params (cached; node restart required to change, per CFPA2 convention).
+        _igd = str(self.get_parameter("ig_dimension").value).strip().lower()
+        if _igd not in ("2d", "3d"):
+            self.get_logger().warn(f"ig_dimension='{_igd}' invalid, falling back to '2d'")
+            _igd = "2d"
+        self.ig_dimension = _igd
+        _v3s = str(self.get_parameter("voxels_3d_topic_suffix").value).strip()
+        if not _v3s.startswith("/"):
+            _v3s = "/" + _v3s if _v3s else "/voxels_3d"
+        self.voxels_3d_topic_suffix = _v3s
+        self.cfpa2_ig_height_m = max(0.1, float(self.get_parameter("cfpa2_ig_height_m").value))
+        if self.ig_dimension == "3d" and not _HAVE_VOXEL_GRID3D:
+            self.get_logger().error(
+                "ig_dimension='3d' requested but nvblox_frontend_msgs not importable. "
+                "Falling back to 2d. Build nvblox_frontend_msgs and re-source.")
+            self.ig_dimension = "2d"
         self.switch_hysteresis = max(0.0, float(self.get_parameter("switch_hysteresis").value))
         self.switch_min_dist = max(0.1, float(self.get_parameter("switch_min_dist").value))
         self.min_assign_distance = max(0.0, float(self.get_parameter("min_assign_distance").value))
@@ -572,6 +610,10 @@ class CFPA2Coordinator(Node):
 
         self.maps: dict[str, OccupancyGrid] = {}
         self.shared_map: Optional[OccupancyGrid] = None
+        # Per-ns cached 3D voxel grid for ig_dimension == "3d". Stores a tuple
+        # (voxel_size, ox, oy, oz, nx, ny, nz, data_np_int8) so the IG sampler
+        # can do constant-time numpy slicing without re-decoding the ROS msg.
+        self.voxels_3d: dict[str, tuple[float, float, float, float, int, int, int, np.ndarray]] = {}
         self.odoms: dict[str, Odometry] = {}
         self.nav_status: dict[str, dict[str, Any]] = {}
         self.nav_status_rx_time_ns: dict[str, int] = {}
@@ -674,6 +716,13 @@ class CFPA2Coordinator(Node):
             self.get_logger().info(
                 f"[{ns}] planning map ← {map_topic} "
                 f"(occ_thresh={self.occ_thresh}, unknown={self.unknown_value})")
+            if self.ig_dimension == "3d":
+                v3d_topic = f"/{ns}{self.voxels_3d_topic_suffix}"
+                self.create_subscription(
+                    _VoxelGrid3DMsg, v3d_topic, lambda m, n=ns: self._voxels_3d_cb(m, n), 1)
+                self.get_logger().info(
+                    f"[{ns}] 3D IG voxels ← {v3d_topic} "
+                    f"(cylinder height={self.cfpa2_ig_height_m:.2f}m)")
             self.create_subscription(Odometry, f"/{ns}/odom/nav", lambda m, n=ns: self._odom_cb(m, n), 10)
             self.create_subscription(
                 String,
@@ -722,6 +771,26 @@ class CFPA2Coordinator(Node):
 
     def _map_cb(self, msg: OccupancyGrid, ns: str) -> None:
         self.maps[ns] = msg
+
+    def _voxels_3d_cb(self, msg, ns: str) -> None:  # msg: VoxelGrid3D
+        # Cache as a numpy view so the IG sampler can slice in O(window).
+        # Layout matches the VoxelGrid3D.msg contract:
+        #   data[k * size_x * size_y + j * size_x + i]
+        # with -1=unknown, 0=free, 100=occupied.
+        nx, ny, nz = int(msg.size_x), int(msg.size_y), int(msg.size_z)
+        expected = nx * ny * nz
+        if len(msg.data) != expected:
+            self.get_logger().warn(
+                f"[{ns}] voxels_3d size mismatch: header says {nx}x{ny}x{nz}={expected}, "
+                f"got {len(msg.data)}; dropping")
+            return
+        arr = np.frombuffer(bytes(msg.data), dtype=np.int8).reshape((nz, ny, nx))
+        self.voxels_3d[ns] = (
+            float(msg.voxel_size),
+            float(msg.origin.x), float(msg.origin.y), float(msg.origin.z),
+            nx, ny, nz,
+            arr,
+        )
 
     def _odom_cb(self, msg: Odometry, ns: str) -> None:
         self.odoms[ns] = msg
@@ -2305,7 +2374,19 @@ class CFPA2Coordinator(Node):
         od = self.odoms[ns]
         return (float(od.pose.pose.position.x), float(od.pose.pose.position.y))
 
-    def _frontier_information_gain(self, msg: OccupancyGrid, goal: tuple[float, float]) -> float:
+    def _frontier_information_gain(
+        self,
+        msg: OccupancyGrid,
+        goal: tuple[float, float],
+        ns: Optional[str] = None,
+    ) -> float:
+        # Dispatch on ig_dimension. When "3d" and we have a cached voxel grid
+        # for this ns, count unknown voxels in a vertical cylinder above the
+        # goal XY. Otherwise fall back to the 2D unknown-cell square count.
+        if self.ig_dimension == "3d" and ns is not None and ns in self.voxels_3d:
+            return self._frontier_information_gain_3d(ns, goal)
+
+        # --- 2D path (legacy default) ---
         g = self._world_to_grid(msg, goal[0], goal[1])
         if g is None:
             return 0.0
@@ -2323,12 +2404,60 @@ class CFPA2Coordinator(Node):
                     gain += 1.0
         return gain
 
+    def _frontier_information_gain_3d(
+        self, ns: str, goal: tuple[float, float]
+    ) -> float:
+        """Count unknown voxels in a vertical cylinder above goal XY.
+
+        Cylinder radius is taken from the same `_adaptive_exploration_gain_radius_cells`
+        knob as the 2D path (in voxel-grid units), and the height is the full
+        `cfpa2_ig_height_m` from the bottom of the published voxel slab upward.
+        Numpy slicing keeps this O(window_volume); no per-call ctypes round-trip.
+        Returns float (not int) to match the existing utility-formula expectations.
+        """
+        entry = self.voxels_3d.get(ns)
+        if entry is None:
+            return 0.0
+        vs, ox, oy, oz, nx, ny, nz, data = entry
+        gx_f = (goal[0] - ox) / vs
+        gy_f = (goal[1] - oy) / vs
+        gx = int(round(gx_f - 0.5))
+        gy = int(round(gy_f - 0.5))
+        # Radius in voxel cells. Reuse the 2D adaptive knob so increasing it
+        # widens BOTH the 2D square and the 3D cylinder consistently.
+        r = int(max(1, self._adaptive_exploration_gain_radius_cells))
+        x0 = max(0, gx - r); x1 = min(nx, gx + r + 1)
+        y0 = max(0, gy - r); y1 = min(ny, gy + r + 1)
+        if x0 >= x1 or y0 >= y1:
+            return 0.0
+        # Height window: full slab in z, capped by `cfpa2_ig_height_m` if smaller.
+        kz_max = min(nz, int(math.ceil(self.cfpa2_ig_height_m / vs)))
+        if kz_max <= 0:
+            return 0.0
+        sub = data[:kz_max, y0:y1, x0:x1]  # shape (kz, dy, dx)
+        # Optional circular mask (square is the default for budget reasons,
+        # matching the 2D path). To enable: uncomment the mask block below.
+        unknown_count = int(np.count_nonzero(sub == self.unknown_value))
+        return float(unknown_count)
+
     def _batch_frontier_information_gain(
-        self, msg: OccupancyGrid, goals: list[tuple[float, float]]
+        self,
+        msg: OccupancyGrid,
+        goals: list[tuple[float, float]],
+        ns: Optional[str] = None,
     ) -> list[float]:
-        """Batch info-gain for all goals at once (C++ accelerated)."""
+        """Batch info-gain for all goals at once (C++ accelerated).
+
+        When ig_dimension == "3d" the C accelerator is bypassed (it only knows
+        2D OccupancyGrids); we route to the Python 3D cylinder counter instead.
+        """
         if not goals:
             return []
+        # 3D path: numpy slicing per goal. Negligible Python overhead since
+        # the cylinder window is tiny (~r² × kz, e.g. 9×9×20 = 1620 voxels).
+        if self.ig_dimension == "3d" and ns is not None and ns in self.voxels_3d:
+            return [self._frontier_information_gain_3d(ns, g) for g in goals]
+
         w = int(msg.info.width)
         h = int(msg.info.height)
         r = self._adaptive_exploration_gain_radius_cells
@@ -2351,8 +2480,8 @@ class CFPA2Coordinator(Node):
             )
             return [float(gains_out[i]) for i in range(n)]
 
-        # Python fallback
-        return [self._frontier_information_gain(msg, g) for g in goals]
+        # Python fallback (2D)
+        return [self._frontier_information_gain(msg, g, ns=ns) for g in goals]
 
     def _grid_path_cost_m(
         self,
@@ -2385,8 +2514,12 @@ class CFPA2Coordinator(Node):
         dist_m = self._grid_path_cost_m(map_msg, dist_map, goal)
         if dist_m is None or dist_m <= 0.0:
             return -1e18
-        info_gain = self._frontier_information_gain(map_msg, goal)
-        # Reject frontiers with negligible info-gain (tiny slivers near walls)
+        info_gain = self._frontier_information_gain(map_msg, goal, ns=ns)
+        # Reject frontiers with negligible info-gain (tiny slivers near walls).
+        # NOTE: 3D IG counts unknown voxels in a cylinder; expected magnitude is
+        # O(r²·kz) ≈ 100s–1000s on a sparse map, so the same '3' threshold gates
+        # only truly-empty IG. If you tighten/loosen, do so in proportion to
+        # exploration_gain_radius_cells × cfpa2_ig_height_m / voxel_size.
         if info_gain < 3:
             return -1e18
         switch_penalty = self._cfpa2_switch_penalty(ns, goal)

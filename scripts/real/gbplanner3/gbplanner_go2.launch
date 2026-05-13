@@ -1,88 +1,80 @@
 <?xml version="1.0"?>
 <!--
-  Go2 / Go2W mission launch for gbplanner3.
+  Go2 / Go2W real-robot mission launch for gbplanner3.
 
   Drop this into:
-    $GBPLANNER_WS/src/exploration/gbplanner_ros/gbplanner/launch/gbplanner_go2.launch
+    $GBPLANNER_WS/src/gbplanner_ros/gbplanner/launch/gbplanner_go2.launch
+
+  Based on the upstream ugv/gzc/ugv_gzc_urban_exploration.launch template,
+  adapted for real-robot Point-LIO source (no Gazebo, no separate
+  voxblox_node — voxblox config is loaded INSIDE gbplanner_node).
 
   It launches:
-    1. voxblox_node — consumes bridged Fast-LIO cloud + odom, builds TSDF/ESDF
-    2. gbplanner_node — the actual GBPlanner3 planner
-    3. pci_general — Planner Control Interface, publishes /pci_command_path
+    1. gbplanner_node — gbplanner3 planner with voxblox baked in
+    2. pci_general_ros_node — Planner Control Interface
+       (publishes /pci_command_path PoseArray, bridged to Foxy by separate
+        ros1_bridge in orin_launch_gbplanner.sh)
 
-  TF assumption: bridged /tf from Foxy gives us map → odom → base_link → mid360.
-  If the Fast-LIO TF tree on your robot uses different frame names, fix in
-  Voxblox params below.
+  Topic sources (provided by scripts/real/onboard_pointlio_noetic.sh):
+    /robot/Odometry              ← Point-LIO odom @ ~10 Hz
+    /robot/cloud_registered_body ← Mid-360 body-frame cloud @ ~10 Hz
+    /tf, /tf_static              ← map → camera_init → body → base_link
+
+  TF tree:
+    map  ─ camera_init  (static, Mid-360 mount tilt)
+           └─ body      (DYNAMIC, Point-LIO odometry output)
+                └─ base_link (static, inverse mount tilt)
 -->
 <launch>
-  <arg name="robot_ns" default="robot"/>
-  <arg name="cloud_topic" default="/robot/cloud_registered_body"/>
-  <arg name="odom_topic" default="/robot/Odometry"/>
-  <arg name="world_frame" default="map"/>
-  <arg name="sensor_frame" default="mid360_link"/>
-  <arg name="config_dir" default="$(find gbplanner)/config/go2"/>
+  <arg name="robot_name"      default="go2"/>
+  <!-- 4 levels deep from config/ so that the 3×"../" in main_tree.xml BT paths
+       resolve correctly to config/bt_xml/ (gbplanner3 pitfall §7). -->
+  <arg name="config_folder"   default="ugv/real/go2"/>
+  <arg name="odometry_topic"  default="/robot/Odometry"/>
+  <arg name="pointcloud_topic" default="/robot/cloud_registered_body"/>
+  <arg name="launch_prefix"   default=""/>
 
-  <!-- ============================================================ -->
-  <!-- Voxblox TSDF/ESDF server                                     -->
-  <!-- ============================================================ -->
-  <node pkg="voxblox_ros" type="esdf_server" name="voxblox_node" output="screen">
-    <remap from="pointcloud" to="$(arg cloud_topic)"/>
-    <remap from="odometry"   to="$(arg odom_topic)"/>
+  <!-- Real robot: NOT sim time. -->
+  <arg name="use_sim_time" default="false"/>
+  <param name="use_sim_time" value="$(arg use_sim_time)"/>
 
-    <param name="world_frame"            value="$(arg world_frame)"/>
-    <param name="sensor_frame"           value="$(arg sensor_frame)"/>
-    <param name="use_tf_transforms"      value="true"/>
+  <!-- Config file paths -->
+  <arg name="gbplanner_config_file"
+       default="$(find gbplanner)/config/$(arg config_folder)/gbplanner_config.yaml"/>
+  <arg name="pci_file"
+       default="$(find gbplanner)/config/$(arg config_folder)/planner_control_interface_sim_config.yaml"/>
+  <arg name="voxblox_config_file"
+       default="$(find gbplanner)/config/$(arg config_folder)/voxblox_sim_config.yaml"/>
+  <arg name="map_config_file"  default="$(arg voxblox_config_file)"/>
+  <arg name="bt_file"
+       default="$(find gbplanner)/config/$(arg config_folder)/main_tree.xml"/>
 
-    <!-- Map resolution: Mid-360 sparse cloud, start coarse to keep RAM low -->
-    <param name="tsdf_voxel_size"        value="0.15"/>
-    <param name="tsdf_voxels_per_side"   value="16"/>
-    <param name="truncation_distance"    value="0.3"/>
-
-    <param name="max_ray_length_m"       value="8.0"/>
-    <param name="min_ray_length_m"       value="0.5"/>
-
-    <param name="method"                 value="fast"/>
-    <param name="use_const_weight"       value="false"/>
-    <param name="allow_clear"            value="true"/>
-
-    <!-- Publish maps for gbplanner -->
-    <param name="publish_tsdf_map"       value="true"/>
-    <param name="publish_esdf_map"       value="true"/>
-    <param name="publish_pointclouds"    value="true"/>
-    <param name="update_mesh_every_n_sec" value="1.0"/>
+  <!-- ============================================================== -->
+  <!-- GBPlanner3 main planner node (voxblox baked in)                -->
+  <!-- ============================================================== -->
+  <node pkg="gbplanner" type="gbplanner_node" name="gbplanner_node"
+        output="screen" launch-prefix="$(arg launch_prefix)">
+    <remap from="odometry"   to="$(arg odometry_topic)"/>
+    <remap from="/pointcloud" to="$(arg pointcloud_topic)"/>
+    <rosparam command="load" file="$(arg gbplanner_config_file)"/>
+    <rosparam command="load" file="$(arg map_config_file)"/>
+    <param name="behavior_tree_path" value="$(arg bt_file)"/>
   </node>
 
-  <!-- ============================================================ -->
-  <!-- GBPlanner3 main planner node                                 -->
-  <!-- ============================================================ -->
-  <node pkg="gbplanner" type="gbplanner_node" name="gbplanner_node" output="screen">
-    <remap from="odometry" to="$(arg odom_topic)"/>
-    <remap from="/gbplanner_node/tsdf_map_in" to="/voxblox_node/tsdf_map_out"/>
-    <remap from="/gbplanner_node/esdf_map_in" to="/voxblox_node/esdf_map_out"/>
-
-    <rosparam command="load" file="$(arg config_dir)/gbplanner_config.yaml"/>
-    <rosparam command="load" file="$(arg config_dir)/robot_config.yaml"/>
-  </node>
-
-  <!-- ============================================================ -->
-  <!-- Planner Control Interface (PCI)                              -->
-  <!-- ============================================================ -->
-  <node pkg="pci_general" type="planner_control_interface_node" name="pci">
-    <remap from="odometry" to="$(arg odom_topic)"/>
-
-    <!-- Output as topic (PoseArray) — easier to bridge than action server -->
-    <param name="output_type" value="kTopic"/>
+  <!-- ============================================================== -->
+  <!-- Planner Control Interface (PCI) — publishes /pci_command_path  -->
+  <!-- ============================================================== -->
+  <node pkg="pci_general" type="pci_general_ros_node" name="pci_general_ros_node"
+        output="screen">
+    <!-- Output type: command/trajectory becomes our bridged topic -->
     <remap from="command/trajectory" to="/pci_command_path"/>
-
-    <rosparam command="load" file="$(arg config_dir)/pci_config.yaml"/>
+    <remap from="planner_server"         to="gbplanner_ros"/>
+    <remap from="planner_homing_server"  to="gbplanner/homing"/>
+    <remap from="odometry"               to="$(arg odometry_topic)"/>
+    <rosparam command="load" file="$(arg pci_file)"/>
   </node>
 
-  <!-- ============================================================ -->
-  <!-- rviz (optional — Orin headless typically skips this)         -->
-  <!-- Run separately on laptop instead.                            -->
-  <!-- ============================================================ -->
-  <!--
-  <node pkg="rviz" type="rviz" name="rviz"
-        args="-d $(arg config_dir)/rviz_config.rviz"/>
-  -->
+  <!-- RViz NOT launched here — Orin is headless. Run separately on laptop
+       (via foxglove-bridge or rsync ui.rviz + remote rviz). -->
+
 </launch>

@@ -10,7 +10,7 @@
     shared_map_wait_sec: 8.0
     shared_map_local_patch_radius_m: 2.5
     goal_topic_suffix: /way_point_coord
-    planning_map_topic_suffix: /traversability_grid
+    planning_map_topic_suffix: /map
     marker_frame_override: map
     frontier_stride: 2
     max_targets: 180
@@ -56,6 +56,4 @@
     adaptive_min_max_targets: 80
     adaptive_min_exploration_gain_radius_cells: 20
     adaptive_max_skip_ticks: 3
-    ig_dimension: 3d
-    voxels_3d_topic_suffix: /voxels_3d
-    cfpa2_ig_height_m: 2.0
+    ig_dimension: 2d

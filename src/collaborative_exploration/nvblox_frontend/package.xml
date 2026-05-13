@@ -1,0 +1,34 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>nvblox_frontend</name>
+  <version>0.1.0</version>
+  <description>
+    Minimal ROS 2 wrapper around the nvblox CUDA library (no NITROS / no Isaac ROS deps).
+    Subscribes to a body-frame LiDAR cloud + odometry, maintains a 3D occupancy +
+    ESDF map on the GPU, and republishes a 2.5D traversability grid plus a sparse
+    3D voxel grid for downstream 3D frontier exploration (CFPA2 IG sampler).
+  </description>
+  <maintainer email="Zhuhanshan12@outlook.com">Hanshang Zhu</maintainer>
+  <license>BSD-3-Clause</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>rclcpp_components</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_eigen</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <depend>eigen</depend>
+  <depend>nvblox_frontend_msgs</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

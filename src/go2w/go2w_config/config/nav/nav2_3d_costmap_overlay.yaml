@@ -1,0 +1,57 @@
+# Nav2 costmap overlay for 3D frontier exploration.
+#
+# Replaces the default octomap-based costmap sources with nvblox's
+# traversability_grid so both the global planner (SmacPlannerLattice) and
+# the MPPI local controller use the same 2.5D traversability surface that
+# CFPA2 uses for BFS reachability. Ramps and inclined surfaces that the
+# traversability algorithm classifies as FREE are no longer blocked.
+#
+# Why this is safe:
+#   Static obstacles (walls, steps > step_max_m) appear as OCC (100) in
+#   traversability_grid, so inflation around them still guards the robot.
+#   Dynamic obstacle detection is sacrificed — acceptable for the 3D
+#   frontier demo where the only obstacles are static scene geometry.
+#
+# Load order (stacked on base yaml + se2_holonomic overlay):
+#   nav2_go2w_full_stack.yaml            (base: octomap sources)
+#   nav2_se2_holonomic_overlay_sim.yaml  (SmacPlannerLattice + DiffDrive MPPI)
+#   nav2_3d_costmap_overlay.yaml         (THIS: swap costmap sources)
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      # Match the costmap resolution to traversability_grid (0.10 m).
+      # Base yaml uses 0.05 m → StaticLayer resamples 20×20 m grid to
+      # 400×400 cells. At 0.10 m the grid stays at 200×200 cells — 4×
+      # fewer nodes for SmacPlannerLattice to expand → ~4× faster planning.
+      resolution: 0.10
+      plugins: ["static_layer", "inflation_layer"]
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        # nvblox traversability: 0=free, 100=occ, -1=unknown.
+        # SmacPlannerLattice sees ramps as free cells → plans through them.
+        # Topic rewritten at launch time via RewrittenYaml param_rewrites.
+        map_topic: /robot/traversability_grid
+        map_subscribe_transient_local: true
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        inflation_radius: 0.30
+        cost_scaling_factor: 5.0
+
+planner_server:
+  ros__parameters:
+    GridBased:
+      # Tighter budget: traversability_grid is 200×200 at 0.10 m, which is a
+      # much simpler grid than the 400×400 base. 1.5 s is ample; 5 s just
+      # stalls the BT and stops the robot for no reason.
+      max_planning_time: 1.5
+
+# Local costmap intentionally NOT overridden here.
+# Nav2's local costmap uses rolling_window: true (6×6 m in odom frame).
+# StaticLayer is incompatible with rolling_window — it receives the full
+# 20×20 m traversability_grid and overrides the size, causing the planner
+# to report "Robot is out of bounds of the costmap" at every 2 Hz map
+# update as the costmap origin shifts. The local costmap keeps its original
+# ObstacleLayer (scan_3d) for dynamic obstacle avoidance around the robot.
+# The global costmap swap above is sufficient for the planner to route
+# through ramps; MPPI follows the global path with local scan_3d avoidance.

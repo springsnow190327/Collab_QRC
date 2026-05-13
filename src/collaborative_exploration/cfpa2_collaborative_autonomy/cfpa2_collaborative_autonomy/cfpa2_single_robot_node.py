@@ -5,10 +5,13 @@ from __future__ import annotations
 
 from typing import Optional
 
+import numpy as np
+from nav_msgs.msg import OccupancyGrid
 import rclpy
 from std_msgs.msg import String
 
 from .cfpa2_coordinator_node import CFPA2Coordinator
+from .frontier_3d import extract_3d_frontiers, project_to_traversability_goal
 
 
 class CFPA2SingleRobotNode(CFPA2Coordinator):
@@ -29,6 +32,26 @@ class CFPA2SingleRobotNode(CFPA2Coordinator):
         # logged so the operator can see what's happening at a glance.
         self.declare_parameter("verbose_logs", False)
         self.verbose_logs = bool(self.get_parameter("verbose_logs").value)
+        self.declare_parameter("frontier_3d_min_unknown_volume_m3", 1.0)
+        self.declare_parameter("frontier_3d_min_frontier_voxels", 50)
+        self.declare_parameter("frontier_3d_border_margin_cells", 3)
+        self.declare_parameter("frontier_3d_geodesic_voronoi", False)
+        self.declare_parameter("frontier_3d_goal_search_radius_m", 2.0)
+        self.frontier_3d_min_unknown_volume_m3 = max(
+            0.0, float(self.get_parameter("frontier_3d_min_unknown_volume_m3").value)
+        )
+        self.frontier_3d_min_frontier_voxels = max(
+            1, int(self.get_parameter("frontier_3d_min_frontier_voxels").value)
+        )
+        self.frontier_3d_border_margin_cells = max(
+            0, int(self.get_parameter("frontier_3d_border_margin_cells").value)
+        )
+        self.frontier_3d_geodesic_voronoi = bool(
+            self.get_parameter("frontier_3d_geodesic_voronoi").value
+        )
+        self.frontier_3d_goal_search_radius_m = max(
+            0.1, float(self.get_parameter("frontier_3d_goal_search_radius_m").value)
+        )
 
         if len(self.namespaces) != 1:
             raise ValueError(
@@ -67,6 +90,7 @@ class CFPA2SingleRobotNode(CFPA2Coordinator):
         self.create_subscription(
             String, f"/{ns}/exploration_complete",
             self._on_exploration_complete, 10)
+        self._last_3d_frontier_warn_ns = 0
 
     def _publish_status(self, status: str) -> None:
         """Publish a state change. No-op when status unchanged (avoids spam)."""
@@ -88,6 +112,121 @@ class CFPA2SingleRobotNode(CFPA2Coordinator):
             f"goal publication. Send empty or 'resume' on /<ns>/exploration_complete "
             f"to re-enable.")
         self._publish_status("paused")
+
+    def _extract_frontiers_with_scores(
+        self, ns: str, planning_map: OccupancyGrid, now_ns: int
+    ) -> tuple[list[tuple[float, float]], dict[tuple[float, float], float]]:
+        if self.ig_dimension != "3d":
+            return self._extract_frontiers(planning_map), {}
+
+        voxel_entry = self.voxels_3d.get(ns)
+        if voxel_entry is None:
+            if now_ns - self._last_3d_frontier_warn_ns > int(2e9):
+                self.get_logger().warn(
+                    f"[{ns}] ig_dimension=3d but no voxels_3d cached yet; "
+                    "falling back to 2D frontier extraction."
+                )
+                self._last_3d_frontier_warn_ns = now_ns
+            return self._extract_frontiers(planning_map), {}
+
+        w = int(planning_map.info.width)
+        h = int(planning_map.info.height)
+        if w <= 0 or h <= 0 or len(planning_map.data) != w * h:
+            if now_ns - self._last_3d_frontier_warn_ns > int(2e9):
+                self.get_logger().warn(
+                    f"[{ns}] planning_map malformed ({w}x{h}, len={len(planning_map.data)}); "
+                    "falling back to 2D frontier extraction."
+                )
+                self._last_3d_frontier_warn_ns = now_ns
+            return self._extract_frontiers(planning_map), {}
+
+        vs, ox, oy, oz, _nx, _ny, _nz, voxel_data = voxel_entry
+        trav_grid = np.array(planning_map.data, dtype=np.int8).reshape(h, w)
+        clearance_cells = int(
+            np.ceil(self.cfpa2_frontier_obstacle_clearance_m / max(1e-6, float(planning_map.info.resolution)))
+        )
+        clusters = extract_3d_frontiers(
+            voxel_data=voxel_data,
+            voxel_size_m=vs,
+            origin_xyz=(ox, oy, oz),
+            min_unknown_volume_m3=self.frontier_3d_min_unknown_volume_m3,
+            min_frontier_voxels=self.frontier_3d_min_frontier_voxels,
+            border_margin_cells=self.frontier_3d_border_margin_cells,
+            geodesic_voronoi=self.frontier_3d_geodesic_voronoi,
+            free_value=self.free_value,
+            unknown_value=self.unknown_value,
+        )
+
+        raw_goals: list[tuple[float, float]] = []
+        goal_scores_by_key: dict[tuple[int, int], float] = {}
+        goal_by_key: dict[tuple[int, int], tuple[float, float]] = {}
+        for cluster in clusters:
+            goal = project_to_traversability_goal(
+                centroid_xyz=cluster.centroid_world,
+                trav_grid=trav_grid,
+                trav_resolution_m=float(planning_map.info.resolution),
+                trav_origin_xy=(
+                    float(planning_map.info.origin.position.x),
+                    float(planning_map.info.origin.position.y),
+                ),
+                search_radius_m=self.frontier_3d_goal_search_radius_m,
+                free_value=self.free_value,
+            )
+            if goal is None:
+                continue
+            grid_goal = self._world_to_grid(planning_map, goal[0], goal[1])
+            if grid_goal is None:
+                continue
+            if not self._has_frontier_obstacle_clearance(
+                planning_map.data,
+                grid_goal[0],
+                grid_goal[1],
+                w,
+                h,
+                clearance_cells,
+            ):
+                continue
+            key = self._goal_key(goal)
+            score = float(cluster.unknown_volume_m3)
+            prev = goal_scores_by_key.get(key)
+            if prev is not None and prev >= score:
+                continue
+            goal_scores_by_key[key] = score
+            goal_by_key[key] = goal
+
+        if goal_by_key:
+            raw_goals = list(goal_by_key.values())
+
+        targets = self._filter_dead_frontiers(raw_goals, planning_map)
+        goal_scores = {
+            goal: goal_scores_by_key[self._goal_key(goal)]
+            for goal in targets
+            if self._goal_key(goal) in goal_scores_by_key
+        }
+        return targets, goal_scores
+
+    def _cfpa2_single_utility_from_info_gain(
+        self,
+        *,
+        ns: str,
+        goal: tuple[float, float],
+        map_msg: OccupancyGrid,
+        dist_map: dict[int, int],
+        info_gain: float,
+    ) -> float:
+        dist_m = self._grid_path_cost_m(map_msg, dist_map, goal)
+        if dist_m is None or dist_m <= 0.0:
+            return -1e18
+        if info_gain < 3.0:
+            return -1e18
+        switch_penalty = self._cfpa2_switch_penalty(ns, goal)
+        momentum_bonus = self._cfpa2_momentum_bonus(ns, goal)
+        return (
+            (self.cfpa2_w_ig * info_gain)
+            - (self.cfpa2_w_c * dist_m)
+            - (self.cfpa2_w_sw * switch_penalty)
+            + (self.cfpa2_w_momentum * momentum_bonus)
+        )
 
     def _tick_impl(self) -> None:
         now_ns = self.get_clock().now().nanoseconds
@@ -121,7 +260,7 @@ class CFPA2SingleRobotNode(CFPA2Coordinator):
         self._prune_blacklist(ns, now_ns)
         self._update_reached_goal_blacklist(ns, now_ns)
 
-        targets = self._extract_frontiers(planning_map)
+        targets, goal_scores = self._extract_frontiers_with_scores(ns, planning_map, now_ns)
         per_ns_targets = {ns: targets}
         if not targets:
             self._publish_status("no_frontiers")
@@ -147,12 +286,22 @@ class CFPA2SingleRobotNode(CFPA2Coordinator):
                 continue
             if self._is_blacklisted(ns, goal, now_ns):
                 continue
-            score = self._cfpa2_single_utility(
-                ns=ns,
-                goal=goal,
-                map_msg=planning_map,
-                dist_map=dist_map,
-            )
+            info_gain_override = goal_scores.get(goal)
+            if info_gain_override is None:
+                score = self._cfpa2_single_utility(
+                    ns=ns,
+                    goal=goal,
+                    map_msg=planning_map,
+                    dist_map=dist_map,
+                )
+            else:
+                score = self._cfpa2_single_utility_from_info_gain(
+                    ns=ns,
+                    goal=goal,
+                    map_msg=planning_map,
+                    dist_map=dist_map,
+                    info_gain=info_gain_override,
+                )
             if score > -1e17:
                 utilities[goal] = score
 

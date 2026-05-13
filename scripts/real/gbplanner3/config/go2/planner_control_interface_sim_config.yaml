@@ -1,0 +1,47 @@
+# PCI (planner_control_interface) config — Go2 real robot
+#
+# Key additions vs upstream ugv/gzc/urban_exploration template:
+#   world_frame_id: map  — PCI defaults to "world" when unset, which means it
+#     tries lookupTransform(world → odom_frame) → fails with our TF tree
+#     (map → camera_init → body → base_link).  Explicitly set to "map".
+
+run_mode:               kReal
+trigger_mode:           kManual    # mission triggered via ROS service call
+robot_type:             kAerial    # kAerial keeps takeoff/land init inactive
+output_type:            kTopic     # publishes /pci_command_path
+
+# MUST match global_frame_id in gbplanner_config.yaml and world_frame in voxblox
+world_frame_id:         map
+
+# Path-following thresholds — conservative for first real-robot trial
+init_motion_enable:     false
+planner_trigger_lead_time: 0.1
+smooth_heading_enable:  false
+
+path_end_dist_thr:              0.8    # m — consider waypoint reached
+path_end_yaw_thr:               0.5    # rad
+path_progression_dist_thr:      1.2
+path_progression_dist_thr_min:  0.8
+path_progression_pitch_thr:     3.4
+path_progression_yaw_thr:       3.4
+path_progression_yaw_thr_min:   3.4
+
+interpolate_traj:       true
+use_time_from_start:    true
+set_first_wp_speed:     true
+reconnect_path:         false
+
+# Init motion placeholder (not executed with init_motion_enable: false)
+init_motion:
+  z_takeoff: 0.0
+  z_drop:    0.0
+  x_forward: 0.0
+
+# Robot dynamics — fed to the trajectory interpolator
+RobotDynamics:
+  v_max:          0.8    # m/s — match PlanningParams.v_max
+  v_init_max:     0.5
+  v_homing_max:   0.6
+  yaw_rate_max:   0.7    # rad/s
+  dt:             0.25
+  a_max:          1.5

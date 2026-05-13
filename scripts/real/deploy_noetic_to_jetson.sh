@@ -144,6 +144,22 @@ fi
 # Trailing-slash semantics: copy contents of fast_lio_ros1/ INTO FAST_LIO/.
 rsync "${RSYNC_OPTS[@]}" -e "$RSYNC_RSH" "$SRC" "$DST"
 
+# ── Point-LIO ROS 1 (optional) ───────────────────────────────────────
+# Point-LIO is FAST-LIO2's successor (HKU MaRS 2023): iVox replaces ikd-tree
+# → O(1) avg query, no long-run degradation; decoupled IMU+LiDAR threads
+# keep /Odometry publishing at IMU rate even when LiDAR processing lags.
+# Shipped as a drop-in alternative — same livox_ros_driver2, same /<ns>/topic
+# layout. User picks fast_lio vs point_lio at launch time.
+if [[ -d "$REPO_ROOT/src/vendor/point_lio_ros1" ]]; then
+  echo ""
+  echo "── rsyncing point_lio_ros1 → src/Point-LIO ──"
+  SRC="$REPO_ROOT/src/vendor/point_lio_ros1/"
+  DST="${JETSON_USER}@${JETSON_HOST}:${JETSON_WS}/src/Point-LIO/"
+  rsync "${RSYNC_OPTS[@]}" -e "$RSYNC_RSH" "$SRC" "$DST"
+else
+  echo "  (point_lio_ros1 not present locally — skipping)"
+fi
+
 # ── livox_ros_driver2 (separate copy for ROS 1 build) ────────────────
 echo ""
 echo "── rsyncing livox_ros_driver2 → src/livox_ros_driver2 ──"
@@ -152,12 +168,47 @@ rsync_to_jetson  src/vendor/livox_ros_driver2  src/
 # ── Onboard launcher + recorder ──────────────────────────────────────
 echo ""
 echo "── rsyncing Jetson-side scripts → scripts/ ──"
-for s in onboard_fastlio_noetic.sh onboard_record_noetic.sh; do
+for s in onboard_fastlio_noetic.sh onboard_pointlio_noetic.sh onboard_record_noetic.sh; do
   if [[ -f "$REPO_ROOT/scripts/real/$s" ]]; then
     rsync_to_jetson  "scripts/real/$s"  scripts/
     $SSH "chmod +x ${JETSON_WS}/scripts/$s" 2>/dev/null || true
   fi
 done
+
+# ── gbplanner3 configs (place at 4-deep path to satisfy BT XML resolver) ─────
+# Config live in scripts/real/gbplanner3/config/go2/ on the laptop.
+# Destination on Jetson: ~/gbplanner3_ws/src/gbplanner_ros/gbplanner/config/ugv/real/go2/
+# The BT XML files (main_tree.xml, …) are already in the upstream source there;
+# we only sync our patched YAML configs — never main_tree.xml (that stays upstream).
+GBPLANNER_WS_JETSON="/home/${JETSON_USER}/gbplanner3_ws"
+GBPLANNER_CONFIG_SRC="$REPO_ROOT/scripts/real/gbplanner3/config/go2"
+GBPLANNER_CONFIG_DST="${JETSON_USER}@${JETSON_HOST}:${GBPLANNER_WS_JETSON}/src/gbplanner_ros/gbplanner/config/ugv/real/go2/"
+if [[ -d "$GBPLANNER_CONFIG_SRC" ]]; then
+  echo ""
+  echo "── rsyncing gbplanner3 configs → gbplanner3_ws/…/config/ugv/real/go2/ ──"
+  $SSH "mkdir -p ${GBPLANNER_WS_JETSON}/src/gbplanner_ros/gbplanner/config/ugv/real/go2"
+  rsync "${RSYNC_OPTS[@]}" -e "$RSYNC_RSH" \
+    --include="*.yaml" --exclude="*" \
+    "$GBPLANNER_CONFIG_SRC/" "$GBPLANNER_CONFIG_DST"
+fi
+
+# Also sync gbplanner3 launch file and launcher script (to ~/gbplanner3_scripts/)
+GBPLANNER_SCRIPTS_DST="${JETSON_USER}@${JETSON_HOST}:/home/${JETSON_USER}/gbplanner3_scripts/"
+if [[ -d "$REPO_ROOT/scripts/real/gbplanner3" ]]; then
+  echo ""
+  echo "── rsyncing gbplanner3 scripts → ~/gbplanner3_scripts/ ──"
+  $SSH "mkdir -p /home/${JETSON_USER}/gbplanner3_scripts"
+  for f in orin_launch_gbplanner.sh bridge_topics.yaml; do
+    SRC="$REPO_ROOT/scripts/real/gbplanner3/$f"
+    [[ -f "$SRC" ]] || continue
+    rsync "${RSYNC_OPTS[@]}" -e "$RSYNC_RSH" "$SRC" "$GBPLANNER_SCRIPTS_DST"
+  done
+  # Also sync the launch file into the gbplanner3 workspace
+  LAUNCH_DST="${JETSON_USER}@${JETSON_HOST}:${GBPLANNER_WS_JETSON}/src/gbplanner_ros/gbplanner/launch/gbplanner_go2.launch"
+  LAUNCH_SRC="$REPO_ROOT/scripts/real/gbplanner3/gbplanner_go2.launch"
+  [[ -f "$LAUNCH_SRC" ]] && \
+    rsync "${RSYNC_OPTS[@]}" -e "$RSYNC_RSH" "$LAUNCH_SRC" "$LAUNCH_DST"
+fi
 
 # ── Done ─────────────────────────────────────────────────────────────
 echo ""
