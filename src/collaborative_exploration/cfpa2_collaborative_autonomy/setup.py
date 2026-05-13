@@ -30,6 +30,10 @@ setup(
                 "cfpa2_single_robot_node = "
                 "cfpa2_collaborative_autonomy.cfpa2_single_robot_node:main"
             ),
+            (
+                "frontier_3d_test_node = "
+                "cfpa2_collaborative_autonomy.frontier_3d_test_node:main"
+            ),
         ],
     },
 )

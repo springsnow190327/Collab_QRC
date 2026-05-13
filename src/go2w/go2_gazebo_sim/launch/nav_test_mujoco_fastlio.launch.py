@@ -199,7 +199,11 @@ def _launch_setup(context):
     # 'nav2_go2_real.yaml' or 'nav2_go2w_real.yaml'). Empty = sim default.
     # Topic strings inside the real yaml use /robot/... which already match
     # this launch's default robot_namespace='robot', so no rewrites needed.
-    nav2_yaml_override = _get(context, "nav2_yaml_override").strip()
+    nav2_yaml_override  = _get(context, "nav2_yaml_override").strip()
+    nav_costmap_mode    = _get(context, "nav_costmap_mode").strip().lower() or "2d"
+    if nav_costmap_mode not in {"2d", "3d"}:
+        raise ValueError(
+            f"nav_costmap_mode must be '2d' | '3d'; got '{nav_costmap_mode}'")
     cfpa2_config_path = os.path.join(cfpa2_pkg, "config", "cfpa2_single_robot.yaml")
 
     actions = []
@@ -526,6 +530,25 @@ def _launch_setup(context):
                 convert_types=True,
             )
             nav2_params.append(overlay_rewritten)
+
+        # Optional 3D-costmap overlay — swaps both costmaps to read the
+        # nvblox traversability_grid so the planner and MPPI controller treat
+        # ramps as traversable instead of blocked.
+        if nav_costmap_mode == "3d":
+            costmap3d_path = os.path.join(
+                go2w_config_pkg, "config", "nav",
+                "nav2_3d_costmap_overlay.yaml",
+            )
+            costmap3d_rewritten = RewrittenYaml(
+                source_file=costmap3d_path,
+                root_key=robot_ns,
+                param_rewrites={
+                    "use_sim_time": str(use_sim_time).lower(),
+                    "map_topic": f"/{robot_ns}/traversability_grid",
+                },
+                convert_types=True,
+            )
+            nav2_params.append(costmap3d_rewritten)
 
         # cmd_vel routing in single sim:
         #   Go2W (has_wheels=true): go2w_hybrid_cmd_router subscribes to plain
@@ -1025,6 +1048,17 @@ def generate_launch_description():
                 "shipped 2026-05-02; fits the legged + wheeled-legged "
                 "kinematic model best. Pass holonomic_profile:=off to "
                 "fall back to SmacPlannerHybrid + DiffDrive MPPI baseline."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "nav_costmap_mode", default_value="2d",
+            description=(
+                "Costmap map source for nav2_mppi. '2d' (default) = "
+                "StaticLayer reads /robot/map (octomap 2D projection) + "
+                "ObstacleLayer reads scan_3d — standard 2D nav. '3d' = both "
+                "global and local StaticLayers read /robot/traversability_grid "
+                "(nvblox 2.5D) so the planner and controller see ramps as "
+                "traversable. Requires nvblox_frontend mapper_node running."
             ),
         ),
         DeclareLaunchArgument(

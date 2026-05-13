@@ -3,26 +3,25 @@
 3D-native exploration planner running natively on the robot's Orin, feeding 3D
 point-goals to laptop-side SanD-Planner over CycloneDDS WiFi.
 
-## Architecture
+## Architecture (2026-05-12: Point-LIO native, no SLAM bridge)
 
-```
+```text
                  Jetson Orin (JP 5.x, Ubuntu 20.04 Focal, ARM64)
 ┌──────────────────────────────────────────────────────────────────────┐
-│  ROS 2 Foxy (native — already running)                               │
-│    Mid-360 driver + Fast-LIO2 + fast_lio_tf_adapter                  │
-│      └─► /robot/cloud_registered_body  (Mid-360 cloud)               │
-│      └─► /robot/Odometry              (Fast-LIO pose)                │
-│      └─► /tf, /tf_static              (map→base_link chain)          │
+│  ROS 1 Noetic (native — ALL stack here, no Foxy in the loop)         │
+│    Mid-360 driver + Point-LIO  (onboard_pointlio_noetic.sh)          │
+│      └─► /robot/cloud_registered_body  (Mid-360 cloud, body frame)   │
+│      └─► /robot/Odometry              (Point-LIO pose, 10 Hz stable) │
+│      └─► /tf, /tf_static              (map→camera_init→body chain)   │
 │                          │                                           │
-│                          │ ros1_bridge (parameter_bridge, native)    │
+│                          │  rostopic direct subscribe (NO bridge)    │
 │                          ▼                                           │
-│  ROS 1 Noetic (native — installed via apt alongside Foxy)            │
 │    voxblox_node ─► TSDF/ESDF                                         │
 │         └─► gbplanner_node ─► PCI ─► /pci_command_path (PoseArray)   │
 │                          │                                           │
-│                          │ ros1_bridge (back to Foxy)                │
+│                          │ ros1_bridge (ONLY the small PoseArray now)│
 │                          ▼                                           │
-│  ROS 2 Foxy republishes /pci_command_path                            │
+│  ROS 2 Foxy republishes /pci_command_path  (<1 KB/s)                 │
 └────────────────────────────────┬─────────────────────────────────────┘
                                  │
                           WiFi (CycloneDDS, cross-version Foxy↔Humble)
@@ -34,6 +33,15 @@ point-goals to laptop-side SanD-Planner over CycloneDDS WiFi.
 │       └─► /cmd_vel ─► Go2 sport API                                  │
 └──────────────────────────────────────────────────────────────────────┘
 ```
+
+**Why Point-LIO native (vs the original Foxy Fast-LIO + ros1_bridge design)**:
+- 5-10 MB/s `/cloud_registered_body` no longer crosses the parameter_bridge —
+  voxblox subscribes directly to the ROS 1 publisher. Saves bandwidth + CPU.
+- Point-LIO's iVox replaces FAST-LIO's ikd-tree → O(1) avg query, **no
+  long-run rate degradation** (FAST-LIO dropped 9 Hz → 4 Hz over 3 min).
+- See [docs/claude/noetic_fastlio_onboard.md](../../../docs/claude/noetic_fastlio_onboard.md)
+  for the full deployment story, and `scripts/real/onboard_pointlio_noetic.sh`
+  for the SLAM launcher that must be running before this script.
 
 ## Why this architecture
 

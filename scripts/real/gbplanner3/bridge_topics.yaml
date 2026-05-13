@@ -1,38 +1,36 @@
-# ros1_bridge parameter_bridge config (Orin: Foxy <-> Noetic, local).
+# ros1_bridge parameter_bridge config (Orin).
 #
-# Foxy publishers (Fast-LIO outputs) → bridged to Noetic (Voxblox consumes them)
-# Noetic publishers (gbplanner PCI output) → bridged to Foxy (laptop SanD-Planner subscribes via DDS)
+# UPDATED 2026-05-12 for Point-LIO native ROS 1 stack:
+#   - SLAM topics (cloud_registered_body, Odometry, /tf, /tf_static) are now
+#     published natively in ROS 1 by Point-LIO (see onboard_pointlio_noetic.sh).
+#     The previous "2to1" bridges for these are gone — gbplanner subscribes
+#     directly to the ROS 1 publishers, eliminating the 5-10 MB/s pointcloud
+#     bandwidth bottleneck that motivated the Noetic FAST-LIO migration.
 #
-# This file is loaded into `ros2 run ros1_bridge parameter_bridge __params:=...`
-# Param names follow ros1_bridge convention.
+#   - The ONLY remaining traffic across this bridge is the gbplanner3 PCI
+#     output (PoseArray < 1 KB/s) heading laptop-side, plus the mission-
+#     control services going the other way.
+#
+# Architecture:
+#   ROS 1 Noetic (Jetson, native)
+#     Point-LIO + voxblox + gbplanner_node + pci_general
+#                       │
+#                       │ /pci_command_path (MultiDOFJointTrajectory)
+#                       ▼
+#                  (this bridge)
+#                       │
+#                       ▼
+#   ROS 2 Foxy ←DDS via WiFi→ Laptop ROS 2 Humble
+#     SanD-Planner / path-follower consumes /pci_command_path
+#
+# This file is loaded by `ros2 run ros1_bridge parameter_bridge __params:=...`.
 
 topics:
-  # =====  ROS 2 Foxy  --->  ROS 1 Noetic  =====
-  - topic: /robot/cloud_registered_body
-    type: sensor_msgs/msg/PointCloud2
-    queue_size: 1
-    direction: 2to1
-
-  - topic: /robot/Odometry
-    type: nav_msgs/msg/Odometry
-    queue_size: 10
-    direction: 2to1
-
-  - topic: /tf
-    type: tf2_msgs/msg/TFMessage
-    queue_size: 100
-    direction: 2to1
-
-  - topic: /tf_static
-    type: tf2_msgs/msg/TFMessage
-    queue_size: 100
-    direction: 2to1
-
   # =====  ROS 1 Noetic  --->  ROS 2 Foxy  =====
-  # gbplanner PCI publishes a PoseArray of waypoints; we cross this back so
-  # laptop Humble (DDS-connected to Orin Foxy) can subscribe.
+  # PCI publishes trajectory_msgs/MultiDOFJointTrajectory (NOT PoseArray —
+  # confirmed from pci_general source + rostopic type /pci_command_path).
   - topic: /pci_command_path
-    type: geometry_msgs/msg/PoseArray
+    type: trajectory_msgs/msg/MultiDOFJointTrajectory
     queue_size: 5
     direction: 1to2
 
@@ -42,7 +40,7 @@ topics:
     direction: 1to2
 
 services:
-  # =====  Allow laptop to call Noetic services for mission control  =====
+  # Allow laptop ROS 2 Humble to call Noetic services for mission control.
   - service: /planner_control_interface/std_srvs/automatic_planning
     type: std_srvs/srv/Empty
     direction: 2to1

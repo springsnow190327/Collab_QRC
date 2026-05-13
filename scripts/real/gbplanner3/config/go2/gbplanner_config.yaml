@@ -1,0 +1,186 @@
+# gbplanner3 v3 config — Go2 real robot, Mid-360 LiDAR, indoor/outdoor ground
+#
+# Key differences from the upstream ugv/gzc/urban_exploration template:
+#
+#  1. RobotParams.type: kAerialRobot — NOT kGroundRobot.
+#     kGroundRobot calls projectSampleEleMap() for every RRG sample, which
+#     returns -1 (reject) when no /elevation_map is published, causing the
+#     graph to stay permanently empty.  kAerialRobot validates samples
+#     directly against voxblox free space — no elevation_map dependency.
+#
+#  2. BoundedSpaceParams.Local Z is tight around Go2 body height (~0.28 m).
+#     The upstream default (±2 m) causes most samples to land in floor/ceiling
+#     voxels (occupied/unknown) → graph empty.  Tight Z (−0.15 to +0.55 m
+#     relative to robot) forces samples into the navigable corridor band.
+#
+#  3. NoGainZones removed.  The upstream g1 block (X < 2.0 in world frame)
+#     makes the robot's starting area zero-gain, which combined with an
+#     initially sparse graph can trap the planner at startup.
+#
+#  4. SensorParams uses a single Mid-360 block (replaces OS064+cameras).
+#
+#  5. global_frame_id: map  (not the upstream default "world").
+#     Matches our TF tree: map → camera_init → body → base_link.
+#     Also set world_frame_id: map in planner_control_interface_sim_config.yaml.
+
+# ── Robot ─────────────────────────────────────────────────────────────────────
+RobotParams:
+  type:               kAerialRobot     # bypass elevation_map requirement
+  size:               [0.60, 0.40, 0.30]   # Go2 body L×W×H (m)
+  size_extension_min: [0.0, 0.0, 0.0]
+  size_extension:     [0.10, 0.10, 0.05]
+  center_offset:      [0.0, 0.0, 0.0]
+  relax_ratio:        0.5
+  bound_mode:         kExtendedBound
+  safety_extension:   [0.20, 0.20, 0.05]
+
+# ── Sensor — Mid-360 panoramic LiDAR ─────────────────────────────────────────
+SensorParams:
+  sensor_list:        ["Mid360"]
+  Mid360:
+    type:             kLidar
+    max_range:        8.0       # m — conservative indoor range
+    min_range:        0.5
+    center_offset:    [0.0, 0.0, 0.0]
+    # Mount tilt: pitch +0.2636 rad (≈15°) per onboard_pointlio_noetic.sh
+    rotations:        [0.0, 0.2636, 0.0]
+    # Full horizontal × ±52° vertical (rad)
+    fov:              [6.2832, 1.8151]    # 2π × 104° in rad
+    # Coarse angular resolution for ray-cast (not LiDAR hardware)
+    resolution:       [0.1745, 0.1745]   # ~10° in rad
+    frontier_percentage_threshold: 0.05
+
+# ── Sampling space ────────────────────────────────────────────────────────────
+BoundedSpaceParams:
+  Global:
+    type:     kCuboid
+    min_val:  [-100.0, -100.0, -1.0]
+    max_val:  [ 100.0,  100.0,  3.0]
+
+  Local:
+    type:     kCuboid
+    # Z range is relative to robot state (kLocal mode).
+    # Robot body centre ≈ 0.28 m above floor.  Sample within ±0.4 m of
+    # body height → [floor, ~0.7 m above floor] in world frame.
+    min_val:  [-10.0, -10.0, -0.15]
+    max_val:  [ 10.0,  10.0,  0.55]
+    min_extension: [-15.0, -15.0, -0.15]
+    max_extension: [ 15.0,  15.0,  0.55]
+
+  LocalSearch:
+    type:     kCuboid
+    min_val:  [-30.0, -30.0, -0.5]
+    max_val:  [ 30.0,  30.0,  0.5]
+
+  LocalAdaptiveExp:
+    type:     kCuboid
+    min_val:  [-8.0, -8.0, -0.15]
+    max_val:  [ 8.0,  8.0,  0.55]
+
+# NoGainZones intentionally empty — do not block any region of the map.
+
+# ── Sampler policy ────────────────────────────────────────────────────────────
+RandomSamplerParams:
+  SamplerForExploration:
+    X:       { pdf_type: kUniform, sample_mode: kLocal }
+    Y:       { pdf_type: kUniform, sample_mode: kLocal }
+    Z:       { pdf_type: kUniform, sample_mode: kLocal }
+    Heading: { pdf_type: kUniform, sample_mode: kManual,
+               min_val: -3.14159, max_val: 3.14159 }
+    Pitch:   { pdf_type: kConst,   sample_mode: kManual, const_val: 0.0 }
+
+  SamplerForSearching:
+    X:       { pdf_type: kUniform, sample_mode: kLocal }
+    Y:       { pdf_type: kUniform, sample_mode: kLocal }
+    Z:       { pdf_type: kUniform, sample_mode: kLocal }
+    Heading: { pdf_type: kUniform, sample_mode: kManual,
+               min_val: -3.14159, max_val: 3.14159 }
+    Pitch:   { pdf_type: kConst,   sample_mode: kManual, const_val: 0.0 }
+
+  SamplerForAdaptiveExp:
+    X:       { pdf_type: kUniform, sample_mode: kLocal }
+    Y:       { pdf_type: kUniform, sample_mode: kLocal }
+    Z:       { pdf_type: kUniform, sample_mode: kLocal }
+    Heading: { pdf_type: kUniform, sample_mode: kManual,
+               min_val: -3.14159, max_val: 3.14159 }
+    Pitch:   { pdf_type: kConst,   sample_mode: kManual, const_val: 0.0 }
+
+# ── Planning ──────────────────────────────────────────────────────────────────
+PlanningParams:
+  type:                 kBasicExploration
+  rr_mode:              kGraph
+  graph_building_mode:  kBasic
+
+  # Only the Mid-360 is used for gain computation.
+  exp_sensor_list:      ["Mid360"]
+
+  # Velocities — conservative for initial real-robot trial.
+  v_max:                0.8    # m/s
+  v_homing_max:         0.6
+  yaw_rate_max:         0.7    # rad/s
+
+  yaw_tangent_correction: false
+  edge_length_min:      0.20
+  edge_length_max:      3.0
+  edge_overshoot:       0.0
+  num_vertices_max:     300
+  num_edges_max:        5000
+  num_loops_cutoff:     1500
+  num_loops_max:        50000
+  nearest_range:        3.0
+  nearest_range_min:    0.20
+  nearest_range_max:    3.0
+
+  use_current_state:              true
+  use_ray_model_for_volumetric_gain: true
+
+  path_length_penalty:      0.02
+  path_direction_penalty:   0.20
+  allow_sudden_dir_change:  true
+  occupied_voxel_gain:      0.0
+  free_voxel_gain:          0.0
+  unknown_voxel_gain:       60.0
+
+  global_graph_odom_dist:   0.8
+  select_closest_frontier:  true
+
+  traverse_length_max:      2.5
+  traverse_time_max:        5000.0
+  path_safety_enhance_enable: true
+  augment_free_voxels_time: 3
+  free_frustum_before_planning: false
+  freespace_cloud_enable:   false
+  leafs_only_for_volumetric_gain: true
+  cluster_vertices_for_gain: false
+  clustering_radius:        0.5
+  path_interpolation_distance: -1.0
+
+  # Go2 height parameters (body centre ~0.28 m above floor)
+  max_ground_height:     0.28
+  robot_height:          0.28
+  max_inclination:       0.3491  # rad(20°)
+
+  time_budget_limit:     5000
+  auto_homing_enable:    false
+  go_home_if_fully_explored: false
+  nonuniform_ray_cast:   false
+  ray_cast_step_size_multiplier: 1.0
+  use_camera_gain:       false
+  annotate_map_with_camera: false
+  inspection_planning:   false
+  keep_leaf_yaw_only:    true
+  enable_opening_traversal: false
+  auto_opening_path_approval: true
+  box_check_method:      0
+  line_check_method:     1
+  add_only_frontiers_to_global_graph: true
+
+  geofence_checking_enable: true
+
+  # world frame — MUST match voxblox world_frame and PCI world_frame_id
+  global_frame_id:       map
+
+AdaptiveObbParams:
+  type:                  kPca
+  local_pointcloud_range: 30.0
+  bounding_box_size_max:  20

@@ -1,0 +1,73 @@
+# voxblox config for gbplanner3 — Go2 real robot, Mid-360 LiDAR
+#
+# Loaded INTO gbplanner_node (not a separate voxblox_node) via
+#   <rosparam command="load" file="...voxblox_sim_config.yaml"/>
+#
+# Key differences from upstream ugv/gzc/urban_exploration template:
+#   world_frame: map  (was "world" — must match TF root: map → camera_init → body)
+#   tsdf_voxel_size: 0.15  (was 0.30 — finer for indoor Mid-360 scenes)
+#   max_ray_length_m: 8.0  (was 20.0 — matches Mid-360 reliable indoor range)
+#   truncation_distance: 0.30  (was 0.90 — tighter for small voxels)
+
+world_frame:              map        # MUST match global_frame_id in gbplanner_config.yaml
+use_tf_transforms:        True
+
+# TSDF integration
+tsdf_voxel_size:          0.15
+tsdf_voxels_per_side:     16
+truncation_distance:      0.30
+max_ray_length_m:         8.0
+min_ray_length_m:         0.2
+voxel_carving_enabled:    True
+
+# Freespace pointcloud (fed directly from Point-LIO cloud_registered_body)
+use_freespace_pointcloud:     True
+freespace_pointcloud_enabled: True
+
+# ESDF
+esdf_max_distance_m:      3.0
+clear_sphere_for_planning: False
+
+# Mesh / visualization output
+update_mesh_every_n_sec:  2.0
+mesh_min_weight:          1e-4
+slice_level:              0.3     # m — publish 2D slice at Go2 body height
+color_mode:               "color"
+verbose:                  False
+
+# Publisher flags
+publish_tsdf_map:         True
+publish_esdf_map:         True
+publish_pointclouds:      True
+publish_slices:           False
+publish_tsdf_info:        False
+publish_traversable:      False
+traversability_radius:    0.4
+
+# Integration tuning
+max_weight:               200
+clearing_ray_weight_factor: 0.01
+weight_ray_by_range:      False
+use_const_weight:         False
+use_weight_dropoff:       True
+use_symmetric_weight_drop_off: False
+occupancy_min_distance_voxel_size_factor: 1.0
+occupancy_distance_voxelsize_factor:      1.0
+
+# ICP (disabled — Point-LIO already produces clean odometry)
+enable_icp:               False
+icp_refine_roll_pitch:    False
+accumulate_icp_corrections: True
+
+# Sparsity compensation (useful for Mid-360's non-uniform scan pattern)
+use_sparsity_compensation_factor: True
+sparsity_compensation_factor:     100.0
+
+timestamp_tolerance_sec:  0.001
+pointcloud_queue_size:    5
+min_time_between_msgs_sec: 0.0
+max_consecutive_ray_collisions: 0
+integration_order_mode:   "sorted"
+method:                   "fast"
+allow_clear:              True
+tsdf_surface_distance_threshold_factor: 3.0

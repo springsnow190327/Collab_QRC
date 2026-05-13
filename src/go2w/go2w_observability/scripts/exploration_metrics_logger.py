@@ -555,7 +555,12 @@ class ExplorationMetricsLogger(Node):
                 continue
 
             # Safety net: coverage stagnation. Need full window of data.
-            if len(rs.coverage_window) >= 2:
+            # Guard: skip if no goals have been attempted yet — stagnation
+            # before the first goal is a startup delay, not a stuck robot.
+            goals_attempted = (rs.goals_completed
+                                + rs.goals_aborted_planner
+                                + rs.goals_aborted_controller)
+            if len(rs.coverage_window) >= 2 and goals_attempted > 0:
                 t_first, area_first = rs.coverage_window[0]
                 t_last, area_last = rs.coverage_window[-1]
                 if (t_last - t_first) >= self._cov_window_sec * 0.95:

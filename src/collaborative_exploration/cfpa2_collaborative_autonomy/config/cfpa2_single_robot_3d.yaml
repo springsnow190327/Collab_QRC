@@ -1,0 +1,21 @@
+# CFPA2 yaml overlay for 3D-frontier exploration.
+#
+# Composes with the base cfpa2_single_robot.yaml: every key not listed here
+# inherits the base value. Only the source of "map" and the IG-dimension knob
+# change — algorithm (utility weights, overlap penalty, stable-challenger,
+# joint-allocator, status FSM) is untouched.
+#
+# Required upstream: nvblox_frontend mapper_node publishing
+#   /<ns>/traversability_grid  (nav_msgs/OccupancyGrid)
+#   /<ns>/voxels_3d            (nvblox_frontend_msgs/VoxelGrid3D)
+/**:
+  ros__parameters:
+    # Swap the BFS / reachability source from Nav2 global_costmap to the
+    # nvblox-derived 2.5D traversability layer. Same OccupancyGrid msg type;
+    # only the cell-value semantics shift (here unknown == not traversable).
+    planning_map_topic_suffix: /traversability_grid
+    # Drive utility from 3D unknown-voxel counts instead of 2D unknown-cell
+    # counts. Scale-invariant overlap-penalty formula keeps λ unchanged.
+    ig_dimension: "3d"
+    voxels_3d_topic_suffix: /voxels_3d
+    cfpa2_ig_height_m: 2.0
