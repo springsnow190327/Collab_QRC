@@ -591,7 +591,11 @@ private:
                 (static_cast<size_t>(zi) * nxy + yi) * nxy + xi;
             msg.data[off] = (lo > 0.0f) ? static_cast<int8_t>(100)
                                         : static_cast<int8_t>(0);
-            if (lo > 0.0f) occ_pts_.emplace_back(wx, wy, wz);
+            // Filter ground-level occupied voxels from the visual cloud only.
+            // They remain in voxels_3d (CFPA2 IG) and the occupancy map
+            // (free-space carving) but cluttering the 3D display.
+            if (lo > 0.0f && wz >= static_cast<float>(ground_z_max_m_))
+              occ_pts_.emplace_back(wx, wy, wz);
           }
         }
       }
