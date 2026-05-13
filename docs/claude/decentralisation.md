@@ -80,6 +80,11 @@ Relevant files:
 
 The key centralised behaviour is in `_tick_impl`, where the coordinator uses all robot states and frontier candidates to decide assignments.
 
+- UPDATED 12/05/2026
+  The centralised CFPA2 mode in cfpa2_coordinator_node performs joint scoring across both robots. The single-robot variant cfpa2_single_robot_node already scores frontiers independently per robot. The decentralisation effort therefore turns the two single-robot pipelines into a coordinated pair: each robot retains its own frontier scoring, but blocked-frontier filtering and broadcast claims prevent both robots from independently selecting overlapping goals.
+
+  The existing centralised coordinator performs joint multi-robot assignment after computing utilities for all robots, whereas the single-robot planner already performs local frontier extraction and local utility scoring. The decentralised extension reuses the single-robot planner and injects peer-claim awareness by filtering out frontiers claimed by peers before utility maximisation.
+
 ## Existing Algorithm Modes
 
 The existing coordinator contains multiple planning modes:
@@ -244,7 +249,7 @@ Claim storage, peer-claim ingestion, claim expiry, frontier blocking, and determ
 - [X] Frontier management: local frontier ingestion from CFPA2 MarkerArray and peer-claim filtering implemented
 - [X] MDVRP-generated own-claim proposal
 - [X] Claim conflict resolution rule implemented/tested
-- [ ] Frontier filter output (so single_robot_node respects claims)
+- [X] Frontier filter output (so single_robot_node respects claims)
 - [ ] Peer map subscriber + overlay_map fusion
 - [ ] Integration with existing single_robot_node
 - [ ] Comms-cut survival demo

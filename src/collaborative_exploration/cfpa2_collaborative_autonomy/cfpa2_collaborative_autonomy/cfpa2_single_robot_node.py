@@ -5,11 +5,20 @@ from __future__ import annotations
 
 from typing import Optional
 
+import math
+
 import rclpy
 from std_msgs.msg import String
+from geometry_msgs.msg import PoseArray
 
 from .cfpa2_coordinator_node import CFPA2Coordinator
 
+# Must match FRONTIER_MATCH_TOLERANCE in cfpa2_peer_coordination/peer_coordinator_node.py
+_PEER_BLOCKED_MATCH_TOLERANCE = 0.5  # meters
+
+# Fail-open timeout for blocked-frontier constraints
+# If the peer coordinator stops publishing this topic, the single robot falls back to normal standalone CFPA2 behaviour
+_PEER_BLOCKED_TIMEOUT_SEC = 12.0
 
 class CFPA2SingleRobotNode(CFPA2Coordinator):
     def __init__(self) -> None:
@@ -68,6 +77,25 @@ class CFPA2SingleRobotNode(CFPA2Coordinator):
             String, f"/{ns}/exploration_complete",
             self._on_exploration_complete, 10)
 
+        # Peer-claim filter input from cfpa2_peer_coordination
+        # Fail-open: if no message arrives, normal single-robot CFPA2 runs unchanged
+        self._peer_blocked_frontiers: list[tuple[float, float]] = []
+        self._peer_blocked_received_ns: int = 0
+
+        self._peer_blocked_frontiers_topic = (
+            f"/{ns}/cfpa2_peer_coordination/blocked_frontiers"
+        )
+        self.create_subscription(
+            PoseArray,
+            self._peer_blocked_frontiers_topic,
+            self._blocked_frontiers_received,
+            10,
+        )
+        self.get_logger().info(
+            f"Subscribed to peer blocked frontiers on "
+            f"{self._peer_blocked_frontiers_topic}"
+        )
+
     def _publish_status(self, status: str) -> None:
         """Publish a state change. No-op when status unchanged (avoids spam)."""
         if status == self._last_status:
@@ -88,6 +116,55 @@ class CFPA2SingleRobotNode(CFPA2Coordinator):
             f"goal publication. Send empty or 'resume' on /<ns>/exploration_complete "
             f"to re-enable.")
         self._publish_status("paused")
+
+    def _blocked_frontiers_received(self, msg: PoseArray) -> None:
+        """Store peer-claimed frontier positions published by peer coordinator"""
+        self._peer_blocked_frontiers = [
+            (
+                float(pose.position.x),
+                float(pose.position.y),
+            )
+            for pose in msg.poses
+        ]
+        self._peer_blocked_received_ns = self.get_clock().now().nanoseconds
+
+        if self.verbose_logs:
+            self.get_logger().debug(
+                f"Received {len(self._peer_blocked_frontiers)} peer-blocked "
+                f"frontier(s) from {self._peer_blocked_frontiers_topic}"
+            )
+
+    def _peer_has_claimed(self, goal: tuple[float, float]) -> bool:
+        """Return True if a candidate frontier is blocked by a peer claim.
+
+        Fail-open behaviour:
+        - If no blocked-frontier message has arrived, return False.
+        - If the latest blocked-frontier message is stale, return False.
+
+        This preserves standalone exploration if the peer coordinator dies.
+        """
+        if self._peer_blocked_received_ns <= 0:
+            return False  # no message received yet
+
+        now_ns = self.get_clock().now().nanoseconds
+        age_sec = (now_ns - self._peer_blocked_received_ns) / 1e9
+        if age_sec > _PEER_BLOCKED_TIMEOUT_SEC:
+            if self.verbose_logs:
+                self.get_logger().debug(
+                    "Peer blocked-frontier list is stale; "
+                    f"age_sec={age_sec:.2f}; "
+                    f"timeout_sec={_PEER_BLOCKED_TIMEOUT_SEC:.2f}; "
+                    "failing open."
+
+                )
+            return False
+
+        gx, gy = goal
+        for bx, by in self._peer_blocked_frontiers:
+            if math.hypot(gx - bx, gy - by) <= _PEER_BLOCKED_MATCH_TOLERANCE:
+                return True
+
+        return False
 
     def _tick_impl(self) -> None:
         now_ns = self.get_clock().now().nanoseconds
@@ -142,11 +219,16 @@ class CFPA2SingleRobotNode(CFPA2Coordinator):
         dist_maps = {ns: dist_map}
 
         utilities: dict[tuple[float, float], float] = {}
+        peer_blocked_count = 0
+
         for goal in targets:
             if self._goal_too_close(ns, goal):
                 continue
             if self._is_blacklisted(ns, goal, now_ns):
                 continue
+            if self._peer_has_claimed(goal):
+                peer_blocked_count += 1
+                continue 
             score = self._cfpa2_single_utility(
                 ns=ns,
                 goal=goal,
@@ -155,6 +237,11 @@ class CFPA2SingleRobotNode(CFPA2Coordinator):
             )
             if score > -1e17:
                 utilities[goal] = score
+        
+        if self.verbose_logs and peer_blocked_count > 0:
+            self.get_logger().debug(
+                f"Skipped {peer_blocked_count} frontier(s) due to peer claims."
+            )
 
         if not utilities:
             self._publish_status("no_reachable")

@@ -16,7 +16,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSReliabilityPolicy, QoSProfile
 
 from std_msgs.msg import Header
-from geometry_msgs.msg import Point, Pose
+from geometry_msgs.msg import Point, Pose, PoseArray
 from nav_msgs.msg import Odometry
 
 from cfpa2_peer_coordination.mdvrp_adapter import (
@@ -50,6 +50,7 @@ FRONTIER_MATCH_TOLERANCE = 0.5  # metres
 PEER_STATE_TOPIC = "cfpa2_peer_coordination/peer_state"
 NEGOTIATION_REQUEST_TOPIC = "cfpa2_peer_coordination/inbox/negotiation_request"
 NEGOTIATION_RESPONSE_TOPIC = "cfpa2_peer_coordination/inbox/negotiation_response"
+BLOCKED_FRONTIERS_TOPIC = "cfpa2_peer_coordination/blocked_frontiers"
 
 # Existing CFPA2 frontier visualisation markers use this namespace
 CFPA2_FRONTIER_MARKER_NS = "cfpa2_frontiers"  # ns = namespace
@@ -98,6 +99,7 @@ class PeerCoordinatorNode(Node):
 
         self.declare_parameter("odom_topic_suffix", "/odom/nav")
         self.declare_parameter("frontier_markers_topic", "/mtare/frontier_markers")
+        self.declare_parameter("blocked_frontiers_rate_hz", 1.0)
 
         # Interim milestone parameters
         # This is NOT the final request/response protocol yet. It lets the node generate local own_claims from the shared MDVRP solver so claim broadcast and conflict resolution can be tested before full negotiation exists
@@ -135,6 +137,9 @@ class PeerCoordinatorNode(Node):
         self.frontier_markers_topic: str = str(
             self.get_parameter("frontier_markers_topic").value
         )
+        self.blocked_frontiers_rate_hz: float = float(
+            self.get_parameter("blocked_frontiers_rate_hz").value
+        )
 
         # Interim milestone parameters
         self.enable_mdvrp_auto_claims: bool = bool(
@@ -171,6 +176,10 @@ class PeerCoordinatorNode(Node):
 
         # Topic names
         self.own_peer_state_topic = f"/{self.robot_namespace}/{PEER_STATE_TOPIC}"
+
+        self.own_blocked_frontiers_topic = (
+            f"/{self.robot_namespace}/{BLOCKED_FRONTIERS_TOPIC}"
+        )
 
         self.own_request_inbox_topic = (
             f"/{self.robot_namespace}/{NEGOTIATION_REQUEST_TOPIC}"
@@ -222,6 +231,12 @@ class PeerCoordinatorNode(Node):
             PEER_STATE_QOS,
         )
 
+        self.blocked_frontiers_pub = self.create_publisher(
+            PoseArray,
+            self.own_blocked_frontiers_topic,
+            1,  # can make a named QoS profile later if needed
+        )
+
         # Store subscription objects so they are not garbage-collected. We only subscribe to peer state topics for now; negotiation inboxes will be added later.
         self.peer_state_subs = []
 
@@ -237,6 +252,7 @@ class PeerCoordinatorNode(Node):
         # Timers (stubs only for now)
         peer_state_period = 1.0 / max(self.peer_state_rate_hz, 1e-6)
         negotiation_period = 1.0 / max(self.negotiation_rate_hz, 1e-6)
+        blocked_frontiers_period = 1.0 / max(self.blocked_frontiers_rate_hz, 1e-6)
 
         self.peer_state_timer = self.create_timer(
             peer_state_period, 
@@ -245,6 +261,10 @@ class PeerCoordinatorNode(Node):
         self.negotiation_timer = self.create_timer(
             negotiation_period, 
             self._decide_negotiation,
+        )
+        self.blocked_frontiers_timer = self.create_timer(
+            blocked_frontiers_period,
+            self._publish_blocked_frontiers,
         )
 
         self._logged_negotiation_stub = False  # to avoid spamming logs with the stub message
@@ -258,6 +278,10 @@ class PeerCoordinatorNode(Node):
         )
         self.get_logger().info(
             f"Publishing own PeerState on {self.own_peer_state_topic}"
+        )
+        self.get_logger().info(
+            f"Publishing blocked frontiers on {self.own_blocked_frontiers_topic} "
+            f"at {self.blocked_frontiers_rate_hz:.2f} Hz"
         )
         self.get_logger().info(
             f"Subscribed peer PeerState topics: {self.peer_state_topics}"
@@ -351,6 +375,29 @@ class PeerCoordinatorNode(Node):
         msg.protocol_version = PROTOCOL_VERSION
 
         self.peer_state_pub.publish(msg)
+
+    # Function for publishing blocked frontiers
+    def _publish_blocked_frontiers(self) -> None:
+        """Publish peer-claimed frontier positions for the local planner to avoid."""
+        self._expire_stale_claims()
+
+        msg = PoseArray()
+        msg.header = self._make_header()
+
+        for claims in self.peer_claims.values():
+            for claim in claims:
+                pose = Pose()
+                pose.position.x = float(claim.position.x)
+                pose.position.y = float(claim.position.y)
+                pose.position.z = float(claim.position.z)
+                pose.orientation.w = 1.0  # identity orientation; we only care about position
+                msg.poses.append(pose)
+
+        self.blocked_frontiers_pub.publish(msg)
+
+        self.get_logger().debug(
+            f"Published {len(msg.poses)} blocked frontier(s)"
+        )
 
     # Function for receiving PeerState messages from peers
     def _peer_state_received(self, msg: PeerState, peer_id: str) -> None:
