@@ -403,7 +403,12 @@ private:
             const float first_free_z = z_min + (static_cast<float>(first_k) + 0.5f) * vs;
             if (first_free_z <= free_surface_max_start_z &&
                 run_voxels >= free_surface_min_run_voxels) {
-              H[idx] = std::max(z_min, first_free_z - vs);
+              // Do NOT set H[idx] here. Leaving H as NaN means the step/slope
+              // filter skips this cell (both for the cell itself and as a
+              // neighbour). Without this, fallback-inferred cells at H≈floor
+              // sit adjacent to real-hit ramp cells at H≈0.3-1 m, and the
+              // step filter sees |real_H - fallback_H| > step_max → lethal arc
+              // bands at every Livox scan-ring boundary on the ramp surface.
               cls[idx] = 0;
             }
           }
