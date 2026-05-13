@@ -20,7 +20,7 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -73,14 +73,17 @@ def generate_launch_description() -> LaunchDescription:
         }.items(),
     )
 
-    # nvblox_frontend mapper node — sibling to CFPA2, lives under the robot ns
-    # so its publish topics line up with the suffix-based subscribers in CFPA2.
+    # nvblox_frontend mapper node — delayed 5 s so any residual preflight
+    # activity from a previous session finishes before the mapper starts.
+    # respawn=True guards against SIGTERM from a concurrent preflight.
     mapper = Node(
         package="nvblox_frontend",
         executable="mapper_node",
         name="nvblox_frontend_mapper",
         namespace=LaunchConfiguration("robot_namespace"),
         output="screen",
+        respawn=True,
+        respawn_delay=3.0,
         parameters=[{
             # cloud_topic and odom_topic intentionally not set here.
             # The node's namespace (robot) prefixes relative defaults
@@ -114,6 +117,16 @@ def generate_launch_description() -> LaunchDescription:
             "publish_period_s": 1.0,
         }],
         output="screen",
+        respawn=True,
+        respawn_delay=3.0,
     )
 
-    return LaunchDescription([*args, base_launch, mapper, frontier_viz])
+    # Delay mapper + frontier viz by 5 s. The preflight kill script targets
+    # "mapper_node" by name; if a second launch attempt runs ≤5 s into the
+    # first, the mapper would be killed before MuJoCo even starts. A 5 s
+    # delay means the mapper starts after MuJoCo+SLAM are up and any
+    # concurrent preflight has already finished. respawn=True above gives a
+    # second layer of protection if it's still killed.
+    deferred = TimerAction(period=5.0, actions=[mapper, frontier_viz])
+
+    return LaunchDescription([*args, base_launch, deferred])
