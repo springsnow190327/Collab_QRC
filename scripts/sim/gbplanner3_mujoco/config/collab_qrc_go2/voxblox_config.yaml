@@ -1,31 +1,72 @@
 ### Voxblox TSDF + ESDF — Go2 / Mid-360 indoor + multi-floor
+# Aligned with NTNU UAS reference `robot_bringup/config/ros1/gbplanner/ugv_sim/voxblox_config.yaml`.
+#
+# 2026-05-13 fix: previous `max_ray_length_m: 8.0` starved voxblox of any
+# data beyond an 8 m sphere, which conflicted with gbplanner's 40 m
+# `BoundedSpaceParams.Local` cube — every sampled vertex outside the 8 m
+# observed region fell into unknown voxels and was rejected, so RRG plateaued
+# at "Formed a graph with [1] vertices and [0] edges with 2000+ loops" and
+# the planner never produced a /command/trajectory.
+#
+# Mid-360 has ~40 m raw range but is noisy outdoors; 20 m is a good indoor
+# balance and matches the NTNU UGV reference.
 
-# Match GBPlanner3's voxel-size factor convention
-occupancy_distance_voxelsize_factor: 1.0
+### PLANNING (GBPLANNER) RELATED ###
+occupancy_distance_voxelsize_factor: 1.0  # must match occupancy_min_distance_voxel_size_factor below
 
 world_frame: world
 use_tf_transforms: True
-use_freespace_pointcloud: True
+# 2026-05-13 Fix 1b: nobody publishes /freespace_pointcloud on Collab_QRC.
+# NTNU's UAS ref keeps this True because their UGV bringup runs a separate
+# freespace publisher. With no source, voxblox silently drops a chunk of
+# its integration pipeline waiting on it.
+use_freespace_pointcloud: False  # was True (NTNU UGV ref)
 
-# Mid-360 noise is higher than Ouster; bigger voxels = more robust TSDF integration
 tsdf_voxels_per_side: 16
-tsdf_voxel_size: 0.15
-max_ray_length_m: 8.0
-min_ray_length_m: 0.5
-truncation_distance: 0.4
-
+tsdf_voxel_size: 0.20            # NTNU ref default; coarser than 0.15 = more robust under Mid-360 noise
+max_ray_length_m: 20             # was 8.0 — starved voxblox vs 40 m local bound
+# 2026-05-13 Fix 1a: Fast-LIO's /cloud_registered_body is in `body` frame,
+# whose origin is the IMU (≈ 20 cm BEHIND the Mid-360 sensor). With 0.5 m,
+# every point that's actually 0.6 m from the sensor reads as 0.4 m from
+# body and gets clipped. 0.1 m keeps the close-range floor + walls.
+min_ray_length_m: 0.1            # was 0.5
+truncation_distance: 0.6         # NTNU ref default (was 0.4 — too thin given 0.20 voxels)
 voxel_carving_enabled: True
 color_mode: "color"
-verbose: False
+verbose: True                    # 2026-05-13 diag: trace why TSDF stays empty
 
 update_mesh_every_n_sec: 1.0
 
 mesh_min_weight: 1e-4
-slice_level: 0.5
+slice_level: 1.0                 # match NTNU ref
 method: "fast"
 integration_order_mode: "sorted"
 max_consecutive_ray_collisions: 0
 publish_slices: False
 publish_pointclouds: True
+allow_clear: True                # NTNU ref
+pointcloud_queue_size: 5         # NTNU ref
+min_time_between_msgs_sec: 0.0
+publish_tsdf_info: False
+publish_traversable: False
+traversability_radius: 0.4
+enable_icp: False
+icp_refine_roll_pitch: False
+accumulate_icp_corrections: False
+timestamp_tolerance_sec: 0.001
 publish_tsdf_map: True
+
+### ESDF ###
+esdf_max_distance_m: 3.0
+clear_sphere_for_planning: False
+clear_sphere_radius: 0.8
 publish_esdf_map: True
+
+### OVERLAP BETWEEN VERSIONS ###
+use_const_weight: True
+use_weight_dropoff: True
+
+### NEW SETTINGS FOR feature/new_abort_criterion_for_fast_integrator ###
+max_weight: 20
+clearing_ray_weight_factor: 0.1
+occupancy_min_distance_voxel_size_factor: 1.0

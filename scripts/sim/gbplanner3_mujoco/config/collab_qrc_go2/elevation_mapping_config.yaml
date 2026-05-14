@@ -16,6 +16,11 @@ input_sources:
     queue_size: 1
     publish_on_update: true
     sensor_processor:
+      # 2026-05-13: tried `laser` with reasonable Mid-360 beam params, made
+      # zero difference — gbplanner still spammed "No 'elevation' layer in
+      # map" at multi-kHz and never produced /command/trajectory. Reverted
+      # to `perfect` to match NTNU UGV ref. The actual blockers are below
+      # (loosened variance gates) + voxblox-side min_ray_length_m fix.
       type: perfect
 
 map_frame_id: "world"
@@ -35,9 +40,15 @@ position_x: 0.0
 position_y: 0.0
 resolution: 0.15      # match voxblox_config.yaml tsdf_voxel_size
 
-min_variance: 0.0001
+# 2026-05-13 Fix 2: with no /pose_with_covariance source, robot pose
+# covariance is read as zero → PerfectSensorProcessor returns near-zero
+# per-point variance → most points get clamped to min_variance and the
+# Kalman update is degenerate. Loosen the gates so the Mid-360 cloud
+# actually accumulates onto the map. The new bounds are still tight
+# enough for an indoor sim.
+min_variance: 1.0e-5             # was 0.0001
 max_variance: 0.05
-mahalanobis_distance_threshold: 2.5
+mahalanobis_distance_threshold: 5.0   # was 2.5 — loosen rejection of new measurements
 multi_height_noise: 0.01
 surface_normal_positive_axis: z
 enable_visibility_cleanup: false
