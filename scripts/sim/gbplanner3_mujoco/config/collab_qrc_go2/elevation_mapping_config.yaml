@@ -1,0 +1,58 @@
+### Elevation mapping config — Go2 + Mid-360 on Collab_QRC MuJoCo
+# gbplanner3 v3 with type=kGroundRobot requires this layer to determine
+# traversability. Without it, the planner repeatedly logs
+# "No 'elevation' layer in map." and never produces commands — this in
+# turn fills docker json.log at multi-kHz until the container OOMs.
+#
+# Input topic: /rmf/lidar/points_downsampled — same source gbplanner
+# uses (via the topic_tools relay added in eff1a87: dynamic_bridge brings
+# /robot/cloud_registered_body from Humble Fast-LIO into Noetic, then
+# the relay renames to /rmf/lidar/points_downsampled so default
+# robot_name=rmf in gbplanner_sim.launch picks it up).
+input_sources:
+  livox:
+    type: pointcloud
+    topic: /rmf/lidar/points_downsampled
+    queue_size: 1
+    publish_on_update: true
+    sensor_processor:
+      # 2026-05-13: tried `laser` with reasonable Mid-360 beam params, made
+      # zero difference — gbplanner still spammed "No 'elevation' layer in
+      # map" at multi-kHz and never produced /command/trajectory. Reverted
+      # to `perfect` to match NTNU UGV ref. The actual blockers are below
+      # (loosened variance gates) + voxblox-side min_ray_length_m fix.
+      type: perfect
+
+map_frame_id: "world"
+robot_base_frame_id: "base_link"      # Collab_QRC convention (not "smb_arl/base_link")
+robot_pose_with_covariance_topic: ""
+robot_pose_cache_size: 200
+track_point_frame_id: "base_link"
+track_point_x: 0.0
+track_point_y: 0.0
+track_point_z: 0.0
+
+# Demo3 area is 24×16 m; size the elevation map slightly bigger to give
+# gbplanner some look-ahead margin.
+length_in_x: 30.0
+length_in_y: 20.0
+position_x: 0.0
+position_y: 0.0
+resolution: 0.15      # match voxblox_config.yaml tsdf_voxel_size
+
+# 2026-05-13 Fix 2: with no /pose_with_covariance source, robot pose
+# covariance is read as zero → PerfectSensorProcessor returns near-zero
+# per-point variance → most points get clamped to min_variance and the
+# Kalman update is degenerate. Loosen the gates so the Mid-360 cloud
+# actually accumulates onto the map. The new bounds are still tight
+# enough for an indoor sim.
+min_variance: 1.0e-5             # was 0.0001
+max_variance: 0.05
+mahalanobis_distance_threshold: 5.0   # was 2.5 — loosen rejection of new measurements
+multi_height_noise: 0.01
+surface_normal_positive_axis: z
+enable_visibility_cleanup: false
+visibility_cleanup_rate: 1.0
+scanning_duration: 1.0
+
+target_frame_init_submap: world
