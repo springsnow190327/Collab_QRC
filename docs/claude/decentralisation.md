@@ -248,6 +248,66 @@ Waiting for map topic from: robot_b
 
 So this test proves the blocked-frontier communication + filter logic, not full goal publication yet.
 
+## Negotiation Protocol Notes
+### State machines
+The protocol uses two independent state machines per peer per direction:
+- REQUESTER (IDLE / REQUESTING) — drives outgoing proposals
+- RESPONDER (mostly stateless, with one timing field for anti-conflict) —
+  evaluates incoming proposals
+
+A robot can be REQUESTING to peer X while RESPONDING to peer X
+(due to crossed in-flight requests) without conflict.
+
+### Anti-conflict
+Layered RACER-style anti-conflict (Algorithm 2 lines 18-21):
+1. If currently REQUESTING to the same peer, the request crossed in flight.
+   Reject deterministically; both robots back off and serialise via cooldown.
+2. General epsilon-att check on `last_interaction_attempt_stamp`: if I just
+   tried any interaction (with anyone), reject incoming requests within
+   epsilon-att window.
+
+### Commit ordering and atomicity
+Responder sends accept *before* committing locally. This avoids the case
+where the responder commits but the response is lost in flight, leaving
+the requester ignorant of a commitment that exists on the peer side.
+
+Even with this ordering, the protocol is eventually consistent under
+message loss rather than strictly atomic. Recovery mechanisms:
+- Claim timeout (`claim_timeout_sec`) drops stale commitments
+- Peer staleness (`peer_timeout_sec`) drops all claims from disappeared peers
+- Heartbeat-based reconciliation lets diverging views re-align
+
+This is acceptable for the comms-cut survival demo, which is the explicit
+success criterion (supervisor decision Q3, 08/05/2026). Stricter atomicity
+(two-phase commit, consensus) is out of scope.
+
+### Validation by re-solving
+Responder validates a proposal by re-solving the MDVRP locally with the
+same inputs and comparing to the proposed allocation via set equality
+with FRONTIER_MATCH_TOLERANCE-tolerant matching. This works because
+MDVRP solver determinism is tested
+(see test_determinism_under_shuffled_inputs).
+
+If the comparison fails, the responder rejects and lets state refresh
+(heartbeats, frontier updates) before the next retry. Counter-proposals
+are out of scope.
+
+### Tunables (defaults)
+- request_timeout_sec: 2.0  (matches negotiation_cooldown_sec)
+- epsilon_att: 2.0  (matches negotiation_cooldown_sec for simplicity)
+- backoff after reject: exponential, capped (TBD)
+- backoff after timeout: shorter than reject (treats as comms issue)
+
+### Logs
+- Chunk A - DONE 14/05/2026
+``` bash
+ems@headgoboom:~/Collab_QRC$ $ ros2 topilist | grep negotiation
+/robot_a/cfpa2_peer_coordination/inbox/negotiation_request
+/robot_a/cfpa2_peer_coordination/inbox/negotiation_response
+/robot_b/cfpa2_peer_coordination/inbox/negotiation_request
+/robot_b/cfpa2_peer_coordination/inbox/negotiation_response
+```
+
 ## Status
 - [X] Verify centralisation in cfpa2_coordinator_node.py
 - [X] Audit map_merge_utils.py for centralised assumptions
@@ -258,12 +318,16 @@ So this test proves the blocked-frontier communication + filter logic, not full 
 - [X] Log peer-stale events
 - [X] Bonus: real-pose ingestion from `/odom/nav`
 - [ ] Pairwise frontier negotiation (request/response protocol)
+  - [X] Chunk A: request/response inbox wiring
+  - [ ] Chunk B: requester state machine
+  - [ ] Chunk C: responder validation + accept/reject
+  - [ ] Chunk D: replace interim MDVRP auto-claim path
 - [X] Claim management: storage, expiry, and peer-claim blocking implemented/tested
 - [X] Frontier management: local frontier ingestion from CFPA2 MarkerArray and peer-claim filtering implemented
 - [X] MDVRP-generated own-claim proposal
 - [X] Claim conflict resolution rule implemented/tested
 - [X] Frontier filter output (so single_robot_node respects claims)
-- [ ] Peer map subscriber + overlay_map fusion
+- [ ] Peer map subscriber + overlay_map fusion - being implemented by Haichen 13/05/2026.  My work will integrate with his merged-map interface once topic name, message type and freshness semantics are confirmed.
 - [ ] Integration with existing single_robot_node
 - [ ] Comms-cut survival demo
 
