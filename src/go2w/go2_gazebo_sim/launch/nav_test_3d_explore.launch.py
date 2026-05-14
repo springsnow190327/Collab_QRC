@@ -20,9 +20,10 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
+from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription, TimerAction
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
 
@@ -33,6 +34,16 @@ def generate_launch_description() -> LaunchDescription:
     ws_root = os.path.realpath(os.path.join(here, "..", "..", "..", ".."))
     default_scene = os.path.join(
         ws_root, "src", "go2w", "go2_gazebo_sim", "mujoco", "demo_ramp.xml")
+
+    # Config paths for the new trav pipeline (Phase 4–5).
+    elevation_cupy_share = get_package_share_directory("elevation_mapping_cupy")
+    trav_share = get_package_share_directory("trav_cost_filters")
+    emap_core_params = os.path.join(
+        elevation_cupy_share, "config", "core", "core_param.yaml")
+    emap_setup_params = os.path.join(
+        trav_share, "config", "elevation_mapping.yaml")
+    filter_chain_params = os.path.join(
+        trav_share, "config", "grid_map_filters.yaml")
 
     args = [
         DeclareLaunchArgument("mujoco_model_path", default_value=default_scene),
@@ -132,6 +143,74 @@ def generate_launch_description() -> LaunchDescription:
         respawn_delay=3.0,
     )
 
+    # ---- Traversability pipeline (nav_costmap_mode:=3d only) ---------------
+    # elevation_mapping_cupy → filter_chain_runner → grid_map_to_occupancy_grid
+    # All three are delayed 6 s (1 s after the nvblox mapper) so SLAM + MuJoCo
+    # are ready and no concurrent preflight kills the mapper before it starts.
+    is_3d = IfCondition(
+        PythonExpression(["'", LaunchConfiguration("nav_costmap_mode"), "' == '3d'"])
+    )
+
+    # 1. elevation_mapping_cupy: Kalman-fused height map on GPU.
+    #    Publishes /elevation_map/elevation_map_raw → remapped to
+    #    /<ns>/elevation_map_raw so the filter chain picks it up.
+    #    TF is read from /<ns>/tf + /<ns>/tf_static (namespaced per CLAUDE.md rule 4).
+    elevation_mapping = Node(
+        package="elevation_mapping_cupy",
+        executable="elevation_mapping_node.py",
+        name="elevation_mapping",
+        namespace=LaunchConfiguration("robot_namespace"),
+        output="screen",
+        respawn=True,
+        respawn_delay=3.0,
+        parameters=[emap_core_params, emap_setup_params,
+                    {"use_sim_time": LaunchConfiguration("use_sim_time")}],
+        remappings=[
+            # Upstream hardcodes publish path as /<node_name>/<pub_key>.
+            ("/elevation_map/elevation_map_raw",
+             ["/", LaunchConfiguration("robot_namespace"), "/elevation_map_raw"]),
+            # Namespace the TF streams (CLAUDE.md golden rule #4 + #10).
+            ("/tf",        ["/", LaunchConfiguration("robot_namespace"), "/tf"]),
+            ("/tf_static", ["/", LaunchConfiguration("robot_namespace"), "/tf_static"]),
+        ],
+        condition=is_3d,
+    )
+
+    # 2. filter_chain_runner: 10-stage grid_map_filters chain.
+    #    elevation_map_raw (3 layers) → elevation_map_filtered (12 layers).
+    filter_runner = Node(
+        package="trav_cost_filters",
+        executable="filter_chain_runner",
+        name="filter_chain_runner",
+        namespace=LaunchConfiguration("robot_namespace"),
+        output="screen",
+        respawn=True,
+        respawn_delay=3.0,
+        parameters=[filter_chain_params,
+                    {"use_sim_time": LaunchConfiguration("use_sim_time")}],
+        condition=is_3d,
+    )
+
+    # 3. grid_map_to_occupancy_grid: traversability layer → OccupancyGrid.
+    #    Output /<ns>/traversability_grid consumed by Nav2 StaticLayer costmap.
+    occ_adapter = Node(
+        package="trav_cost_filters",
+        executable="grid_map_to_occupancy_grid",
+        name="grid_map_to_occupancy_grid",
+        namespace=LaunchConfiguration("robot_namespace"),
+        output="screen",
+        respawn=True,
+        respawn_delay=3.0,
+        parameters=[{
+            "use_sim_time":    LaunchConfiguration("use_sim_time"),
+            "input_topic":     "elevation_map_filtered",
+            "output_topic":    "traversability_grid",
+            "free_threshold":  0.7,
+            "lethal_threshold": 0.3,
+        }],
+        condition=is_3d,
+    )
+
     # Delay mapper + frontier viz by 5 s. The preflight kill script targets
     # "mapper_node" by name; if a second launch attempt runs ≤5 s into the
     # first, the mapper would be killed before MuJoCo even starts. A 5 s
@@ -139,5 +218,7 @@ def generate_launch_description() -> LaunchDescription:
     # concurrent preflight has already finished. respawn=True above gives a
     # second layer of protection if it's still killed.
     deferred = TimerAction(period=5.0, actions=[mapper, frontier_viz])
+    # Trav pipeline nodes start 1 s after the nvblox mapper.
+    deferred_trav = TimerAction(period=6.0, actions=[elevation_mapping, filter_runner, occ_adapter])
 
-    return LaunchDescription([*args, base_launch, deferred])
+    return LaunchDescription([*args, base_launch, deferred, deferred_trav])
