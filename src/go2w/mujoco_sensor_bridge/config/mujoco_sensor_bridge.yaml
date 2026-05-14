@@ -6,8 +6,14 @@ mujoco_lidar_node:
     lidar_offset_x: 0.16143
     lidar_offset_y: 0.0
     lidar_offset_z: 0.12262
+    # 16 vertical samples × 59° V-FOV = 3.7° per slice. At 1 m distance that
+    # leaves ~6.5 cm vertical voxel gaps on walls → nvblox shows walls only
+    # 1-3 voxels tall. Real Mid-360 emits ~24 k pts/scan via dual-prism
+    # non-repetitive pattern; the closest faithful sim approximation is dense
+    # vertical sampling. 96 × 720 = 69 120 rays at 10 Hz = 691 k rays/sec —
+    # well within mj_multiRay capacity, gives ~0.6° vertical resolution.
     hz_samples: 720
-    vt_samples: 16
+    vt_samples: 96
     h_fov_deg: 360.0
     v_min_deg: -7.0
     v_max_deg: 52.0

@@ -152,8 +152,8 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     # 1. elevation_mapping_cupy: Kalman-fused height map on GPU.
-    #    Publishes /elevation_map/elevation_map_raw → remapped to
-    #    /<ns>/elevation_map_raw so the filter chain picks it up.
+    #    Publishes /<node_name>/elevation_map_raw = /elevation_mapping/elevation_map_raw
+    #    → remapped to /<ns>/elevation_map_raw so the filter chain picks it up.
     #    TF is read from /<ns>/tf + /<ns>/tf_static (namespaced per CLAUDE.md rule 4).
     elevation_mapping = Node(
         package="elevation_mapping_cupy",
@@ -166,8 +166,9 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[emap_core_params, emap_setup_params,
                     {"use_sim_time": LaunchConfiguration("use_sim_time")}],
         remappings=[
-            # Upstream hardcodes publish path as /<node_name>/<pub_key>.
-            ("/elevation_map/elevation_map_raw",
+            # elevation_mapping_cupy hardcodes topic as f"/{self.get_name()}/{pub_key}".
+            # With name="elevation_mapping" that is /elevation_mapping/elevation_map_raw.
+            ("/elevation_mapping/elevation_map_raw",
              ["/", LaunchConfiguration("robot_namespace"), "/elevation_map_raw"]),
             # Namespace the TF streams (CLAUDE.md golden rule #4 + #10).
             ("/tf",        ["/", LaunchConfiguration("robot_namespace"), "/tf"]),
@@ -211,6 +212,31 @@ def generate_launch_description() -> LaunchDescription:
         condition=is_3d,
     )
 
+    # Static identity: base_link → body
+    # Fast-LIO hardcodes cloud_registered_body.header.frame_id = "body"
+    # (laserMapping.cpp:564). elevation_mapping_cupy looks up map→body to
+    # transform each cloud into the map frame. Our TF tree only has
+    # map→odom→base_link; "body" is absent. fast_lio_tf_adapter already
+    # treats body ≡ base_link (it republishes the odom→body pose as
+    # odom→base_link) but never publishes the explicit link.
+    # Adding base_link→body identity closes map→odom→base_link→body so
+    # safe_lookup_transform(map, body) succeeds and terrain data is integrated.
+    body_tf = Node(
+        package="tf2_ros",
+        executable="static_transform_publisher",
+        name="base_link_to_body_tf",
+        namespace=LaunchConfiguration("robot_namespace"),
+        arguments=[
+            "--frame-id", "base_link",
+            "--child-frame-id", "body",
+            "--x", "0", "--y", "0", "--z", "0",
+            "--qx", "0", "--qy", "0", "--qz", "0", "--qw", "1",
+        ],
+        remappings=[("/tf_static", ["/", LaunchConfiguration("robot_namespace"), "/tf_static"])],
+        parameters=[{"use_sim_time": LaunchConfiguration("use_sim_time")}],
+        condition=is_3d,
+    )
+
     # Delay mapper + frontier viz by 5 s. The preflight kill script targets
     # "mapper_node" by name; if a second launch attempt runs ≤5 s into the
     # first, the mapper would be killed before MuJoCo even starts. A 5 s
@@ -221,4 +247,4 @@ def generate_launch_description() -> LaunchDescription:
     # Trav pipeline nodes start 1 s after the nvblox mapper.
     deferred_trav = TimerAction(period=6.0, actions=[elevation_mapping, filter_runner, occ_adapter])
 
-    return LaunchDescription([*args, base_launch, deferred, deferred_trav])
+    return LaunchDescription([*args, base_launch, body_tf, deferred, deferred_trav])

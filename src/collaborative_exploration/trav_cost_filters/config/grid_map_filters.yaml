@@ -99,30 +99,36 @@
           output_layer: step_cost
           expression: step_height / 0.20
 
-      # 8. traversability: multiplicative model — product of (1 - cost_i) for
-      #    the three soft costs. Any cost=1 → traversability=0. ThresholdFilters
+      # 8. trav_eth: multiplicative model — product of (1 - cost_i) for
+      #    the three soft costs. Any cost=1 → trav_eth=0. ThresholdFilters
       #    below clamp to [0,1] for costs that exceed 1.0.
-      #    EigenLab does not support max(scalar, matrix); use product instead.
+      #    NOTE: named trav_eth (not traversability) to avoid aliasing with the
+      #    pre-existing all-NaN "traversability" layer from elevation_mapping_cupy.
+      #    MathExpressionFilter::update() setShared()s all existing layers;
+      #    writing back to the same name aliases the shared pointer → all NaN.
+      #    CRITICAL: use .* (MATLAB element-wise product) not * (matrix multiply).
+      #    EigenLab follows MATLAB semantics: A*B = matrix mul → all-NaN for
+      #    sparse grids; A.*B = element-wise → correct per-cell traversability.
       filter8:
-        name: traversability
+        name: trav_eth
         type: gridMapFilters/MathExpressionFilter
         params:
-          output_layer: traversability
-          expression: (1.0 - slope_cost) * (1.0 - roughness_cost) * (1.0 - step_cost)
+          output_layer: trav_eth
+          expression: (1.0 - slope_cost) .* (1.0 - roughness_cost) .* (1.0 - step_cost)
 
       # 9. Final clamp safety net.
       filter9:
-        name: traversability_clamp_lo
+        name: trav_eth_clamp_lo
         type: gridMapFilters/ThresholdFilter
         params:
-          layer: traversability
+          layer: trav_eth
           lower_threshold: 0.0
           set_to: 0.0
 
       filter10:
-        name: traversability_clamp_hi
+        name: trav_eth_clamp_hi
         type: gridMapFilters/ThresholdFilter
         params:
-          layer: traversability
+          layer: trav_eth
           upper_threshold: 1.0
           set_to: 1.0

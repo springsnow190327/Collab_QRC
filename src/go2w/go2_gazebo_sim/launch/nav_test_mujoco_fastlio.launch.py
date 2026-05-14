@@ -246,64 +246,67 @@ def _launch_setup(context):
 
     slam_delay = 10.0
 
-    # Octomap for /robot/map — runs for ALL nav backends (not just astar).
-    # Fast-LIO has no occupancy grid; this generates one from the 3D scan.
-    actions.append(
-        TimerAction(
-            period=slam_delay,
-            actions=[
-                Node(
-                    package="octomap_server",
-                    executable="octomap_server_node",
-                    namespace=robot_ns,
-                    name="octomap_map_gen",
-                    parameters=[{
-                        "use_sim_time": use_sim_time,
-                        "resolution": 0.05,
-                        "frame_id": "map",
-                        "base_frame_id": "base_link",
-                        "sensor_model.max_range": 8.0,
-                        "sensor_model.hit": 0.8,
-                        "sensor_model.miss": 0.35,
-                        "sensor_model.min": 0.12,
-                        "sensor_model.max": 0.97,
-                        # Ground-return rejection: MID-360 at z≈0.57 m on Go2W
-                        # (safe margin), z≈0.39 m on Go2 (tight). Rays at the
-                        # lower vertical edge sweep ground, so the z-band
-                        # filter is the last line of defense. Values are in
-                        # the global (map) frame after TF. Walls go up to
-                        # z=1.0; the upper max gives ceiling headroom.
-                        "point_cloud_min_z": octo_point_cloud_min_z,
-                        "point_cloud_max_z": 1.10,
-                        "occupancy_min_z": octo_occupancy_min_z,
-                        "occupancy_max_z": 1.00,
-                        # filter_ground_plane runs RANSAC to find a ground
-                        # plane. On Go2W it works — wheel-ground contact gives
-                        # a clean flat plane. On pure Go2 with spherical feet
-                        # the ground signature is sparser (only 4 point
-                        # contacts vs 4 wheel disks), RANSAC fails every frame
-                        # ("No ground plane found") and the projected map
-                        # never updates → FAR sees stale map → robot STUCK.
-                        # The z-band filter above already excludes the ground.
-                        "filter_ground_plane": False,
-                        # filter_speckles removes isolated single-voxel
-                        # occupied cells — cheap speckle suppression for
-                        # jitter-scattered ground hits that do slip above the
-                        # z-filter under fast yaw dynamics on Go2.
-                        "filter_speckles": True,
-                        "compress_map": True,
-                        "latch": True,
-                        "publish_free_space": False,
-                    }],
-                    remappings=[
-                        ("cloud_in", f"/{robot_ns}/registered_scan_reliable"),
-                        ("projected_map", f"/{robot_ns}/map"),
-                    ] + tf_remaps,
-                    output="screen",
-                ),
-            ],
+    # Octomap for /robot/map. Gated: only when nav_costmap_mode != "3d".
+    # In 3D mode the nvblox_frontend mapper publishes /robot/traversability_grid
+    # which Nav2 costmaps + CFPA2 consume directly, so octomap's 2D projection
+    # is unused (~half a core of saved CPU + clutter-free RViz).
+    if nav_costmap_mode != "3d":
+        actions.append(
+            TimerAction(
+                period=slam_delay,
+                actions=[
+                    Node(
+                        package="octomap_server",
+                        executable="octomap_server_node",
+                        namespace=robot_ns,
+                        name="octomap_map_gen",
+                        parameters=[{
+                            "use_sim_time": use_sim_time,
+                            "resolution": 0.05,
+                            "frame_id": "map",
+                            "base_frame_id": "base_link",
+                            "sensor_model.max_range": 8.0,
+                            "sensor_model.hit": 0.8,
+                            "sensor_model.miss": 0.35,
+                            "sensor_model.min": 0.12,
+                            "sensor_model.max": 0.97,
+                            # Ground-return rejection: MID-360 at z≈0.57 m on Go2W
+                            # (safe margin), z≈0.39 m on Go2 (tight). Rays at the
+                            # lower vertical edge sweep ground, so the z-band
+                            # filter is the last line of defense. Values are in
+                            # the global (map) frame after TF. Walls go up to
+                            # z=1.0; the upper max gives ceiling headroom.
+                            "point_cloud_min_z": octo_point_cloud_min_z,
+                            "point_cloud_max_z": 1.10,
+                            "occupancy_min_z": octo_occupancy_min_z,
+                            "occupancy_max_z": 1.00,
+                            # filter_ground_plane runs RANSAC to find a ground
+                            # plane. On Go2W it works — wheel-ground contact gives
+                            # a clean flat plane. On pure Go2 with spherical feet
+                            # the ground signature is sparser (only 4 point
+                            # contacts vs 4 wheel disks), RANSAC fails every frame
+                            # ("No ground plane found") and the projected map
+                            # never updates → FAR sees stale map → robot STUCK.
+                            # The z-band filter above already excludes the ground.
+                            "filter_ground_plane": False,
+                            # filter_speckles removes isolated single-voxel
+                            # occupied cells — cheap speckle suppression for
+                            # jitter-scattered ground hits that do slip above the
+                            # z-filter under fast yaw dynamics on Go2.
+                            "filter_speckles": True,
+                            "compress_map": True,
+                            "latch": True,
+                            "publish_free_space": False,
+                        }],
+                        remappings=[
+                            ("cloud_in", f"/{robot_ns}/registered_scan_reliable"),
+                            ("projected_map", f"/{robot_ns}/map"),
+                        ] + tf_remaps,
+                        output="screen",
+                    ),
+                ],
+            )
         )
-    )
 
     # SC-PGO: Scan Context Pose Graph Optimization — adds loop closure
     # on top of Fast-LIO2. When the robot revisits an area, SC-PGO

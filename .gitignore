@@ -142,6 +142,11 @@ imu_calib_data.yaml*
 /src/cfpa2-rh-physics-exploration/
 
 # =============================================
+# Personal Obsidian vault / coursework notes (never commit)
+# =============================================
+/COMP0225/
+
+# =============================================
 # TTS cache
 # =============================================
 /tts_cache/

@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Convert traversability layer of a GridMap to OccupancyGrid for Nav2.
 
-Subscribes to a filtered GridMap topic (expects a 'traversability' layer
+Subscribes to a filtered GridMap topic (expects a 'trav_eth' layer
 in [0, 1], where 1 = fully traversable, 0 = blocked).
+Layer name is 'trav_eth' (not 'traversability') to avoid aliasing with the
+pre-existing all-NaN traversability layer from elevation_mapping_cupy.
 
 Publishes OccupancyGrid in Nav2 cost convention:
   0   = free  (trav >= free_threshold)
@@ -17,7 +19,7 @@ import numpy as np
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
+from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
 
 from grid_map_msgs.msg import GridMap
 from nav_msgs.msg import OccupancyGrid
@@ -34,22 +36,30 @@ class GridMapToOccupancyGrid(Node):
             "output_topic", "traversability_grid"
         ).value
         self.traversability_layer = self.declare_parameter(
-            "traversability_layer", "traversability"
+            "traversability_layer", "trav_eth"
         ).value
         # trav >= free_threshold → cost 0 (free)
         self.free_threshold = self.declare_parameter("free_threshold", 0.7).value
         # trav < lethal_threshold → cost 100 (lethal)
         self.lethal_threshold = self.declare_parameter("lethal_threshold", 0.3).value
 
-        qos = QoSProfile(
+        # Publisher uses TRANSIENT_LOCAL so late subscribers (diag tools, RViz,
+        # CFPA2 BFS) receive the last grid immediately on connection.
+        pub_qos = QoSProfile(
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
+        sub_qos = QoSProfile(
             reliability=QoSReliabilityPolicy.RELIABLE,
             history=QoSHistoryPolicy.KEEP_LAST,
             depth=1,
         )
 
-        self.pub = self.create_publisher(OccupancyGrid, self.output_topic, qos)
+        self.pub = self.create_publisher(OccupancyGrid, self.output_topic, pub_qos)
         self.sub = self.create_subscription(
-            GridMap, self.input_topic, self._on_map, qos
+            GridMap, self.input_topic, self._on_map, sub_qos
         )
 
         self.get_logger().info(
