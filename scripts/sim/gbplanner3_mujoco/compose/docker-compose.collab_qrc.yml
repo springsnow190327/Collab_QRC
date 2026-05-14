@@ -22,6 +22,17 @@ x-system-template: &system-template
   restart: "no"
   stdin_open: true
   tty: true
+  # Cap each container's json.log at 20 MB × 3 rotations = 60 MB max.
+  # gbplanner emits "No 'elevation' layer in map" at multi-kHz when
+  # elevation_mapping fails to produce the elevation layer (kGroundRobot
+  # gate), which previously filled the host's docker data-root (/home/docker
+  # ≈ 1.4 TB but shared with /home) and made the whole sim unrecoverable.
+  # See elevation_mapping_config.yaml header for the original failure note.
+  logging:
+    driver: json-file
+    options:
+      max-size: "20m"
+      max-file: "3"
   environment:
   - DISPLAY=${DISPLAY:-:0}
   - NVIDIA_VISIBLE_DEVICES=all
@@ -81,19 +92,37 @@ services:
       - ${UAS_REPO_ROOT}/workspaces/robot_bringup:/workspace/src/robot_bringup:rw
       - ${UAS_REPO_ROOT}/workspaces/ws_gbplanner:/workspace:rw
       - ${COLLAB_QRC_ROOT}/scripts/sim/gbplanner3_mujoco/config/collab_qrc_go2:/workspace/src/robot_bringup/config/ros1/gbplanner/collab_qrc_go2:ro
-    # Pre-step: Noetic-side relay /robot/tf → /tf and /robot/tf_static → /tf_static
-    # so gbplanner's default tf2 lookups work, WITHOUT touching Humble's
-    # namespaced /robot/tf (multi-robot ready — golden rule 10).
-    # Then run gbplanner with topic remaps matching Humble's native names
-    # (which dynamic_bridge passes through 1:1).
+    # Pre-step: Noetic-side relays + Noetic-native static TF re-publishers.
+    #
+    # KEY GOTCHA we hit on 2026-05-13: Humble publishes static TFs to
+    # /robot/tf_static with TRANSIENT_LOCAL/latched durability. dynamic_bridge
+    # (--bridge-all-topics) does NOT preserve latching — so by the time the
+    # Noetic-side relay/subscribers come up, the latched message has already
+    # been delivered to the bridge once and is gone. Result: Noetic /tf_static
+    # has ZERO publishers, the TF chain world→map→odom→base_link→imu→body
+    # breaks, elevation_mapping rejects every cloud (can't transform 'body'
+    # frame to 'world'), gbplanner spams "No 'elevation' layer in map." at
+    # multi-kHz until docker json.log fills /home.
+    #
+    # Fix: republish the static TFs INSIDE this container using the old
+    # ROS 1 `tf` package's static_transform_publisher (NOT tf2_ros's), which
+    # broadcasts to /tf at the requested period instead of latching once on
+    # /tf_static. The high-rate channel naturally rides the regular dynamic
+    # /tf bridge and reaches gbplanner/elevation_mapping reliably.
+    #
+    # The Humble-side static publishers (started by nav_test_gbplanner_demo3.sh)
+    # are still useful for the Humble half of the stack (Nav2, CHAMP) but no
+    # longer required for the Noetic half.
     command: >
       bash -c '
       source /opt/ros/noetic/setup.bash &&
       source /workspace/devel/setup.bash &&
+      rosparam set /use_sim_time true &&
       rosrun topic_tools relay /robot/tf /tf &
       rosrun topic_tools relay /robot/tf_static /tf_static &
       rosrun topic_tools relay /robot/Odometry /rmf/odom &
-      rosrun topic_tools relay /robot/cloud_registered_body /rmf/lidar/points_downsampled &
+      python3 /workspace/src/robot_bringup/config/ros1/gbplanner/collab_qrc_go2/cloud_stamp_rewriter.py &
+      python3 /workspace/src/robot_bringup/config/ros1/gbplanner/collab_qrc_go2/publish_static_tfs.py &
       roslaunch robot_bringup gbplanner_sim.launch config_name:=collab_qrc_go2 ele_map_enable:=true rviz_en:=true
       '
 

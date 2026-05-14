@@ -22,11 +22,13 @@
 set -u -o pipefail
 
 WS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 UAS_REPO_ROOT="${UAS_REPO_ROOT:-$HOME/Research/uas_deploy/unified_autonomy_stack}"
 COLLAB_QRC_ROOT="${COLLAB_QRC_ROOT:-$WS_DIR}"
 OVERLAY_COMPOSE="${COLLAB_QRC_ROOT}/scripts/sim/gbplanner3_mujoco/compose/docker-compose.collab_qrc.yml"
 SCENE="${WS_DIR}/src/go2w/go2_gazebo_sim/mujoco/demo3_go2_real.xml"
 SCENE_AREA_M2="${SCENE_AREA_M2:-384}"
+ADAPTER_PY="${WS_DIR}/scripts/sim/gbplanner3_mujoco/gbplanner_to_waypoint_adapter.py"
 
 # ===== Subcommands =====
 case "${1:-}" in
@@ -39,7 +41,8 @@ case "${1:-}" in
     pkill -f "static_transform_publisher.*base_to_lidar_alias_gbplanner" 2>/dev/null || true
     pkill -f "static_transform_publisher.*world_to_map_tf_gbplanner" 2>/dev/null || true
     pkill -f "topic_tools.relay.*tf" 2>/dev/null || true
-    source "$(dirname "${BASH_SOURCE[0]}")/_preflight_kill.sh"
+    pkill -f "gbplanner_to_waypoint_adapter" 2>/dev/null || true
+    source "${SCRIPT_DIR}/_preflight_kill.sh"
     exit 0
     ;;
   start_mission)
@@ -70,14 +73,20 @@ fi
 echo ""
 echo "==> [2/4] Start Docker stack (Noetic gbplanner3 + ros1_bridge)..."
 cd "$UAS_REPO_ROOT"
+# Compose 'logging:' anchor caps each container's json.log at 20 MB × 3, but
+# 'docker compose up' (driven by 'make launch') ALSO streams container stdout
+# to this host pipe — independent of the json.log cap. When elevation_mapping
+# fails and gbplanner_node spams "No 'elevation' layer in map" at multi-kHz,
+# the host log can balloon GBs in minutes and fill /. Filter the spam line out
+# at the pipe (grep --line-buffered) so the host stream stays bounded too.
 nohup env \
   UAS_REPO_ROOT="$UAS_REPO_ROOT" \
   COLLAB_QRC_ROOT="$COLLAB_QRC_ROOT" \
   DOMAIN_ID="${ROS_DOMAIN_ID:-0}" \
-  make launch DOCKER_COMPOSE_FILE="$OVERLAY_COMPOSE" \
+  bash -c "make launch DOCKER_COMPOSE_FILE='$OVERLAY_COMPOSE' 2>&1 | grep --line-buffered -v \"No 'elevation' layer in map\"" \
   > /tmp/gbplanner3_demo3_uas.log 2>&1 &
 disown
-echo "    UAS log: /tmp/gbplanner3_demo3_uas.log"
+echo "    UAS log: /tmp/gbplanner3_demo3_uas.log (spam filtered)"
 
 echo "==> Waiting up to 60s for gbplanner_node in Noetic..."
 for i in $(seq 1 60); do
@@ -147,6 +156,29 @@ echo "    static TF nodes started in background"
 # relay /robot/tf → /tf is launched INSIDE the gbplanner container (see
 # docker-compose.collab_qrc.yml) so gbplanner's default tf2 lookups work
 # without polluting Humble's global /tf.
+
+# ===== gbplanner → Nav2 waypoint adapter =====
+# gbplanner publishes /command/trajectory (world frame); the adapter picks
+# a lookahead point along it and publishes /robot/way_point_coord. The
+# already-running cfpa2_to_nav2_bridge translates that to /robot/goal_pose
+# for Nav2 (synthesizing yaw from current odom→goal). We disable the
+# adapter's direct goal_pose publisher to avoid a double-publisher race.
+if [[ -f "$ADAPTER_PY" ]]; then
+  nohup python3 "$ADAPTER_PY" --ros-args \
+    -p robot_namespace:=robot \
+    -p trajectory_topic:=/command/trajectory \
+    -p odometry_topic:=/robot/Odometry \
+    -p lookahead_distance:=2.0 \
+    -p republish_period_sec:=1.0 \
+    -p min_waypoint_separation:=0.5 \
+    -p publish_goal_pose:=false \
+    -p publish_way_point_coord:=true \
+    > /tmp/gbplanner3_waypoint_adapter.log 2>&1 &
+  disown
+  echo "    gbplanner_to_waypoint_adapter started (PID=$!, log=/tmp/gbplanner3_waypoint_adapter.log)"
+else
+  echo "    WARNING: $ADAPTER_PY not found — gbplanner output will not reach Nav2"
+fi
 
 # ===== Launch Collab_QRC nav stack with CFPA2 disabled =====
 # PREFLIGHT_KILL=0 disables nav_test_fastlio.sh's own preflight_kill (we
