@@ -1,0 +1,128 @@
+# grid_map_filters chain for trav_cost_filters::filter_chain_runner.
+#
+# Phase 4 of plans/2026-05-14-trav-grid-rewrite.md. Implements the ETH RSL
+# pipeline documented in docs/claude/eth_elevation_mapping_design.md "Stage B":
+#
+#   elevation  →  surface_normals (PCA)
+#              →  slope = acos(normal_z)
+#              →  roughness (RMS plane residual via window std)
+#              →  step_height = max - min in 3x3
+#              →  traversability ∈ [0, 1]  (min of three soft costs, clamped)
+#
+# Wall vs ramp discrimination is carried by `step_cost`, not slope (see the
+# design doc). A vertical wall has slope=π/2 AND step≫crit → veto. A 25°
+# ramp has slope=0.44 rad AND step≈one-cell rise → passes the step gate
+# and gets a soft slope cost of ~0.27.
+#
+# Node-name keying: must match the node name passed at launch.
+# `filter_chain_runner` (the default) lets us use this yaml unchanged.
+
+/**:
+  ros__parameters:
+
+    input_topic: "elevation_map_raw"
+    output_topic: "elevation_map_filtered"
+    filter_chain_param: "filters"
+
+    filters:
+
+      # 1. surface_normals via PCA over a circular window.
+      #    radius 0.25 m ≈ 5x5 cells at 0.10 m resolution. ETH default.
+      filter1:
+        name: surface_normals
+        type: gridMapFilters/NormalVectorsFilter
+        params:
+          algorithm: area
+          input_layer: elevation
+          output_layers_prefix: normal_vectors_
+          radius: 0.25
+          normal_vector_positive_axis: z
+
+      # 2. slope angle = acos(normal_z), in radians (0=flat, pi/2=vertical).
+      filter2:
+        name: slope
+        type: gridMapFilters/MathExpressionFilter
+        params:
+          output_layer: slope
+          expression: acos(normal_vectors_z)
+
+      # 3. slope_cost: linear ramp 0 -> 1 as slope goes 0 -> 30 deg (0.5236 rad).
+      #    > 30 deg is a non-traversable slope.
+      filter3:
+        name: slope_cost
+        type: gridMapFilters/MathExpressionFilter
+        params:
+          output_layer: slope_cost
+          expression: slope / 0.5236
+
+      # 4. roughness: std-dev of elevation in a 5-cell window (≈0.50 m diameter).
+      #    SlidingWindowMathExpressionFilter handles NaN holes via meanOfFinites.
+      filter4:
+        name: roughness
+        type: gridMapFilters/SlidingWindowMathExpressionFilter
+        params:
+          input_layer: elevation
+          output_layer: roughness
+          expression: sqrt(meanOfFinites(square(elevation - meanOfFinites(elevation))))
+          compute_empty_cells: false
+          edge_handling: crop
+          window_size: 5
+
+      # 5. roughness_cost: linear 0 -> 1 over 0 -> 0.05 m RMS. Critical val
+      #    chosen so a clean ramp (~0 m RMS) is 0 and rocky terrain saturates.
+      filter5:
+        name: roughness_cost
+        type: gridMapFilters/MathExpressionFilter
+        params:
+          output_layer: roughness_cost
+          expression: roughness / 0.05
+
+      # 6. step_height: max - min of elevation in a 3-cell window (~0.30 m).
+      #    Catches walls / cliffs that the slope filter would over-rate.
+      filter6:
+        name: step_height
+        type: gridMapFilters/SlidingWindowMathExpressionFilter
+        params:
+          input_layer: elevation
+          output_layer: step_height
+          expression: maxOfFinites(elevation) - minOfFinites(elevation)
+          compute_empty_cells: false
+          edge_handling: crop
+          window_size: 3
+
+      # 7. step_cost: linear 0 -> 1 over 0 -> 0.20 m local height diff.
+      #    Above 20 cm is a wall / cliff, hard-veto territory.
+      filter7:
+        name: step_cost
+        type: gridMapFilters/MathExpressionFilter
+        params:
+          output_layer: step_cost
+          expression: step_height / 0.20
+
+      # 8. traversability: multiplicative model — product of (1 - cost_i) for
+      #    the three soft costs. Any cost=1 → traversability=0. ThresholdFilters
+      #    below clamp to [0,1] for costs that exceed 1.0.
+      #    EigenLab does not support max(scalar, matrix); use product instead.
+      filter8:
+        name: traversability
+        type: gridMapFilters/MathExpressionFilter
+        params:
+          output_layer: traversability
+          expression: (1.0 - slope_cost) * (1.0 - roughness_cost) * (1.0 - step_cost)
+
+      # 9. Final clamp safety net.
+      filter9:
+        name: traversability_clamp_lo
+        type: gridMapFilters/ThresholdFilter
+        params:
+          layer: traversability
+          lower_threshold: 0.0
+          set_to: 0.0
+
+      filter10:
+        name: traversability_clamp_hi
+        type: gridMapFilters/ThresholdFilter
+        params:
+          layer: traversability
+          upper_threshold: 1.0
+          set_to: 1.0
