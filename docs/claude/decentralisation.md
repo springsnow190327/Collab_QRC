@@ -193,7 +193,7 @@ def _next_request_id(self) -> str:
 - (Stretch) Peer rejoin and resume
 
 ## Notes on  `peer_coordination_node.py`
-### PeerState Heartbeat Design
+### PeerState Heartbeat Design - DONE 08/05/2026
 
 PeerState messages are published using best-effort QoS with depth 1. This matches the semantics of heartbeat/state broadcasts: old messages become stale quickly, so the receiver only needs the most recent state.
 
@@ -205,7 +205,7 @@ PeerState topics use publisher-scoped namespacing:
 
 Each robot publishes under its own namespace and subscribes to the configured peer namespaces.
 
-### Claim and Frontier Management
+### Claim and Frontier Management - DONE 12/05/2026
 For the first integration, the peer coordinator ingests local frontier candidates from the existing CFPA2 frontier MarkerArray output. This avoids invasive changes to the existing planner while giving the decentralised layer access to the same frontier positions already used for visualisation. A future cleaner integration would expose frontier candidates through a dedicated typed topic rather than parsing visualisation markers.
 
 Implemented and manually tested the first claim-management layer for decentralised exploration.
@@ -235,8 +235,18 @@ This confirms that local frontier ingestion, peer claim storage, stale-claim exp
 
 Claim storage, peer-claim ingestion, claim expiry, frontier blocking, and deterministic conflict resolution have been implemented and tested. The deterministic rule uses earliest claim timestamp as the winner, with robot ID lexicographic ordering as a tie-break. Current testing uses interim MDVRP-generated own claims before the full request/response negotiation protocol is implemented.
 
-### Frontier Filter Output
+### Frontier Filter Output - 13/05/2026
+- Note: cfpa2_collaborative_autonomy is now in 3d rather than 2d
 peer coordinator claim → blocked_frontiers PoseArray → single_robot_node receives → _peer_has_claimed() returns True
+
+planner is still saying:
+
+```python
+Waiting for map topic from: robot_a
+Waiting for map topic from: robot_b
+```
+
+So this test proves the blocked-frontier communication + filter logic, not full goal publication yet.
 
 ## Status
 - [X] Verify centralisation in cfpa2_coordinator_node.py
