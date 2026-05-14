@@ -187,6 +187,9 @@ class CFPA2SingleRobotNode(CFPA2Coordinator):
                 )
             return False
 
+        # 2D matching is intentional: frontier_3d extraction returns volumes
+        # in 3D, but goals navigate to 2D ground positions. The peer protocol
+        # only carries 2D claim positions.
         gx, gy = goal
         for bx, by in self._peer_blocked_frontiers:
             if math.hypot(gx - bx, gy - by) <= _PEER_BLOCKED_MATCH_TOLERANCE:
