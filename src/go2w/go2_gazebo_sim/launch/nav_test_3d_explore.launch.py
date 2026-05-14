@@ -51,6 +51,14 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("nav_costmap_mode", default_value="3d",
             description="'3d': both costmaps use traversability_grid (nvblox). "
                         "'2d': default octomap /robot/map (baseline)."),
+        DeclareLaunchArgument(
+            "enable_legacy_2d_proj", default_value="false",
+            description="Re-enable mapper_node's legacy 2D traversability "
+                        "projection. Default false; the planned "
+                        "elevation_mapping_cupy + grid_map filter pipeline "
+                        "(docs/claude/plans/2026-05-14-trav-grid-rewrite.md) "
+                        "owns /<ns>/traversability_grid when this is false. "
+                        "Set true for A/B comparison or fallback."),
     ]
 
     # Reuse the full fastlio launch — it handles MuJoCo, Point-LIO/Fast-LIO,
@@ -93,13 +101,16 @@ def generate_launch_description() -> LaunchDescription:
             "world_frame":       "map",
             "voxel_size_m":      LaunchConfiguration("nvblox_voxel_size_m"),
             "publish_period_s":  0.5,
-            "trav_xy_extent_m":  20.0,
+            # 40m × 40m world-fixed grid: covers demo_ramp (24×16m) plus
+            # margin, so historical observations persist as the robot moves.
+            "trav_xy_extent_m":  40.0,
             "voxel_xy_extent_m": 20.0,
             "voxel_z_extent_m":  3.0,
             "voxel_z_origin_m":  -0.5,
             "slope_max_deg":     30.0,
             "step_max_m":        0.20,
             "robot_clearance_m": 0.50,
+            "enable_legacy_2d_proj": LaunchConfiguration("enable_legacy_2d_proj"),
         }],
     )
 
