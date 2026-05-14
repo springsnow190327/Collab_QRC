@@ -61,6 +61,9 @@ def extract_3d_frontiers(
     geodesic_voronoi: bool = False,
     free_value: int = 0,
     unknown_value: int = -1,
+    z_band_min_m: float = -0.2,
+    z_band_max_m: float = 1.5,
+    robot_xy: Optional[tuple[float, float]] = None,
 ) -> list[Frontier3DCluster]:
     """
     Args:
@@ -87,6 +90,25 @@ def extract_3d_frontiers(
 
     free    = (voxel_data == free_value)
     unknown = (voxel_data == unknown_value)
+
+    # ─── Z-band filter on UNKNOWN voxels ──────────────────────────────
+    # Without this, every air voxel above the ramp/platform / under the
+    # ceiling stays UNK forever (robot at ground can't probe air at
+    # z=2+), forming a giant persistent cluster that the planner keeps
+    # chasing. Restricting "valid UNK" to a band the robot can actually
+    # reach makes cluster volumes shrink monotonically as exploration
+    # progresses, restoring the "frontier consumed by motion" property
+    # that 2D frontiers have natively.
+    #
+    # Band defaults [-0.2, 1.5] m (configurable): covers from just
+    # below floor up to platform top + a small clearance. Air above
+    # gets ignored — it's not reachable nor actionable for a wheeled
+    # ground robot.
+    nz = voxel_data.shape[0]
+    oz = origin_xyz[2]
+    z_world = oz + (np.arange(nz, dtype=np.float32) + 0.5) * voxel_size_m
+    z_in_band = (z_world >= z_band_min_m) & (z_world <= z_band_max_m)
+    unknown = unknown & z_in_band[:, None, None]
 
     # Bail fast if there's nothing to find.
     if not unknown.any() or not free.any():
@@ -190,6 +212,14 @@ def extract_3d_frontiers(
     area_per_c = np.asarray(faces_per_c, dtype=np.float64) * (voxel_size_m ** 2)
 
     # 7. Build per-cluster output with geometry, then volume-filter.
+    # centroid_world: when robot_xy is provided, pick the frontier voxel
+    # FURTHEST from the robot rather than the geometric mean. Geometric
+    # mean is broken for ring-shaped frontier shells around the robot —
+    # the mean lands at the centre of the ring (i.e. ON the robot), so
+    # navigating "to centroid" = staying put = no exploration progress.
+    # Farthest-voxel always picks a real boundary point in the direction
+    # of largest unobserved volume, which is what we actually want to
+    # navigate toward.
     ox, oy, oz = origin_xyz
     out: list[Frontier3DCluster] = []
     for new_cid in range(1, n_kept + 1):
@@ -200,9 +230,20 @@ def extract_3d_frontiers(
         zs, ys, xs = np.where(mask)
         if len(xs) == 0:
             continue
-        cx = ox + (xs.mean() + 0.5) * voxel_size_m
-        cy = oy + (ys.mean() + 0.5) * voxel_size_m
-        cz = oz + (zs.mean() + 0.5) * voxel_size_m
+        if robot_xy is not None:
+            # Convert voxel coords to world for distance ranking.
+            xs_w = ox + (xs.astype(np.float32) + 0.5) * voxel_size_m
+            ys_w = oy + (ys.astype(np.float32) + 0.5) * voxel_size_m
+            rx, ry = robot_xy
+            d2 = (xs_w - rx) ** 2 + (ys_w - ry) ** 2
+            far_idx = int(np.argmax(d2))
+            cx = float(xs_w[far_idx])
+            cy = float(ys_w[far_idx])
+            cz = float(oz + (zs[far_idx] + 0.5) * voxel_size_m)
+        else:
+            cx = ox + (xs.mean() + 0.5) * voxel_size_m
+            cy = oy + (ys.mean() + 0.5) * voxel_size_m
+            cz = oz + (zs.mean() + 0.5) * voxel_size_m
         out.append(Frontier3DCluster(
             id=new_cid,
             centroid_world=(float(cx), float(cy), float(cz)),

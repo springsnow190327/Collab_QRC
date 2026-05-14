@@ -1681,6 +1681,17 @@ class CFPA2Coordinator(Node):
             f"after {repeat_count} near-goal repeats "
             f"(dist<={self.reached_blacklist_dist:.2f}m)."
         )
+        # Notify subclass-installed listeners (e.g. cfpa2_single_robot_node's
+        # ClusterTracker records this as a real attempt — a single blacklist
+        # event = one genuine engagement with a cluster, regardless of how
+        # many ticks CFPA2 republishes the same goal).
+        on_blacklist = getattr(self, "_on_reached_blacklist", None)
+        if callable(on_blacklist):
+            try:
+                on_blacklist(ns, goal)
+            except Exception as exc:
+                self.get_logger().warn(
+                    f"_on_reached_blacklist callback raised: {exc}")
 
     def _goal_reachable(self, map_msg: OccupancyGrid, dist_map: dict[int, int], goal: tuple[float, float]) -> bool:
         g = self._world_to_grid(map_msg, goal[0], goal[1])

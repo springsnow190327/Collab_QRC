@@ -1,0 +1,576 @@
+[
+  {
+    "id": "M01",
+    "category": "meeting_room",
+    "ground_truth": [
+      "meeting_room"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "office",
+    "latency_s": 8.5368,
+    "error": null
+  },
+  {
+    "id": "M02",
+    "category": "meeting_room",
+    "ground_truth": [
+      "meeting_room"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "office",
+    "latency_s": 0.0214,
+    "error": null
+  },
+  {
+    "id": "M03",
+    "category": "meeting_room",
+    "ground_truth": [
+      "meeting_room"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "office",
+    "latency_s": 0.0198,
+    "error": null
+  },
+  {
+    "id": "M04",
+    "category": "meeting_room",
+    "ground_truth": [
+      "meeting_room"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "office",
+    "latency_s": 0.0191,
+    "error": null
+  },
+  {
+    "id": "M05",
+    "category": "meeting_room",
+    "ground_truth": [
+      "meeting_room"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "office",
+    "latency_s": 0.0196,
+    "error": null
+  },
+  {
+    "id": "M06",
+    "category": "meeting_room",
+    "ground_truth": [
+      "meeting_room"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "office",
+    "latency_s": 0.0195,
+    "error": null
+  },
+  {
+    "id": "M07",
+    "category": "meeting_room",
+    "ground_truth": [
+      "meeting_room"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "office",
+    "latency_s": 0.019,
+    "error": null
+  },
+  {
+    "id": "M08",
+    "category": "meeting_room",
+    "ground_truth": [
+      "meeting_room"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "office",
+    "latency_s": 0.019,
+    "error": null
+  },
+  {
+    "id": "M09",
+    "category": "meeting_room",
+    "ground_truth": [
+      "meeting_room"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "office",
+    "latency_s": 0.0197,
+    "error": null
+  },
+  {
+    "id": "M10",
+    "category": "meeting_room",
+    "ground_truth": [
+      "meeting_room"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "meeting_room",
+    "latency_s": 0.0259,
+    "error": null
+  },
+  {
+    "id": "O01",
+    "category": "office",
+    "ground_truth": [
+      "office"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "office",
+    "latency_s": 0.0193,
+    "error": null
+  },
+  {
+    "id": "O02",
+    "category": "office",
+    "ground_truth": [
+      "office"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "office",
+    "latency_s": 0.0189,
+    "error": null
+  },
+  {
+    "id": "O03",
+    "category": "office",
+    "ground_truth": [
+      "office"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "office",
+    "latency_s": 0.019,
+    "error": null
+  },
+  {
+    "id": "O04",
+    "category": "office",
+    "ground_truth": [
+      "office"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "office",
+    "latency_s": 0.0189,
+    "error": null
+  },
+  {
+    "id": "O05",
+    "category": "office",
+    "ground_truth": [
+      "office"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "office",
+    "latency_s": 0.0194,
+    "error": null
+  },
+  {
+    "id": "O06",
+    "category": "office",
+    "ground_truth": [
+      "office"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "office",
+    "latency_s": 0.0194,
+    "error": null
+  },
+  {
+    "id": "O07",
+    "category": "office",
+    "ground_truth": [
+      "office"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "office",
+    "latency_s": 0.0196,
+    "error": null
+  },
+  {
+    "id": "O08",
+    "category": "office",
+    "ground_truth": [
+      "office"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "office",
+    "latency_s": 0.0199,
+    "error": null
+  },
+  {
+    "id": "O09",
+    "category": "office",
+    "ground_truth": [
+      "office"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "office",
+    "latency_s": 0.0196,
+    "error": null
+  },
+  {
+    "id": "O10",
+    "category": "office",
+    "ground_truth": [
+      "office"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "office",
+    "latency_s": 0.0195,
+    "error": null
+  },
+  {
+    "id": "K01",
+    "category": "kitchen",
+    "ground_truth": [
+      "kitchen"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "kitchen",
+    "latency_s": 0.0198,
+    "error": null
+  },
+  {
+    "id": "K02",
+    "category": "kitchen",
+    "ground_truth": [
+      "kitchen"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "kitchen",
+    "latency_s": 0.0188,
+    "error": null
+  },
+  {
+    "id": "K03",
+    "category": "kitchen",
+    "ground_truth": [
+      "kitchen"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "kitchen",
+    "latency_s": 0.0216,
+    "error": null
+  },
+  {
+    "id": "K04",
+    "category": "kitchen",
+    "ground_truth": [
+      "kitchen"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "kitchen",
+    "latency_s": 0.0194,
+    "error": null
+  },
+  {
+    "id": "K05",
+    "category": "kitchen",
+    "ground_truth": [
+      "kitchen"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "kitchen",
+    "latency_s": 0.0197,
+    "error": null
+  },
+  {
+    "id": "K06",
+    "category": "kitchen",
+    "ground_truth": [
+      "kitchen"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "kitchen",
+    "latency_s": 0.0198,
+    "error": null
+  },
+  {
+    "id": "K07",
+    "category": "kitchen",
+    "ground_truth": [
+      "kitchen"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "kitchen",
+    "latency_s": 0.0188,
+    "error": null
+  },
+  {
+    "id": "K08",
+    "category": "kitchen",
+    "ground_truth": [
+      "kitchen"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "kitchen",
+    "latency_s": 0.0195,
+    "error": null
+  },
+  {
+    "id": "K09",
+    "category": "kitchen",
+    "ground_truth": [
+      "kitchen"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "kitchen",
+    "latency_s": 0.0192,
+    "error": null
+  },
+  {
+    "id": "K10",
+    "category": "kitchen",
+    "ground_truth": [
+      "kitchen"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "kitchen",
+    "latency_s": 0.0189,
+    "error": null
+  },
+  {
+    "id": "A01",
+    "category": "ambiguous",
+    "ground_truth": [
+      "office",
+      "meeting_room"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "office",
+    "latency_s": 0.0188,
+    "error": null
+  },
+  {
+    "id": "A02",
+    "category": "ambiguous",
+    "ground_truth": [
+      "meeting_room",
+      "kitchen",
+      "unknown"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "meeting_room",
+    "latency_s": 0.0257,
+    "error": null
+  },
+  {
+    "id": "A03",
+    "category": "ambiguous",
+    "ground_truth": [
+      "kitchen"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "kitchen",
+    "latency_s": 0.0193,
+    "error": null
+  },
+  {
+    "id": "A04",
+    "category": "ambiguous",
+    "ground_truth": [
+      "meeting_room",
+      "office"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "office",
+    "latency_s": 0.019,
+    "error": null
+  },
+  {
+    "id": "A05",
+    "category": "ambiguous",
+    "ground_truth": [
+      "meeting_room",
+      "kitchen"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "office",
+    "latency_s": 0.019,
+    "error": null
+  },
+  {
+    "id": "A06",
+    "category": "ambiguous",
+    "ground_truth": [
+      "bathroom",
+      "kitchen",
+      "unknown"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "kitchen",
+    "latency_s": 0.0197,
+    "error": null
+  },
+  {
+    "id": "A07",
+    "category": "ambiguous",
+    "ground_truth": [
+      "office",
+      "bathroom",
+      "unknown"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "office",
+    "latency_s": 0.019,
+    "error": null
+  },
+  {
+    "id": "A08",
+    "category": "ambiguous",
+    "ground_truth": [
+      "meeting_room",
+      "office"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "office",
+    "latency_s": 0.0189,
+    "error": null
+  },
+  {
+    "id": "A09",
+    "category": "ambiguous",
+    "ground_truth": [
+      "storage",
+      "office",
+      "unknown"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "office",
+    "latency_s": 0.0189,
+    "error": null
+  },
+  {
+    "id": "A10",
+    "category": "ambiguous",
+    "ground_truth": [
+      "meeting_room",
+      "kitchen"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "meeting_room",
+    "latency_s": 0.0267,
+    "error": null
+  },
+  {
+    "id": "E01",
+    "category": "empty",
+    "ground_truth": [
+      "corridor",
+      "unknown"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "unknown",
+    "latency_s": 0.0193,
+    "error": null
+  },
+  {
+    "id": "E02",
+    "category": "empty",
+    "ground_truth": [
+      "corridor",
+      "unknown"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "corridor",
+    "latency_s": 0.0219,
+    "error": null
+  },
+  {
+    "id": "E03",
+    "category": "empty",
+    "ground_truth": [
+      "corridor",
+      "unknown"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "corridor",
+    "latency_s": 0.0221,
+    "error": null
+  },
+  {
+    "id": "E04",
+    "category": "empty",
+    "ground_truth": [
+      "corridor",
+      "unknown",
+      "storage"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "storage",
+    "latency_s": 0.0189,
+    "error": null
+  },
+  {
+    "id": "E05",
+    "category": "empty",
+    "ground_truth": [
+      "corridor",
+      "unknown"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "corridor",
+    "latency_s": 0.0222,
+    "error": null
+  },
+  {
+    "id": "E06",
+    "category": "empty",
+    "ground_truth": [
+      "corridor",
+      "unknown"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "corridor",
+    "latency_s": 0.022,
+    "error": null
+  },
+  {
+    "id": "E07",
+    "category": "empty",
+    "ground_truth": [
+      "corridor",
+      "unknown"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "corridor",
+    "latency_s": 0.0228,
+    "error": null
+  },
+  {
+    "id": "E08",
+    "category": "empty",
+    "ground_truth": [
+      "corridor",
+      "unknown"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "unknown",
+    "latency_s": 0.019,
+    "error": null
+  },
+  {
+    "id": "E09",
+    "category": "empty",
+    "ground_truth": [
+      "corridor",
+      "unknown"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "corridor",
+    "latency_s": 0.0226,
+    "error": null
+  },
+  {
+    "id": "E10",
+    "category": "empty",
+    "ground_truth": [
+      "corridor",
+      "unknown"
+    ],
+    "model": "gemma-4-E2B",
+    "raw": "corridor",
+    "latency_s": 0.0224,
+    "error": null
+  }
+]

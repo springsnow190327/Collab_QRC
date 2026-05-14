@@ -37,6 +37,17 @@ fi
 safe_source "${ROS2_SETUP_BASH}"
 safe_source "${WS_DIR}/install/setup.bash"
 
+# CRITICAL: mujoco_ros2_control loads MuJoCo sensor plugins from cmu_env's
+# site-packages/mujoco/plugin/, but those plugins are linked against
+# libmujoco.so.3.6.0 which cmu_env's conda activation does NOT add to
+# LD_LIBRARY_PATH. Without this export, libsensor.so fails to dlopen →
+# MuJoCo can't bind <sensor> blocks in the MJCF → MuJoCo GUI fails to come
+# up and there's no IMU / LiDAR / pose stream for Fast-LIO. Same gotcha as
+# nav_test_gbplanner_demo3.sh; see feedback_libmujoco_ld_path memory.
+if [[ -n "${CONDA_PREFIX:-}" ]] && [[ -d "${CONDA_PREFIX}/lib/python3.10/site-packages/mujoco" ]]; then
+  export LD_LIBRARY_PATH="${CONDA_PREFIX}/lib/python3.10/site-packages/mujoco:${LD_LIBRARY_PATH:-}"
+fi
+
 SC_PGO_PREFIX="${HOME}/COMP0225_LRC_stack/install/sc_pgo"
 if [[ -d "${SC_PGO_PREFIX}" ]]; then
   export AMENT_PREFIX_PATH="${SC_PGO_PREFIX}:${AMENT_PREFIX_PATH}"
@@ -44,6 +55,13 @@ if [[ -d "${SC_PGO_PREFIX}" ]]; then
 fi
 
 export FASTRTPS_DEFAULT_PROFILES_FILE="${WS_DIR}/config/fastdds_no_shm.xml"
+
+# Dense Mid-360 sim: default 1000×20 rays = 2.95° vertical spacing → walls
+# show only 1-3 voxels tall in nvblox at 1 m range. Override to 1024×96 →
+# ~0.61° spacing → walls fill in vertically (every 0.6 cm at 1 m, ~16 voxels
+# per 1 m wall). mj_multiRay handles ~1M rays/sec, this needs only 1M/sec.
+export MUJOCO_LIDAR_HZ_SAMPLES="${MUJOCO_LIDAR_HZ_SAMPLES:-1024}"
+export MUJOCO_LIDAR_VT_SAMPLES="${MUJOCO_LIDAR_VT_SAMPLES:-96}"
 
 IG_DIM="${IG_DIM:-3d}"
 CFPA2_INSTALL_CONFIG="${WS_DIR}/install/cfpa2_collaborative_autonomy/share/cfpa2_collaborative_autonomy/config"

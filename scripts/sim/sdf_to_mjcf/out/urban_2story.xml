@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<mujoco model="urban_2story">
+  <compiler meshdir="urban_2story.xml.assets" angle="radian" autolimits="true"/>
+  <option timestep="0.002" gravity="0 0 -9.81"/>
+  <default>
+    <geom rgba="0.7 0.7 0.7 1" condim="3" friction="1.0 0.05 0.0001"/>
+  </default>
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.4 0.6 0.8" rgb2="0 0 0" width="256" height="256"/>
+    <mesh name="Urban_2_Story_base_link_0" file="Urban_2_Story_base_link_0.stl" refpos="0 0 0" refquat="1 0 0 0"/>
+  </asset>
+  <worldbody>
+    <light pos="0 0 30" directional="true"/>
+    <geom name="ground" type="plane" pos="0 0 -1.36" size="100 100 0.1" rgba="0.3 0.3 0.3 1"/>
+    <body name="Urban_2_Story" pos="0.0000 0.0000 0.0000" quat="1.000000 0.000000 0.000000 0.000000">
+      <geom type="mesh" mesh="Urban_2_Story_base_link_0" pos="0.0000 0.0000 0.0000" quat="1.000000 0.000000 0.000000 0.000000"/>
+    </body>
+    <!-- Sample Go2 spawn marker (red sphere). Replace with real Go2 include for nav test. -->
+    <body name="go2_spawn_marker" pos="0 -15 -1.0"><geom type="sphere" size="0.5" rgba="1 0 0 1"/><freejoint/></body>
+    <!--   <include file="path/to/go2.xml"/>  -->
+  </worldbody>
+</mujoco>
