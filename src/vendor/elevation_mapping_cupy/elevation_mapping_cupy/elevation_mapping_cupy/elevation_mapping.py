@@ -405,10 +405,15 @@ class ElevationMap:
                 size=(self.cell_n * self.cell_n),
             )
 
-            traversability = self.traversability_filter(self.traversability_input)
-            self.elevation_map[3][3:-3, 3:-3] = traversability.reshape(
-                (traversability.shape[2], traversability.shape[3])
-            )
+            # Internal torch traversability_filter SKIPPED on Blackwell sm_120:
+            # torch 2.7.1 only ships sm_50-90 cubins and torch.cat has no PTX
+            # JIT fallback. The output `traversability` layer is consumed
+            # downstream by grid_map_filters chain in trav_cost_filters, which
+            # computes slope/roughness/step/cost from the elevation layer
+            # directly. Leave layer 3 at its initialized 0.0 so callers see
+            # "default = traversable" (consistent with the upstream behaviour
+            # when traversability_filter hasn't converged).
+            # See docs/claude/eth_elevation_mapping_design.md "Stage B".
             self.plugin_manager.reset_layers()
 
         self.update_normal(self.traversability_input)
