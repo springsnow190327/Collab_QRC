@@ -34,12 +34,19 @@ install(TARGETS filter_chain_runner
 )
 
 # Python: grid_map_to_occupancy_grid adapter (Phase 5)
+# ament_python_install_package installs the trav_cost_filters Python package so
+# the adapter can import from it. The executable is installed without the .py
+# extension so `ros2 run trav_cost_filters grid_map_to_occupancy_grid` works.
 ament_python_install_package(${PROJECT_NAME})
 
-install(PROGRAMS
-  trav_cost_filters/grid_map_to_occupancy_grid.py
+install(
+  FILES trav_cost_filters/grid_map_to_occupancy_grid.py
+  RENAME grid_map_to_occupancy_grid
   DESTINATION lib/${PROJECT_NAME}
-  OPTIONAL
+  PERMISSIONS
+    OWNER_READ OWNER_WRITE OWNER_EXECUTE
+    GROUP_READ GROUP_EXECUTE
+    WORLD_READ WORLD_EXECUTE
 )
 
 # Config + launch
