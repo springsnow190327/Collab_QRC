@@ -3,6 +3,11 @@
     publish_rate: 2.0
     nav_status_topic_suffix: /nav_status
     use_shared_map: false
+    # Use Nav2's inflated global costmap for frontier extraction and BFS
+    # reachability. The raw OctoMap projection marks narrow obstacle-corner
+    # routes as reachable even when the controller's inflated footprint is
+    # already in lethal space, which lets CFPA2 assign corner-scraping goals.
+    planning_map_topic_suffix: /global_costmap/costmap
     shared_map_topic: /disco_slam/global_map
     shared_map_wait_sec: 8.0
     shared_map_local_patch_radius_m: 2.5
@@ -77,6 +82,11 @@
     # rectangular footprint (half-width 0.20 m), 0.25 m clearance has
     # a 5 cm safety pad on top of the body half-width.
     cfpa2_frontier_obstacle_clearance_m: 0.25
+    # Re-check active goals against the latest planning_map. This catches
+    # clutter boxes that were unknown when the frontier was assigned; once
+    # the box appears in the costmap, the held goal is blacklisted instead
+    # of being kept alive by min-hold / pivot-lock.
+    cfpa2_goal_obstacle_clearance_m: 0.25
     # Min "live" unknowns (= unknown cells whose 8-neighbours do NOT
     # include any occupied cell) within check_radius_m. Reduced
     # 20 → 5 after first run had A_NEW=0 because the filter dropped
@@ -100,10 +110,29 @@
     cfpa2_stuck_lock_sec: 45.0
     cfpa2_stuck_min_motion_m: 0.20
     cfpa2_stuck_blacklist_sec: 60.0
+    # Exploration goals are frontiers: reaching within LiDAR-effective
+    # distance is enough only when the frontier is visible through known-free
+    # cells. Euclidean-only tolerance lets a brown box or divider wall hide
+    # the frontier while the robot incorrectly marks it explored.
+    goal_satisfied_dist: 1.00
+    goal_satisfied_requires_los: true
+    goal_satisfied_direct_dist: 0.30
+    # Blacklist the satisfied frontier cluster so the allocator moves on
+    # instead of repeatedly selecting neighbouring cells from the same edge.
+    reached_blacklist_dist: 1.00
     local_nav_status_stale_sec: 3.0
     local_nav_stall_blacklist_sec: 45.0
     cfpa2_close_stop_radius_m: 0.35
     cfpa2_close_stop_speed_epsilon: 0.02
+    # Narrow-passage pivot-lock is a safety gate, not a permanent latch.
+    # If Robot B is still in a blocked pivot zone after this deadline,
+    # release to the new frontier so a stale goal cannot keep Nav2
+    # replanning from lethal space beside the brown box.
+    pivot_lock_max_hold_sec: 15.0
+    # If the held goal distance grows while pivot-lock is active, the lock is
+    # protecting a stale global target rather than helping the robot leave the
+    # narrow zone; release immediately instead of waiting for max-hold.
+    pivot_lock_regress_release_m: 0.50
     cfpa2_space_time_enabled: true
     cfpa2_space_time_horizon_sec: 5.0
     cfpa2_space_time_dt_sec: 0.40

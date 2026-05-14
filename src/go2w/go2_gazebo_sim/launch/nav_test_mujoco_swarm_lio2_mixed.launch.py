@@ -565,10 +565,26 @@ def _build_swarm_lio2_nav_stack(
         nav2_yaml = os.path.join(
             go2w_config_pkg, "config", "nav", _nav2_yaml_filename
         )
+        nav2_param_rewrites = {"use_sim_time": str(use_sim_time).lower()}
+        if not has_wheels:
+            nav2_param_rewrites["default_nav_to_pose_bt_xml"] = os.path.join(
+                go2w_config_pkg,
+                "config",
+                "nav",
+                "behavior_trees",
+                "navigate_to_pose_no_spin_recovery.xml",
+            )
+            nav2_param_rewrites["default_nav_through_poses_bt_xml"] = os.path.join(
+                go2w_config_pkg,
+                "config",
+                "nav",
+                "behavior_trees",
+                "navigate_through_poses_no_spin_recovery.xml",
+            )
         rewritten_nav2 = RewrittenYaml(
             source_file=nav2_yaml,
             root_key=ns,
-            param_rewrites={"use_sim_time": str(use_sim_time).lower()},
+            param_rewrites=nav2_param_rewrites,
             convert_types=True,
         )
 

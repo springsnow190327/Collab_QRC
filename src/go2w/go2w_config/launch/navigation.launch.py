@@ -188,6 +188,22 @@ def _setup(context):
             _go2w_config_pkg, "config", "nav", _nav2_yaml_name
         )
         _base_frame = "b_base_link" if _is_legged_only else "base_link"
+        _param_rewrites = {"use_sim_time": str(use_sim_time).lower()}
+        if _is_legged_only:
+            _param_rewrites["default_nav_to_pose_bt_xml"] = os.path.join(
+                _go2w_config_pkg,
+                "config",
+                "nav",
+                "behavior_trees",
+                "navigate_to_pose_no_spin_recovery.xml",
+            )
+            _param_rewrites["default_nav_through_poses_bt_xml"] = os.path.join(
+                _go2w_config_pkg,
+                "config",
+                "nav",
+                "behavior_trees",
+                "navigate_through_poses_no_spin_recovery.xml",
+            )
 
         # The yamls bake in /robot_a/ (go2w yaml) and /robot_b/ (go2 yaml) for
         # the dual-robot sim case. On real (ns=robot), those topics don't
@@ -212,7 +228,7 @@ def _setup(context):
         _rewritten = RewrittenYaml(
             source_file=_tmp_yaml.name,
             root_key=robot_ns,
-            param_rewrites={"use_sim_time": str(use_sim_time).lower()},
+            param_rewrites=_param_rewrites,
             convert_types=True,
         )
         _nav2_parameters = [_rewritten]
@@ -376,10 +392,10 @@ def _setup(context):
         # from /<ns>/odom/nav. Nav2 MPPI doesn't publish this marker (only the
         # legacy A*/default backends do); without this node the RViz config's
         # RobotPoseTriangle stays blank.
-        # Footprint dims here are chosen by robot_model: Go2W is 0.70×0.35,
-        # Go2 is 0.65×0.30 — matches the polygon footprints in the nav2 yamls.
-        _length = "0.65" if _is_legged_only else "0.70"
-        _width = "0.30" if _is_legged_only else "0.35"
+        # Footprint dims here are chosen by robot_model and match the Nav2
+        # planning footprints, including Go2 leg-swing clearance.
+        _length = "0.70" if _is_legged_only else "0.70"
+        _width = "0.40" if _is_legged_only else "0.35"
         actions.append(
             ExecuteProcess(
                 cmd=[
@@ -796,7 +812,7 @@ def generate_launch_description():
                     "Used by the nav2_mppi branch to pick the right per-platform "
                     "yaml: 'go2w' → nav2_go2w_full_stack.yaml (0.70 × 0.40 m "
                     "footprint, vx_max 0.50, base_link), 'go2' → "
-                    "nav2_go2_full_stack.yaml (0.65 × 0.30 m, vx_max 0.30, "
+                    "nav2_go2_full_stack.yaml (0.70 × 0.40 m, vx_max 0.30, "
                     "b_base_link). Other backends ignore this arg."
                 ),
             ),

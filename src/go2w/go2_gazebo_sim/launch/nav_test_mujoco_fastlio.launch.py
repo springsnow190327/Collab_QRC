@@ -503,16 +503,32 @@ def _launch_setup(context):
         )
         _tmp_yaml.write(_yaml_text)
         _tmp_yaml.close()
+        nav2_param_rewrites = {
+            "use_sim_time": str(use_sim_time).lower(),
+            # Single sim publishes plain base_link; force it across all
+            # nodes regardless of what the source yaml says (the dual-sim
+            # Go2 yaml says b_base_link, real yaml already says base_link).
+            "robot_base_frame": "base_link",
+        }
+        if not has_wheels:
+            nav2_param_rewrites["default_nav_to_pose_bt_xml"] = os.path.join(
+                go2w_config_pkg,
+                "config",
+                "nav",
+                "behavior_trees",
+                "navigate_to_pose_no_spin_recovery.xml",
+            )
+            nav2_param_rewrites["default_nav_through_poses_bt_xml"] = os.path.join(
+                go2w_config_pkg,
+                "config",
+                "nav",
+                "behavior_trees",
+                "navigate_through_poses_no_spin_recovery.xml",
+            )
         rewritten_nav2 = RewrittenYaml(
             source_file=_tmp_yaml.name,
             root_key=robot_ns,
-            param_rewrites={
-                "use_sim_time": str(use_sim_time).lower(),
-                # Single sim publishes plain base_link; force it across all
-                # nodes regardless of what the source yaml says (the dual-sim
-                # Go2 yaml says b_base_link, real yaml already says base_link).
-                "robot_base_frame": "base_link",
-            },
+            param_rewrites=nav2_param_rewrites,
             convert_types=True,
         )
 
