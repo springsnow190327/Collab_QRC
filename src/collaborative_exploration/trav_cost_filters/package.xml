@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>trav_cost_filters</name>
+  <version>0.1.0</version>
+  <description>grid_map cost layer → OccupancyGrid adapter for Nav2 + CFPA2 in 3D-frontier-exploration sim.</description>
+  <maintainer email="zhuhanshan12@outlook.com">Hanshang Zhu</maintainer>
+  <license>BSD-3-Clause</license>
+
+  <depend>rclpy</depend>
+  <depend>grid_map_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>std_msgs</depend>
+
+  <exec_depend>elevation_mapping_cupy</exec_depend>
+  <exec_depend>grid_map_filters</exec_depend>
+
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
