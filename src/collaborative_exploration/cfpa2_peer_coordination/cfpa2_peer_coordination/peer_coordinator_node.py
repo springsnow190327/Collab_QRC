@@ -14,6 +14,7 @@ from visualization_msgs.msg import MarkerArray
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSReliabilityPolicy, QoSProfile
+from rclpy.publisher import Publisher
 
 from std_msgs.msg import Header
 from geometry_msgs.msg import Point, Pose, PoseArray
@@ -29,8 +30,8 @@ from cfpa2_peer_coordination.mdvrp_adapter import (
 
 from cfpa2_peer_coordination_msgs.msg import (
     ClaimedFrontier,         
-    NegotiationRequest,      # noqa: F401
-    NegotiationResponse,     # noqa: F401
+    NegotiationRequest,      
+    NegotiationResponse,     
     PeerState,
 )
 
@@ -63,6 +64,17 @@ PEER_STATE_QOS = QoSProfile(
     durability=QoSDurabilityPolicy.VOLATILE,
     history=QoSHistoryPolicy.KEEP_LAST,
     depth=1,
+)
+
+# QoS profile for negotiation request/response messages: reliable.
+# These are point-to-point protocol messages where dropped delivery causes correctness issues (the requester would hang waiting for a response that never arrives). Reliable + KEEP_LAST gives us at-least-once delivery with bounded queueing.
+NEGOTIATION_QOS = QoSProfile(
+    reliability=QoSReliabilityPolicy.RELIABLE,
+    # Volatile (not transient_local) because late-joining subscribers don't need to receive old requests (stale)
+    durability=QoSDurabilityPolicy.VOLATILE,
+    history=QoSHistoryPolicy.KEEP_LAST,
+    # depth=10 because negotiation messages are infrequent but should queue if the receiver is briefly slow. 
+    depth=10,   
 )
 
 @dataclass
@@ -174,6 +186,10 @@ class PeerCoordinatorNode(Node):
         # Final request/response negotiation will use the same cooldown concept
         self._last_negotiation_attempt_ns: int = 0
 
+        # Request ID counter for negotiation protocol
+        # Format: f"{robot_id}-{counter}" — see _next_request_id()
+        self._request_counter: int = 0
+
         # Topic names
         self.own_peer_state_topic = f"/{self.robot_namespace}/{PEER_STATE_TOPIC}"
 
@@ -237,6 +253,31 @@ class PeerCoordinatorNode(Node):
             1,  # can make a named QoS profile later if needed
         )
 
+        # Negotiation publishers: send request/response to peer inboxes
+        # Each peer gets its own publisher because requests are point-to-point
+        self.peer_request_pubs: dict[str, Publisher] = {}
+        self.peer_response_pubs: dict[str, Publisher] = {}
+
+        for peer_id, peer_ns in zip(self.peer_ids, self.peer_namespaces):
+            request_topic = self.peer_request_inbox_topics[peer_id]
+            response_topic = self.peer_response_inbox_topics[peer_id]
+
+            self.peer_request_pubs[peer_id] = self.create_publisher(
+                NegotiationRequest,
+                request_topic,
+                NEGOTIATION_QOS,
+            )
+            self.peer_response_pubs[peer_id] = self.create_publisher(
+                NegotiationResponse,
+                response_topic,
+                NEGOTIATION_QOS,
+            )
+
+            self.get_logger().info(
+                f"Created negotiation publishers for peer {peer_id}: "
+                f"request -> {request_topic}, response -> {response_topic}"
+            )
+
         # Store subscription objects so they are not garbage-collected. We only subscribe to peer state topics for now; negotiation inboxes will be added later.
         self.peer_state_subs = []
 
@@ -248,6 +289,25 @@ class PeerCoordinatorNode(Node):
                 PEER_STATE_QOS,
             )
             self.peer_state_subs.append(sub)
+
+        # Negotiation subscribers: receive requests/responses addressed to this robot
+        self.own_request_sub = self.create_subscription(
+            NegotiationRequest,
+            self.own_request_inbox_topic,
+            self._negotiation_request_received, 
+            NEGOTIATION_QOS,
+        )
+        self.own_response_sub = self.create_subscription(
+            NegotiationResponse,
+            self.own_response_inbox_topic,
+            self._negotiation_response_received,
+            NEGOTIATION_QOS,
+        )
+        self.get_logger().info(
+            f"Subscribed to own negotiation inbox: "
+            f"request <- {self.own_request_inbox_topic}, "
+            f"response <- {self.own_response_inbox_topic}"
+        )
 
         # Timers (stubs only for now)
         peer_state_period = 1.0 / max(self.peer_state_rate_hz, 1e-6)
@@ -266,6 +326,11 @@ class PeerCoordinatorNode(Node):
             blocked_frontiers_period,
             self._publish_blocked_frontiers,
         )
+
+        # Throwaway test for Chunk A: send a fake request after startup to verify wire.
+        # Remove when Chunk B's real requester is implemented.
+        self._chunk_a_test_sent: bool = False
+        self._chunk_a_test_timer = self.create_timer(5.0, self._chunk_a_test_fired)
 
         self._logged_negotiation_stub = False  # to avoid spamming logs with the stub message
 
@@ -287,15 +352,14 @@ class PeerCoordinatorNode(Node):
             f"Subscribed peer PeerState topics: {self.peer_state_topics}"
         )
         self.get_logger().info(
-            "Own negotiation inbox topics planned | "
-            f"request={self.own_request_inbox_topic} "
-            f"response={self.own_response_inbox_topic}"
+            "Negotiation inbox topics wired | "
+            f"request_in={self.own_request_inbox_topic} "
+            f"response_in={self.own_response_inbox_topic}"
         )
         self.get_logger().info(
-            f"Peer request inbox publishers planned: {self.peer_request_inbox_topics}"
-        )
-        self.get_logger().info(
-            f"Peer response inbox publishers planned: {self.peer_response_inbox_topics}"
+            f"Peer negotiation publishers wired | "
+            f"requests_to={list(self.peer_request_pubs.keys())} "
+            f"responses_to={list(self.peer_response_pubs.keys())}"
         )
 
         # Interim MDVRP auto-claim generation log
@@ -699,6 +763,138 @@ class PeerCoordinatorNode(Node):
             f"candidate_frontiers={len(available_frontiers)} "
             f"own_claims={len(self.own_claims)}"
         )
+
+    # Negotiation Chunk A: request/response inbox wiring
+    def _next_request_id(self) -> str:
+        """Generate a unique request ID for negotiation.
+
+        Format: <robot_id>-<counter>. Per-robot scoping prevents collisions
+        even if multiple robots increment their counters in lockstep.
+        """
+        self._request_counter += 1
+        return f"{self.robot_id}-{self._request_counter}"
+
+    def _negotiation_request_received(self, msg: NegotiationRequest) -> None:
+        """Receive a NegotiationRequest from a peer"""
+        if msg.protocol_version != PROTOCOL_VERSION:
+            self.get_logger().warn(
+                f"Ignoring NegotiationRequest with protocol mismatch: "
+                f"request_id={msg.request_id}; "
+                f"theirs={msg.protocol_version}; ours={PROTOCOL_VERSION}"
+            )
+            return
+
+        if msg.responder_id != self.robot_id:
+            self.get_logger().warn(
+                f"Ignoring NegotiationRequest not addressed to this robot: "
+                f"request_id={msg.request_id}; "
+                f"requester_id={msg.requester_id}; "
+                f"responder_id={msg.responder_id}; "
+                f"this_robot={self.robot_id}"
+            )
+            return
+
+        if msg.requester_id not in self.peer_ids:
+            self.get_logger().warn(
+                f"Ignoring NegotiationRequest from unknown requester: "
+                f"request_id={msg.request_id}; requester_id={msg.requester_id}"
+            )
+            return
+
+        self.get_logger().info(
+            f"[CHUNK_A_STUB] NegotiationRequest received | "
+            f"request_id={msg.request_id} "
+            f"requester_id={msg.requester_id} "
+            f"responder_id={msg.responder_id} "
+            f"requester_claims={len(msg.requester_claims)} "
+            f"responder_claims={len(msg.responder_claims)} "
+            f"protocol_version={msg.protocol_version}"
+        )
+
+        # Chunk A round-trip test: immediately acknowledge with a fake response.
+        # Remove when Chunk B's real responder logic is implemented.
+        response = NegotiationResponse()
+        response.header = self._make_header()
+        response.request_id = msg.request_id
+        response.requester_id = msg.requester_id
+        response.responder_id = self.robot_id
+        response.accepted = False
+        response.reason = "chunk_a_stub_ack"
+        response.response_stamp = self.get_clock().now().to_msg()
+        response.accepted_requester_claims = []
+        response.accepted_responder_claims = []
+        response.responder_last_interaction_attempt_stamp = (
+            self.get_clock().now().to_msg()
+        )
+        response.protocol_version = PROTOCOL_VERSION
+
+        self.peer_response_pubs[msg.requester_id].publish(response)
+
+        self.get_logger().info(
+            f"[CHUNK_A_STUB] Sent fake NegotiationResponse to "
+            f"{msg.requester_id}: request_id={msg.request_id}"
+        )
+
+    def _negotiation_response_received(self, msg: NegotiationResponse) -> None:
+        """Receive a NegotiationResponse from a peer"""
+        if msg.protocol_version != PROTOCOL_VERSION:
+            self.get_logger().warn(
+                f"Ignoring NegotiationResponse with protocol mismatch: "
+                f"request_id={msg.request_id}; "
+                f"theirs={msg.protocol_version}; ours={PROTOCOL_VERSION}"
+            )
+            return
+
+        if msg.requester_id != self.robot_id:
+            self.get_logger().warn(
+                f"Ignoring NegotiationResponse not addressed to this requester: "
+                f"requester_id={msg.requester_id}; "
+                f"responder_id={msg.responder_id}; "
+                f"this_robot={self.robot_id}"
+            )
+            return
+
+        if msg.responder_id not in self.peer_ids:
+            self.get_logger().warn(
+                f"Ignoring NegotiationResponse from unknown responder: "
+                f"request_id={msg.request_id}; responder_id={msg.responder_id}"
+            )
+            return
+
+        self.get_logger().info(
+            f"[CHUNK_A_STUB] NegotiationResponse received | "
+            f"request_id={msg.request_id} "
+            f"accepted={msg.accepted} "
+            f"reason='{msg.reason}'"
+        )
+
+    def _chunk_a_test_fired(self) -> None:
+        """Send a fake NegotiationRequest to each peer to verify wire setup.
+
+        Throwaway code for Chunk A — to be replaced by real requester in Chunk B.
+        """
+        if self._chunk_a_test_sent:
+            return
+        self._chunk_a_test_sent = True
+
+        for peer_id in self.peer_ids:
+            msg = NegotiationRequest()
+            msg.header = self._make_header()
+            msg.request_id = self._next_request_id()
+            msg.requester_id = self.robot_id
+            msg.responder_id = peer_id
+            msg.request_stamp = self.get_clock().now().to_msg()
+            # Empty claim lists for the test — real proposals come in Chunk B
+            msg.requester_claims = []
+            msg.responder_claims = []
+            msg.protocol_version = PROTOCOL_VERSION
+
+            self.peer_request_pubs[peer_id].publish(msg)
+
+            self.get_logger().info(
+                f"[CHUNK_A_TEST] Sent fake NegotiationRequest to {peer_id}: "
+                f"request_id={msg.request_id}"
+            )
 
     # Function for negotiation logic 
     def _decide_negotiation(self) -> None:
