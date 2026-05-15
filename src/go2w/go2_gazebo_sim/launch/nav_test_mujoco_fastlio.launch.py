@@ -236,6 +236,10 @@ def _launch_setup(context):
         raise ValueError(
             f"nav_costmap_mode must be '2d' | '3d'; got '{nav_costmap_mode}'")
     cfpa2_config_path = os.path.join(cfpa2_pkg, "config", "cfpa2_single_robot.yaml")
+    # Optional scene-specific overlay loaded AFTER the base yaml (last wins).
+    # Empty by default; nav_test_3d_explore.launch.py supplies a demo_ramp
+    # overlay that relaxes frontier filters tuned for open scenes.
+    cfpa2_overlay_path = _get(context, "cfpa2_config_overlay").strip()
 
     actions = []
 
@@ -467,16 +471,17 @@ def _launch_setup(context):
                         package="cfpa2_collaborative_autonomy",
                         executable="cfpa2_single_robot_node",
                         name="cfpa2_single_robot",
-                        parameters=[
-                            cfpa2_config_path,
-                            {
+                        parameters=(
+                            [cfpa2_config_path]
+                            + ([cfpa2_overlay_path] if cfpa2_overlay_path else [])
+                            + [{
                                 "use_sim_time": use_sim_time,
                                 "robot_namespace": robot_ns,
                                 "namespaces": [robot_ns],
                                 "goal_topic_suffix": "/way_point_coord",
                                 "marker_frame_override": "map",
-                            },
-                        ],
+                            }]
+                        ),
                         output="screen",
                     ),
                 ],
@@ -1131,6 +1136,16 @@ def generate_launch_description():
                 "RewrittenYaml flips use_sim_time → true automatically. "
                 "Sim's default robot_namespace='robot' matches the real "
                 "yaml's /robot/* topic prefixes, so no remap is needed."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "cfpa2_config_overlay", default_value="",
+            description=(
+                "Absolute path to an extra cfpa2 yaml loaded AFTER the base "
+                "cfpa2_single_robot.yaml. Use for scene-specific frontier "
+                "filter overrides without polluting the open-scene defaults "
+                "(e.g. demo_ramp's narrow corridors need lower clearance + "
+                "min_unknown_cells). Empty = base only."
             ),
         ),
         DeclareLaunchArgument("mujoco_model_path", default_value=default_scene),

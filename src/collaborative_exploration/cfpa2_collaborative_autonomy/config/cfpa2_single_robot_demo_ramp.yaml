@@ -1,0 +1,38 @@
+# CFPA2 yaml overlay for the demo_ramp scene.
+#
+# Loaded on top of cfpa2_single_robot.yaml; only the keys here are changed,
+# everything else inherits from base. Used by
+# scripts/launch/nav_test_3d_explore.sh via nav_test_3d_explore.launch.py
+# (cfpa2_config_overlay arg).
+#
+# Rationale: the base config's frontier-filter trio was tuned for open /
+# outdoor scenes:
+#   cfpa2_frontier_obstacle_clearance_m: 0.35  (4 cells @ 0.10 m res)
+#   cfpa2_frontier_unknown_check_radius_m: 0.40 (4-cell-radius window)
+#   cfpa2_frontier_min_unknown_cells: 20
+#
+# demo_ramp has a ~2 m wide corridor flanked by lethal walls. The 4-cell
+# clearance disk picks up the side wall from anywhere inside the corridor;
+# the 4-cell unknown-check window picks up the same wall, so the
+# "live unknown" count (unknowns whose 8-neighbours contain NO occupied)
+# drops to ~0 → every corridor frontier was silently rejected and CFPA2
+# reported `no_frontiers` indefinitely.
+#
+# These overrides match the geometric scale of the scene: 0.20 m clearance
+# is still wider than half the Go2W base, and 5 live unknowns is plenty to
+# distinguish "real frontier of large open region" from "noise near a wall".
+
+/**:
+  ros__parameters:
+    cfpa2_frontier_min_cluster_area_m2: 0.04
+    cfpa2_frontier_obstacle_clearance_m: 0.20
+    cfpa2_frontier_unknown_check_radius_m: 0.30
+    cfpa2_frontier_min_unknown_cells: 5
+    # The "stay-local" goal-distance cap (2.5 m default) is too tight for
+    # this 24 m arena: the robot maps everything within 2.5 m to free, then
+    # the next frontier ring is 3–6 m out → _goal_too_far drops them all
+    # and the status flips to no_frontiers despite ~200 valid frontier
+    # candidates existing further out. Raise to 15 m so the planner can
+    # chase distant rings; CFPA2's utility (info_gain − α·distance) still
+    # prefers near goals when they exist.
+    cfpa2_max_goal_distance_m: 15.0

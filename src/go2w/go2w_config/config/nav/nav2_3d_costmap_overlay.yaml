@@ -35,8 +35,13 @@ global_costmap:
         map_subscribe_transient_local: true
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        inflation_radius: 0.30
-        cost_scaling_factor: 5.0
+        # Wider, more gradual halo. 0.60 m radius pushes the planner ~0.3 m
+        # further from any lethal cell than the 0.30/5.0 baseline; lower
+        # cost_scaling_factor stretches the cost decay so even cells 0.4 m
+        # from a wall still carry moderate cost (~25), nudging the planner
+        # away from corners without making them un-traversable.
+        inflation_radius: 0.60
+        cost_scaling_factor: 2.5
 
 planner_server:
   ros__parameters:
@@ -75,5 +80,10 @@ local_costmap:
         map_subscribe_transient_local: true
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        inflation_radius: 0.30
-        cost_scaling_factor: 5.0
+        # Wider, more gradual halo. 0.60 m radius pushes the planner ~0.3 m
+        # further from any lethal cell than the 0.30/5.0 baseline; lower
+        # cost_scaling_factor stretches the cost decay so even cells 0.4 m
+        # from a wall still carry moderate cost (~25), nudging the planner
+        # away from corners without making them un-traversable.
+        inflation_radius: 0.60
+        cost_scaling_factor: 2.5

@@ -38,12 +38,15 @@ def generate_launch_description() -> LaunchDescription:
     # Config paths for the new trav pipeline (Phase 4–5).
     elevation_cupy_share = get_package_share_directory("elevation_mapping_cupy")
     trav_share = get_package_share_directory("trav_cost_filters")
+    cfpa2_share = get_package_share_directory("cfpa2_collaborative_autonomy")
     emap_core_params = os.path.join(
         elevation_cupy_share, "config", "core", "core_param.yaml")
     emap_setup_params = os.path.join(
         trav_share, "config", "elevation_mapping.yaml")
     filter_chain_params = os.path.join(
         trav_share, "config", "grid_map_filters.yaml")
+    cfpa2_demo_ramp_overlay = os.path.join(
+        cfpa2_share, "config", "cfpa2_single_robot_demo_ramp.yaml")
 
     args = [
         DeclareLaunchArgument("mujoco_model_path", default_value=default_scene),
@@ -96,6 +99,12 @@ def generate_launch_description() -> LaunchDescription:
             "rviz": LaunchConfiguration("rviz"),
             "gui":  LaunchConfiguration("gui"),
             "nav_costmap_mode": LaunchConfiguration("nav_costmap_mode"),
+            # demo_ramp has 2 m corridors flanked by lethal walls; base CFPA2
+            # frontier filters (0.35 m clearance + 20 live unknowns) reject
+            # every corridor frontier and report no_frontiers. Overlay
+            # tightens those to match the scene geometry. See the yaml header
+            # for rationale.
+            "cfpa2_config_overlay": cfpa2_demo_ramp_overlay,
         }.items(),
     )
 
@@ -133,23 +142,13 @@ def generate_launch_description() -> LaunchDescription:
         }],
     )
 
-    # frontier_3d_test_node — subscribes voxels_3d + traversability_grid + goal_pose;
-    # publishes /robot/frontier_3d_markers (top-5 spheres, red = current goal).
-    frontier_viz = Node(
-        package="cfpa2_collaborative_autonomy",
-        executable="frontier_3d_test_node",
-        name="frontier_3d_test_node",
-        namespace=LaunchConfiguration("robot_namespace"),
-        parameters=[{
-            "use_sim_time":    LaunchConfiguration("use_sim_time"),
-            "robot_namespace": LaunchConfiguration("robot_namespace"),
-            "top_n_clusters":  5,
-            "publish_period_s": 1.0,
-        }],
-        output="screen",
-        respawn=True,
-        respawn_delay=3.0,
-    )
+    # NOTE: frontier_3d_test_node removed — it visualised nvblox VoxelGrid3D
+    # clusters from the optional mapper. With the ETH elevation + ramp_safe
+    # fusion producing a clean 2D /traversability_grid, CFPA2 runs in 2D mode
+    # (planning_map_topic_suffix=/traversability_grid, ig_dimension=2d, see
+    # cfpa2_single_robot.yaml) so the 3D voxel cluster viz is dead weight.
+    # Re-add the node alongside enable_nvblox_mapper=true if you want the
+    # 3D voxel-cluster IG path back.
 
     # ---- Traversability pipeline (nav_costmap_mode:=3d only) ---------------
     # elevation_mapping_cupy → filter_chain_runner → grid_map_to_occupancy_grid
@@ -219,8 +218,25 @@ def generate_launch_description() -> LaunchDescription:
             # ramp_safe rescues sloped surfaces the CNN over-rejects. See the
             # bottom of grid_map_filters.yaml for the construction.
             "traversability_layer": "trav_fused",
-            "free_threshold":  0.30,
-            "lethal_threshold": 0.15,
+            # Conservative thresholds: only cells with trav ≥ 0.55 are
+            # treated as cost-0 free; cells in [0.25, 0.55] get the costly
+            # mid-band 1-99 interpolation so MPPI/planner steers AROUND
+            # them when an obviously-free route exists; trav < 0.25 is
+            # outright lethal. This stops the planner from grazing
+            # ramp-foot / wall-edge cells whose ramp_safe rescue gives
+            # them confident "free" verdicts while CNN says otherwise.
+            "free_threshold":  0.60,
+            "lethal_threshold": 0.30,
+            # Height-based extra cost — discourages planning over elevated
+            # surfaces (ramp, platform) when a flat-ground route reaches
+            # the same frontier. Cells at h=0.05m → 0 cost; h=1.00m → 90
+            # cost (just below the 100 lethal). Combined with trav-cost
+            # via max() so lethal walls stay lethal.
+            "elevation_cost_enabled": True,
+            "elevation_layer":        "elevation",
+            "elevation_cost_min_h":   0.05,
+            "elevation_cost_max_h":   1.00,
+            "elevation_cost_max_value": 90,
             "seed_robot_footprint": True,
             "robot_frame": "base_link",
             "robot_seed_radius_m": 0.65,
@@ -259,90 +275,12 @@ def generate_launch_description() -> LaunchDescription:
         condition=is_3d,
     )
 
-    # 4. ramp_ascent_goal_node: ETH-style ramp equation → high-priority
-    #    CFPA2 candidate. It does not publish directly to Nav2; CFPA2 still
-    #    applies reachability, blacklist, and clearance checks before sending
-    #    /<ns>/way_point_coord.
-    ramp_goal = Node(
-        package="trav_cost_filters",
-        executable="ramp_ascent_goal_node",
-        name="ramp_ascent_goal",
-        namespace=LaunchConfiguration("robot_namespace"),
-        output="screen",
-        respawn=True,
-        respawn_delay=3.0,
-        parameters=[{
-            "use_sim_time": LaunchConfiguration("use_sim_time"),
-            "input_topic": "elevation_map_filtered",
-            "output_topic": "ramp_ascent_goal",
-            "robot_frame": "base_link",
-            "map_frame": "map",
-            "pointcloud_topic": "registered_scan_reliable",
-            "use_pointcloud_ramp_detection": True,
-            "pointcloud_stride": 2,
-            "verified_hold_sec": 1.5,
-            "min_traversability": 0.30,
-            "min_slope_deg": 8.0,
-            "max_slope_deg": 30.0,
-            "max_step_residual_m": 0.06,
-            "min_candidate_cells": 8,
-            "min_elevation_span_m": 0.25,
-            "min_goal_distance_m": 0.45,
-            "max_goal_distance_m": 1.60,
-            "goal_lookahead_m": 1.20,
-            "goal_center_y": 0.0,
-            "monotonic_ascent_enabled": True,
-            "monotonic_min_ahead_m": 1.20,
-            "monotonic_hold_sec": 30.0,
-            "monotonic_terminal_hold_enabled": True,
-            "ascent_terminal_x": 10.80,
-            "platform_min_elevation_gain_m": 0.45,
-            "preferred_uphill_yaw_deg": 0.0,
-            "preferred_uphill_tolerance_deg": 35.0,
-            "min_x": 5.5,
-            "max_x": 11.2,
-            "min_y": -0.7,
-            "max_y": 0.7,
-            "approach_enabled": True,
-            "approach_x": 5.6,
-            "approach_y": 0.0,
-            "approach_step_m": 1.3,
-            "approach_stop_radius_m": 0.30,
-        }],
-        remappings=[
-            ("/tf",        ["/", LaunchConfiguration("robot_namespace"), "/tf"]),
-            ("/tf_static", ["/", LaunchConfiguration("robot_namespace"), "/tf_static"]),
-        ],
-        condition=is_3d,
-    )
-
-    ramp_cmd_assist = Node(
-        package="trav_cost_filters",
-        executable="ramp_cmd_vel_assist_node",
-        name="ramp_cmd_vel_assist",
-        namespace=LaunchConfiguration("robot_namespace"),
-        output="screen",
-        respawn=True,
-        respawn_delay=3.0,
-        parameters=[{
-            "use_sim_time": LaunchConfiguration("use_sim_time"),
-            "goal_topic": "ramp_ascent_goal",
-            "odom_topic": "odom/nav",
-            "cmd_vel_topic": "cmd_vel",
-            "goal_stale_sec": 8.0,
-            "min_x": 5.3,
-            "max_x": 11.2,
-            "max_abs_y": 0.9,
-            "min_forward_error_m": 0.08,
-            "max_goal_distance_m": 2.0,
-            "min_vx_mps": 0.22,
-            "max_vx_mps": 0.30,
-            "forward_gain": 0.45,
-            "yaw_gain": 1.2,
-            "max_yaw_rate_rps": 0.45,
-        }],
-        condition=is_3d,
-    )
+    # NOTE: ramp_ascent_goal_node + ramp_cmd_vel_assist_node were removed so
+    # the CFPA2 frontier-driven autonomy can run unassisted. The CNN + ramp_safe
+    # fusion in the filter chain already keeps the ramp traversable in the
+    # OccupancyGrid, so Nav2 should plan onto it naturally without the
+    # scripted ascent helper. Re-add the two nodes if scene-bound ascent
+    # behaviour is needed for a benchmark.
 
     # Static identity: base_link → body
     # Fast-LIO hardcodes cloud_registered_body.header.frame_id = "body"
@@ -375,11 +313,11 @@ def generate_launch_description() -> LaunchDescription:
     # delay means the mapper starts after MuJoCo+SLAM are up and any
     # concurrent preflight has already finished. respawn=True above gives a
     # second layer of protection if it's still killed.
-    deferred = TimerAction(period=5.0, actions=[mapper, frontier_viz])
+    deferred = TimerAction(period=5.0, actions=[mapper])
     # Trav pipeline nodes start 1 s after the nvblox mapper.
     deferred_trav = TimerAction(
         period=6.0,
-        actions=[elevation_mapping, filter_runner, occ_adapter, ramp_goal, ramp_cmd_assist],
+        actions=[elevation_mapping, filter_runner, occ_adapter],
     )
 
     return LaunchDescription([*args, base_launch, body_tf, deferred, deferred_trav])

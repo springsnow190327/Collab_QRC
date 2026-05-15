@@ -88,6 +88,28 @@ class GridMapToOccupancyGrid(Node):
         self.ramp_max_step_residual_m = float(
             self.declare_parameter("ramp_max_step_residual_m", 0.06).value
         )
+        # Elevation-based extra cost (encourages staying low). Off by default.
+        # Cells with elevation > min_h get cost = clip((h-min)/(max-min)*99, 0, max_val).
+        # The trav-derived cost and elevation cost are combined via max() so:
+        #   - lethal trav stays lethal
+        #   - free flat ground stays free (elevation_cost ≈ 0)
+        #   - free-but-elevated cells (ramps, platforms) get the elevation cost,
+        #     which the planner treats as expensive but traversable
+        self.elevation_cost_enabled = bool(
+            self.declare_parameter("elevation_cost_enabled", False).value
+        )
+        self.elevation_layer = str(
+            self.declare_parameter("elevation_layer", "elevation").value
+        )
+        self.elevation_cost_min_h = float(
+            self.declare_parameter("elevation_cost_min_h", 0.05).value
+        )
+        self.elevation_cost_max_h = float(
+            self.declare_parameter("elevation_cost_max_h", 1.00).value
+        )
+        self.elevation_cost_max_value = int(
+            self.declare_parameter("elevation_cost_max_value", 90).value
+        )
         self.fixed_grid_enabled = bool(
             self.declare_parameter("fixed_grid_enabled", False).value
         )
@@ -263,6 +285,24 @@ class GridMapToOccupancyGrid(Node):
                     self.get_logger().debug(
                         f"slope-verified ramp override cleared {changed} cells"
                     )
+
+        # Elevation-based cost: penalise high-z cells so the planner prefers
+        # flat ground when reaching the same frontier doesn't require climbing.
+        if self.elevation_cost_enabled:
+            elev = self._layer_array(msg, self.elevation_layer)
+            if elev is not None and elev.shape == cost.shape:
+                h_min = self.elevation_cost_min_h
+                h_max = self.elevation_cost_max_h
+                v_max = self.elevation_cost_max_value
+                denom = max(1e-6, h_max - h_min)
+                with np.errstate(invalid="ignore"):
+                    over = np.clip((elev - h_min) / denom, 0.0, 1.0)
+                    h_cost = np.where(np.isfinite(elev), over * v_max, 0.0).astype(np.int16)
+                # Combine: lethal trav stays lethal, unknown stays unknown,
+                # everything else gets max(trav_cost, h_cost).
+                valid = (cost >= 0)
+                merged = np.where(valid, np.maximum(cost.astype(np.int16), h_cost), -1)
+                cost = merged.astype(np.int8)
 
         # Rolling-window origin (bottom-left corner of current GridMap).
         roll_ox = info.pose.position.x - info.length_x / 2.0

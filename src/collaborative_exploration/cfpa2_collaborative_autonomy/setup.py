@@ -11,6 +11,7 @@ setup(
         ("share/" + package_name, ["package.xml"]),
         ("share/" + package_name + "/config", ["config/cfpa2_coordinator.yaml"]),
         ("share/" + package_name + "/config", ["config/cfpa2_single_robot.yaml"]),
+        ("share/" + package_name + "/config", ["config/cfpa2_single_robot_demo_ramp.yaml"]),
     ],
     install_requires=["setuptools"],
     package_data={package_name: ["*.so"]},
