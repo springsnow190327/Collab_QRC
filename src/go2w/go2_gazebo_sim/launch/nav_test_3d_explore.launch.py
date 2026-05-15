@@ -56,11 +56,18 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("gui", default_value="true"),
         # nvblox_frontend knobs
         DeclareLaunchArgument("nvblox_voxel_size_m", default_value="0.10"),
+        DeclareLaunchArgument(
+            "enable_nvblox_mapper", default_value="false",
+            description="Enable the optional nvblox_frontend mapper for "
+                        "/<ns>/voxels_3d. Default false because the ETH "
+                        "elevation_mapping_cupy traversability path does not "
+                        "need nvblox and many dev machines do not have the "
+                        "vendored nvblox CUDA library built."),
         # Costmap source: '3d' swaps both global+local StaticLayers to read
         # /robot/traversability_grid so planner and MPPI treat ramps as free.
         # Pass nav_costmap_mode:=2d to revert to the octomap-based baseline.
         DeclareLaunchArgument("nav_costmap_mode", default_value="3d",
-            description="'3d': both costmaps use traversability_grid (nvblox). "
+            description="'3d': both costmaps use traversability_grid. "
                         "'2d': default octomap /robot/map (baseline)."),
         DeclareLaunchArgument(
             "enable_legacy_2d_proj", default_value="false",
@@ -103,6 +110,7 @@ def generate_launch_description() -> LaunchDescription:
         output="screen",
         respawn=True,
         respawn_delay=3.0,
+        condition=IfCondition(LaunchConfiguration("enable_nvblox_mapper")),
         parameters=[{
             # cloud_topic and odom_topic intentionally not set here.
             # The node's namespace (robot) prefixes relative defaults
@@ -206,8 +214,107 @@ def generate_launch_description() -> LaunchDescription:
             "use_sim_time":    LaunchConfiguration("use_sim_time"),
             "input_topic":     "elevation_map_filtered",
             "output_topic":    "traversability_grid",
-            "free_threshold":  0.7,
-            "lethal_threshold": 0.3,
+            "free_threshold":  0.30,
+            "lethal_threshold": 0.15,
+            "seed_robot_footprint": True,
+            "robot_frame": "base_link",
+            "robot_seed_radius_m": 0.65,
+            "seed_max_clear_cost": 50,
+            "ramp_override_enabled": True,
+            "slope_layer": "slope",
+            "step_residual_layer": "step_residual",
+            "ramp_min_slope_rad": 0.13962634015954636,
+            "ramp_max_slope_rad": 0.5235987755982988,
+            "ramp_max_step_residual_m": 0.06,
+        }],
+        remappings=[
+            ("/tf",        ["/", LaunchConfiguration("robot_namespace"), "/tf"]),
+            ("/tf_static", ["/", LaunchConfiguration("robot_namespace"), "/tf_static"]),
+        ],
+        condition=is_3d,
+    )
+
+    # 4. ramp_ascent_goal_node: ETH-style ramp equation → high-priority
+    #    CFPA2 candidate. It does not publish directly to Nav2; CFPA2 still
+    #    applies reachability, blacklist, and clearance checks before sending
+    #    /<ns>/way_point_coord.
+    ramp_goal = Node(
+        package="trav_cost_filters",
+        executable="ramp_ascent_goal_node",
+        name="ramp_ascent_goal",
+        namespace=LaunchConfiguration("robot_namespace"),
+        output="screen",
+        respawn=True,
+        respawn_delay=3.0,
+        parameters=[{
+            "use_sim_time": LaunchConfiguration("use_sim_time"),
+            "input_topic": "elevation_map_filtered",
+            "output_topic": "ramp_ascent_goal",
+            "robot_frame": "base_link",
+            "map_frame": "map",
+            "pointcloud_topic": "registered_scan_reliable",
+            "use_pointcloud_ramp_detection": True,
+            "pointcloud_stride": 2,
+            "verified_hold_sec": 1.5,
+            "min_traversability": 0.30,
+            "min_slope_deg": 8.0,
+            "max_slope_deg": 30.0,
+            "max_step_residual_m": 0.06,
+            "min_candidate_cells": 8,
+            "min_elevation_span_m": 0.25,
+            "min_goal_distance_m": 0.45,
+            "max_goal_distance_m": 1.60,
+            "goal_lookahead_m": 1.20,
+            "goal_center_y": 0.0,
+            "monotonic_ascent_enabled": True,
+            "monotonic_min_ahead_m": 1.20,
+            "monotonic_hold_sec": 30.0,
+            "monotonic_terminal_hold_enabled": True,
+            "ascent_terminal_x": 10.80,
+            "platform_min_elevation_gain_m": 0.45,
+            "preferred_uphill_yaw_deg": 0.0,
+            "preferred_uphill_tolerance_deg": 35.0,
+            "min_x": 5.5,
+            "max_x": 11.2,
+            "min_y": -0.7,
+            "max_y": 0.7,
+            "approach_enabled": True,
+            "approach_x": 5.6,
+            "approach_y": 0.0,
+            "approach_step_m": 1.3,
+            "approach_stop_radius_m": 0.30,
+        }],
+        remappings=[
+            ("/tf",        ["/", LaunchConfiguration("robot_namespace"), "/tf"]),
+            ("/tf_static", ["/", LaunchConfiguration("robot_namespace"), "/tf_static"]),
+        ],
+        condition=is_3d,
+    )
+
+    ramp_cmd_assist = Node(
+        package="trav_cost_filters",
+        executable="ramp_cmd_vel_assist_node",
+        name="ramp_cmd_vel_assist",
+        namespace=LaunchConfiguration("robot_namespace"),
+        output="screen",
+        respawn=True,
+        respawn_delay=3.0,
+        parameters=[{
+            "use_sim_time": LaunchConfiguration("use_sim_time"),
+            "goal_topic": "ramp_ascent_goal",
+            "odom_topic": "odom/nav",
+            "cmd_vel_topic": "cmd_vel",
+            "goal_stale_sec": 8.0,
+            "min_x": 5.3,
+            "max_x": 11.2,
+            "max_abs_y": 0.9,
+            "min_forward_error_m": 0.08,
+            "max_goal_distance_m": 2.0,
+            "min_vx_mps": 0.22,
+            "max_vx_mps": 0.30,
+            "forward_gain": 0.45,
+            "yaw_gain": 1.2,
+            "max_yaw_rate_rps": 0.45,
         }],
         condition=is_3d,
     )
@@ -245,6 +352,9 @@ def generate_launch_description() -> LaunchDescription:
     # second layer of protection if it's still killed.
     deferred = TimerAction(period=5.0, actions=[mapper, frontier_viz])
     # Trav pipeline nodes start 1 s after the nvblox mapper.
-    deferred_trav = TimerAction(period=6.0, actions=[elevation_mapping, filter_runner, occ_adapter])
+    deferred_trav = TimerAction(
+        period=6.0,
+        actions=[elevation_mapping, filter_runner, occ_adapter, ramp_goal, ramp_cmd_assist],
+    )
 
     return LaunchDescription([*args, base_launch, body_tf, deferred, deferred_trav])

@@ -32,6 +32,19 @@ DIM = "\033[2m"
 def _yaw(q):
     return math.atan2(2*(q.w*q.z+q.x*q.y), 1-2*(q.y*q.y+q.z*q.z))
 
+def _has_active_target(gx, gy, wpx, wpy):
+    return (gx is not None and gy is not None) or (wpx is not None and wpy is not None)
+
+def _target_satisfied(*, px, py, gx, gy, wpx, wpy, radius=0.35):
+    targets = []
+    if gx is not None and gy is not None:
+        targets.append((gx, gy))
+    if wpx is not None and wpy is not None:
+        targets.append((wpx, wpy))
+    if not targets:
+        return False
+    return any(math.hypot(px - tx, py - ty) <= radius for tx, ty in targets)
+
 class FarDebugMonitor(Node):
     def __init__(self):
         super().__init__("far_debug_monitor")
@@ -97,6 +110,8 @@ class FarDebugMonitor(Node):
 
     def _goal(self, msg):
         self._gx, self._gy = msg.point.x, msg.point.y
+        self._last_move_t = time.monotonic()
+        self._last_move_xy = (self._px, self._py)
 
     def _cmd(self, msg):
         self._vx = msg.linear.x
@@ -127,6 +142,18 @@ class FarDebugMonitor(Node):
         now = time.monotonic()
         t = now - self._t0
         flags = []
+        active_target = _has_active_target(self._gx, self._gy, self._wpx, self._wpy)
+        target_satisfied = _target_satisfied(
+            px=self._px,
+            py=self._py,
+            gx=self._gx,
+            gy=self._gy,
+            wpx=self._wpx,
+            wpy=self._wpy,
+        )
+        if not active_target or target_satisfied:
+            self._last_move_t = now
+            self._last_move_xy = (self._px, self._py)
 
         # Stuck?
         d_from_last = math.hypot(self._px - self._last_move_xy[0],
@@ -135,7 +162,7 @@ class FarDebugMonitor(Node):
             self._last_move_t = now
             self._last_move_xy = (self._px, self._py)
         stuck_sec = now - self._last_move_t
-        if stuck_sec > 5.0:
+        if active_target and not target_satisfied and stuck_sec > 5.0:
             flags.append(f"{RED}STUCK({stuck_sec:.0f}s){RST}")
 
         # Reverse?
@@ -163,8 +190,8 @@ class FarDebugMonitor(Node):
 
         # Format
         pose_str = f"({self._px:+.1f},{self._py:+.1f})"
-        goal_str = f"({self._gx:+.1f},{self._gy:+.1f})" if self._gx else "      —"
-        wp_str = f"({self._wpx:+.1f},{self._wpy:+.1f})" if self._wpx else "      —"
+        goal_str = f"({self._gx:+.1f},{self._gy:+.1f})" if self._gx is not None else "      —"
+        wp_str = f"({self._wpx:+.1f},{self._wpy:+.1f})" if self._wpx is not None else "      —"
         flag_str = " ".join(flags) if flags else f"{DIM}ok{RST}"
 
         print(f"{t:6.1f} {pose_str:>14} {goal_str:>14} {wp_str:>14} "

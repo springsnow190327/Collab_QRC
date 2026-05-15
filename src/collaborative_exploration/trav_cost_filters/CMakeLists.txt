@@ -49,6 +49,26 @@ install(
     WORLD_READ WORLD_EXECUTE
 )
 
+install(
+  FILES trav_cost_filters/ramp_ascent_goal_node.py
+  RENAME ramp_ascent_goal_node
+  DESTINATION lib/${PROJECT_NAME}
+  PERMISSIONS
+    OWNER_READ OWNER_WRITE OWNER_EXECUTE
+    GROUP_READ GROUP_EXECUTE
+    WORLD_READ WORLD_EXECUTE
+)
+
+install(
+  FILES trav_cost_filters/ramp_cmd_vel_assist_node.py
+  RENAME ramp_cmd_vel_assist_node
+  DESTINATION lib/${PROJECT_NAME}
+  PERMISSIONS
+    OWNER_READ OWNER_WRITE OWNER_EXECUTE
+    GROUP_READ GROUP_EXECUTE
+    WORLD_READ WORLD_EXECUTE
+)
+
 # Config + launch
 install(DIRECTORY config launch
   DESTINATION share/${PROJECT_NAME}

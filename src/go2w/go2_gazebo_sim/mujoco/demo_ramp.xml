@@ -120,19 +120,22 @@
           size="0.1 8.1 0.5" material="wall_mat" class="world"/>
 
     <!-- === Ramp ===
-         4m-long, 2m-wide, ~14° slope. Box half-sizes (2.0, 1.0, 0.05).
-         Pivot at (8.0, 0, 0.5); euler pitch about +y of -0.2450 rad rotates
-         the +x edge UP (right-hand rule: -y rotation tips +x toward +z).
-         After rotation: x=10 face at z≈1.0, x=6 face at z≈0. -->
-    <geom name="ramp" type="box" pos="8.0 0 0.5"
-          size="2.0 1.0 0.05" euler="0 -0.2450 0"
-          material="obstacle_mat" class="world"/>
+         Continuous contact equation for the top surface:
+           z_top(x) = z_c - sin(theta) * x_local + cos(theta) * z_half
+         with theta=-0.2450 rad, x_half=2.061, z_half=0.04, z_c=0.461.
+         That gives west top edge z≈0.00 and east top edge z≈1.00, removing
+         the previous ~6 cm vertical lip that trapped Go2W at the ramp foot. -->
+    <geom name="ramp" type="box" pos="8.011 0 0.461"
+          size="2.061 1.0 0.04" euler="0 -0.2450 0"
+          material="obstacle_mat" class="world"
+          condim="6" friction="1.2 0.02 0.01" priority="2"/>
 
     <!-- === Elevated platform ===
          Solid box, x∈[10,16], y∈[-3,3], z∈[0,1.0]. Top surface at z=1.0
          aligns with ramp top edge. -->
     <geom name="platform" type="box" pos="13.0 0 0.5"
-          size="3.0 3.0 0.5" material="obstacle_mat" class="world"/>
+          size="3.0 3.0 0.5" material="obstacle_mat" class="world"
+          condim="6" friction="1.2 0.02 0.01"/>
 
     <!-- === Walls ON TOP of the platform ===
          Heights are absolute z. Platform top is at z=1.0, so a wall centred

@@ -98,6 +98,14 @@ class StuckWatchdog(Node):
         # Goal-change reset: when a fresh goal arrives, clear the pose
         # history so we measure stuck-ness against the new goal only.
         self.declare_parameter("goal_change_threshold_m", 0.50)
+        # On an active ramp ascent, Nav2 BackUp is the wrong recovery: a
+        # reverse body-frame command drives the robot down the slope and can
+        # tip it. Let the ramp goal/assist layer continue instead.
+        self.declare_parameter("ramp_suppress_enabled", False)
+        self.declare_parameter("ramp_min_x", -1.0e9)
+        self.declare_parameter("ramp_max_x", 1.0e9)
+        self.declare_parameter("ramp_max_abs_y", 1.0e9)
+        self.declare_parameter("ramp_min_forward_goal_m", 0.15)
         # Heartbeat
         self.declare_parameter("check_rate_hz", 2.0)
 
@@ -122,6 +130,17 @@ class StuckWatchdog(Node):
         self.cooldown_sec = float(self.get_parameter("cooldown_sec").value)
         self.goal_change_thr = float(
             self.get_parameter("goal_change_threshold_m").value
+        )
+        self.ramp_suppress_enabled = bool(
+            self.get_parameter("ramp_suppress_enabled").value
+        )
+        self.ramp_min_x = float(self.get_parameter("ramp_min_x").value)
+        self.ramp_max_x = float(self.get_parameter("ramp_max_x").value)
+        self.ramp_max_abs_y = max(
+            0.0, float(self.get_parameter("ramp_max_abs_y").value)
+        )
+        self.ramp_min_forward_goal_m = max(
+            0.0, float(self.get_parameter("ramp_min_forward_goal_m").value)
         )
         check_period = 1.0 / max(0.1,
                                  float(self.get_parameter("check_rate_hz").value))
@@ -197,6 +216,36 @@ class StuckWatchdog(Node):
                 self._pose_hist.clear()
         self._latest_goal = new
 
+    def _ramp_recovery_suppressed(
+        self,
+        *,
+        robot_x: float,
+        robot_y: float,
+        goal_x: float,
+        goal_y: float,
+    ) -> bool:
+        if not bool(getattr(self, "ramp_suppress_enabled", False)):
+            return False
+        if not all(math.isfinite(v) for v in (robot_x, robot_y, goal_x, goal_y)):
+            return False
+        if not (
+            float(getattr(self, "ramp_min_x", -1.0e9))
+            <= robot_x
+            <= float(getattr(self, "ramp_max_x", 1.0e9))
+        ):
+            return False
+        if abs(robot_y) > float(getattr(self, "ramp_max_abs_y", 1.0e9)):
+            return False
+        if not (
+            float(getattr(self, "ramp_min_x", -1.0e9))
+            <= goal_x
+            <= float(getattr(self, "ramp_max_x", 1.0e9))
+        ):
+            return False
+        if abs(goal_y) > float(getattr(self, "ramp_max_abs_y", 1.0e9)):
+            return False
+        return goal_x - robot_x >= float(getattr(self, "ramp_min_forward_goal_m", 0.15))
+
     def _check_stuck(self) -> None:
         if self._recovery_in_flight:
             return
@@ -231,6 +280,14 @@ class StuckWatchdog(Node):
         # If we're already effectively at an exploration goal, don't
         # recover; Nav2/CFPA2 should mark success or switch target soon.
         if d2g < self.goal_reached_radius:
+            return
+        if self._ramp_recovery_suppressed(
+            robot_x=xs[-1],
+            robot_y=ys[-1],
+            goal_x=gx,
+            goal_y=gy,
+        ):
+            self._pose_hist.clear()
             return
 
         self.get_logger().warn(

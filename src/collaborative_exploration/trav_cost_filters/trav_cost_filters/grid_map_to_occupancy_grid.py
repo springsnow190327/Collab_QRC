@@ -18,11 +18,19 @@ or a custom costmap plugin that reads OccupancyGrid).
 import numpy as np
 
 import rclpy
+from rclpy.time import Time
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
+from tf2_ros import Buffer, TransformException, TransformListener
 
 from grid_map_msgs.msg import GridMap
 from nav_msgs.msg import OccupancyGrid
+
+from trav_cost_filters.occupancy_conversion import (
+    apply_slope_verified_ramp_override,
+    stamp_free_disk,
+    traversability_to_occupancy,
+)
 
 
 class GridMapToOccupancyGrid(Node):
@@ -42,6 +50,39 @@ class GridMapToOccupancyGrid(Node):
         self.free_threshold = self.declare_parameter("free_threshold", 0.7).value
         # trav < lethal_threshold → cost 100 (lethal)
         self.lethal_threshold = self.declare_parameter("lethal_threshold", 0.3).value
+        self.seed_robot_footprint = self.declare_parameter(
+            "seed_robot_footprint", True
+        ).value
+        self.robot_frame = self.declare_parameter("robot_frame", "base_link").value
+        self.robot_seed_radius_m = float(
+            self.declare_parameter("robot_seed_radius_m", 0.65).value
+        )
+        self.seed_max_clear_cost = int(
+            self.declare_parameter("seed_max_clear_cost", 50).value
+        )
+        self.ramp_override_enabled = bool(
+            self.declare_parameter("ramp_override_enabled", False).value
+        )
+        self.slope_layer = str(self.declare_parameter("slope_layer", "slope").value)
+        self.step_residual_layer = str(
+            self.declare_parameter("step_residual_layer", "step_residual").value
+        )
+        self.ramp_min_slope_rad = float(
+            self.declare_parameter("ramp_min_slope_rad", 0.13962634015954636).value
+        )
+        self.ramp_max_slope_rad = float(
+            self.declare_parameter("ramp_max_slope_rad", 0.5235987755982988).value
+        )
+        self.ramp_max_step_residual_m = float(
+            self.declare_parameter("ramp_max_step_residual_m", 0.06).value
+        )
+
+        self.tf_buffer = Buffer() if self.seed_robot_footprint else None
+        self.tf_listener = (
+            TransformListener(self.tf_buffer, self)
+            if self.tf_buffer is not None
+            else None
+        )
 
         # Publisher uses TRANSIENT_LOCAL so late subscribers (diag tools, RViz,
         # CFPA2 BFS) receive the last grid immediately on connection.
@@ -65,8 +106,23 @@ class GridMapToOccupancyGrid(Node):
         self.get_logger().info(
             f"grid_map_to_occupancy_grid: {self.input_topic} → {self.output_topic} "
             f"layer={self.traversability_layer} "
-            f"free>={self.free_threshold} lethal<{self.lethal_threshold}"
+            f"free>={self.free_threshold} lethal<{self.lethal_threshold} "
+            f"seed_robot_footprint={self.seed_robot_footprint} "
+            f"robot_frame={self.robot_frame} radius={self.robot_seed_radius_m:.2f}m "
+            f"ramp_override={self.ramp_override_enabled}"
         )
+
+    def _layer_array(self, msg: GridMap, layer_name: str) -> np.ndarray | None:
+        if layer_name not in msg.layers:
+            return None
+        rows = int(round(msg.info.length_y / msg.info.resolution))
+        cols = int(round(msg.info.length_x / msg.info.resolution))
+        expected = rows * cols
+        layer_idx = list(msg.layers).index(layer_name)
+        data = np.array(msg.data[layer_idx].data, dtype=np.float32)
+        if data.size != expected:
+            return None
+        return data.reshape(cols, rows).T
 
     def _on_map(self, msg: GridMap) -> None:
         if self.traversability_layer not in msg.layers:
@@ -102,28 +158,27 @@ class GridMapToOccupancyGrid(Node):
         trav = data_float.reshape(n_cols, n_rows)  # (cols, rows) column-major
         trav = trav.T  # → (rows, cols) row-major for OccupancyGrid
 
-        # Convert traversability [0,1] to occupancy [0,100].
-        # NaN (unknown cells) → -1.
-        cost = np.full(trav.shape, -1, dtype=np.int8)
-        valid = np.isfinite(trav)
-
-        t = trav[valid]
-        c = np.where(
-            t >= self.free_threshold,
-            0,
-            np.where(
-                t < self.lethal_threshold,
-                100,
-                np.int8(
-                    np.round(
-                        (self.free_threshold - t)
-                        / (self.free_threshold - self.lethal_threshold)
-                        * 100
-                    )
-                ),
-            ),
+        cost = traversability_to_occupancy(
+            trav,
+            free_threshold=float(self.free_threshold),
+            lethal_threshold=float(self.lethal_threshold),
         )
-        cost[valid] = c.astype(np.int8)
+        if self.ramp_override_enabled:
+            slope = self._layer_array(msg, self.slope_layer)
+            step_residual = self._layer_array(msg, self.step_residual_layer)
+            if slope is not None and step_residual is not None:
+                changed = apply_slope_verified_ramp_override(
+                    cost,
+                    slope=slope,
+                    step_residual=step_residual,
+                    min_slope_rad=float(self.ramp_min_slope_rad),
+                    max_slope_rad=float(self.ramp_max_slope_rad),
+                    max_step_residual_m=float(self.ramp_max_step_residual_m),
+                )
+                if changed > 0:
+                    self.get_logger().debug(
+                        f"slope-verified ramp override cleared {changed} cells"
+                    )
 
         occ = OccupancyGrid()
         occ.header.stamp = msg.header.stamp
@@ -140,9 +195,49 @@ class GridMapToOccupancyGrid(Node):
         )
         occ.info.origin.position.z = info.pose.position.z
         occ.info.origin.orientation = info.pose.orientation
+        self._seed_robot_footprint(cost, occ)
         occ.data = cost.flatten().tolist()
 
         self.pub.publish(occ)
+
+    def _seed_robot_footprint(
+        self,
+        cost: np.ndarray,
+        occ: OccupancyGrid,
+    ) -> None:
+        if not self.seed_robot_footprint or self.tf_buffer is None:
+            return
+
+        try:
+            tf = self.tf_buffer.lookup_transform(
+                occ.header.frame_id,
+                self.robot_frame,
+                Time(),
+            )
+        except TransformException as exc:
+            self.get_logger().warn_throttle(
+                self.get_clock(), 5000,
+                f"robot footprint seed skipped: cannot transform "
+                f"{occ.header.frame_id} <- {self.robot_frame}: {exc}",
+            )
+            return
+
+        changed = stamp_free_disk(
+            cost,
+            origin_x=float(occ.info.origin.position.x),
+            origin_y=float(occ.info.origin.position.y),
+            resolution=float(occ.info.resolution),
+            center_x=float(tf.transform.translation.x),
+            center_y=float(tf.transform.translation.y),
+            radius_m=self.robot_seed_radius_m,
+            max_clear_cost=self.seed_max_clear_cost,
+        )
+        if changed > 0:
+            self.get_logger().debug(
+                f"seeded {changed} robot-footprint cells free at "
+                f"({tf.transform.translation.x:.2f}, "
+                f"{tf.transform.translation.y:.2f})"
+            )
 
 
 def main(args=None) -> None:

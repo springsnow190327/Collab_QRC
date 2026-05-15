@@ -155,6 +155,13 @@ class CFPA2Coordinator(Node):
         self.declare_parameter("sensor_range", 3.5)
         self.declare_parameter("frontier_stride", 2)
         self.declare_parameter("max_targets", 800)
+        # The C++ frontier extractor streams raw frontier cells in grid scan
+        # order. Large robot-centric elevation maps can otherwise fill the raw
+        # target buffer with distant border frontiers before local reachable
+        # frontiers are seen. Over-fetch raw cells, then cluster/filter them in
+        # Python so max_targets limits representative goals, not scan order.
+        self.declare_parameter("frontier_raw_overfetch_factor", 20)
+        self.declare_parameter("frontier_raw_overfetch_min", 4096)
         self.declare_parameter("goal_topic_suffix", "/way_point_coord")
         self.declare_parameter("nav_status_topic_suffix", "/nav_status")
         # Map source for frontier extraction + BFS reachability. Two practical choices:
@@ -214,6 +221,11 @@ class CFPA2Coordinator(Node):
         # at the robot footprint. Keep this much smaller than the sensing
         # radius.
         self.declare_parameter("goal_satisfied_direct_dist", 0.30)
+        # Optional local-waypoint horizon. Disabled by default for legacy maps;
+        # nav_test_3d_explore enables it because elevation maps can expose
+        # distant frontier cells before the controller can safely traverse the
+        # intermediate terrain.
+        self.declare_parameter("cfpa2_max_goal_distance_m", 0.0)
         self.declare_parameter("reached_blacklist_repeat_count", 3)
         self.declare_parameter("reached_blacklist_ttl_sec", 12.0)
         self.declare_parameter("overlap_weight", 1.0)
@@ -348,6 +360,13 @@ class CFPA2Coordinator(Node):
         self.sensor_range = max(0.1, float(self.get_parameter("sensor_range").value))
         self.frontier_stride = max(1, int(self.get_parameter("frontier_stride").value))
         self.max_targets = max(50, int(self.get_parameter("max_targets").value))
+        self.frontier_raw_overfetch_factor = max(
+            1, int(self.get_parameter("frontier_raw_overfetch_factor").value)
+        )
+        self.frontier_raw_overfetch_min = max(
+            self.max_targets,
+            int(self.get_parameter("frontier_raw_overfetch_min").value),
+        )
         self.goal_topic_suffix = str(self.get_parameter("goal_topic_suffix").value)
         # output_mode used to be a parameter (cfpa2_single_robot.yaml + ROS
         # param) with values 'waypoint_coord' (default) and 'exact_split'
@@ -422,6 +441,9 @@ class CFPA2Coordinator(Node):
         self.goal_satisfied_direct_dist = min(
             self.goal_satisfied_dist,
             max(0.0, float(self.get_parameter("goal_satisfied_direct_dist").value)),
+        )
+        self.cfpa2_max_goal_distance_m = max(
+            0.0, float(self.get_parameter("cfpa2_max_goal_distance_m").value)
         )
         # A goal that is satisfied by the exploration contract must also be
         # eligible for reached-goal blacklisting; otherwise the coordinator can
@@ -1137,11 +1159,16 @@ class CFPA2Coordinator(Node):
         min_area_m2 = self.cfpa2_frontier_min_cluster_area_m2
         clearance_cells = int(math.ceil(self.cfpa2_frontier_obstacle_clearance_m / res))
         max_targets = self._adaptive_max_targets
+        raw_capacity = self._frontier_raw_capacity(w, h, max_targets)
 
         if _GRID_OPS_LIB is not None:
-            raw = self._extract_frontiers_cpp(msg, w, h, res, s, min_area_m2, clearance_cells, max_targets)
+            raw = self._extract_frontiers_cpp(
+                msg, w, h, res, s, min_area_m2, clearance_cells, raw_capacity
+            )
         else:
-            raw = self._extract_frontiers_py(msg, w, h, res, s, min_area_m2, clearance_cells, max_targets)
+            raw = self._extract_frontiers_py(
+                msg, w, h, res, s, min_area_m2, clearance_cells, raw_capacity
+            )
         # Collapse per-cell samples into one representative per spatial
         # cluster.
         clustered = self._cluster_representatives(raw, self.cfpa2_frontier_cluster_radius_m)
@@ -1158,7 +1185,14 @@ class CFPA2Coordinator(Node):
         # permanently invisible to LiDAR. A drove there, FL_wheel hit
         # wall_north, body climbed; A wedged there for 156 s while
         # CFPA2 kept reassigning the same trap frontier.
-        return self._filter_dead_frontiers(clustered, msg)
+        return self._filter_dead_frontiers(clustered, msg)[:max_targets]
+
+    def _frontier_raw_capacity(self, width: int, height: int, max_targets: int) -> int:
+        map_cells = max(1, int(width) * int(height))
+        factor = max(1, int(getattr(self, "frontier_raw_overfetch_factor", 20)))
+        minimum = max(max_targets, int(getattr(self, "frontier_raw_overfetch_min", 4096)))
+        requested = max(max_targets, minimum, max_targets * factor)
+        return min(map_cells, requested)
 
     def _filter_dead_frontiers(
         self, points: list[tuple[float, float]], msg: OccupancyGrid
@@ -1560,6 +1594,12 @@ class CFPA2Coordinator(Node):
         if self.min_assign_distance <= 0.0:
             return False
         return self._distance_robot_to_goal(ns, goal) <= self.min_assign_distance
+
+    def _goal_too_far(self, ns: str, goal: tuple[float, float]) -> bool:
+        max_distance = float(getattr(self, "cfpa2_max_goal_distance_m", 0.0))
+        if max_distance <= 0.0:
+            return False
+        return self._distance_robot_to_goal(ns, goal) > max_distance
 
     def _goal_satisfaction_map(
         self,
@@ -3209,6 +3249,8 @@ class CFPA2Coordinator(Node):
             if excluded_key is not None and self._goal_key(goal) == excluded_key:
                 return False
             if self._goal_too_close(ns, goal):
+                return False
+            if self._goal_too_far(ns, goal):
                 return False
             if self._is_blacklisted(ns, goal, now_ns):
                 return False

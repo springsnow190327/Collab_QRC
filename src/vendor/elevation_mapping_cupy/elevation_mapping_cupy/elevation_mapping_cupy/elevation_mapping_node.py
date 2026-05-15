@@ -15,7 +15,17 @@ from cv_bridge import CvBridge
 from elevation_map_msgs.msg import ChannelInfo
 import ros2_numpy as rnp
 from sensor_msgs.msg import CameraInfo, Image, PointCloud2, PointField
-from tf_transformations import quaternion_matrix
+try:
+    from tf_transformations import quaternion_matrix
+except ImportError:
+    from transforms3d.quaternions import quat2mat
+
+    def quaternion_matrix(quaternion):
+        """Return a homogeneous rotation matrix for tf-style (x, y, z, w)."""
+        x, y, z, w = quaternion
+        mat = np.eye(4, dtype=np.float64)
+        mat[:3, :3] = quat2mat([w, x, y, z])
+        return mat
 import tf2_ros
 import tf2_py as tf2
 from rclpy.duration import Duration

@@ -27,12 +27,14 @@
     <depend>ros2_numpy</depend>
     <depend>ament_index_python</depend>
     <depend>tf_transformations</depend>
-    <exec_depend>semantic_sensor</exec_depend>
+    <!-- Optional semantic-image pipeline is not used by Collab_QRC's
+         PointCloud2 elevation mapping path. Keeping this as a mandatory
+         exec_depend forces the headless nav_test_3d_explore build to also
+         build semantic_sensor and its ML stack. -->
 
 
     <!-- Additional dependencies -->
-    <depend>rviz2</depend>
-    <depend>grid_map_rviz_plugin</depend>
+    <!-- RViz visualization is optional for the headless runtime path. -->
     <!-- <depend>gazebo_ros</depend> -->
     <depend>python3-opencv</depend>
     <depend>rosbag2_py</depend>

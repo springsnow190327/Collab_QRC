@@ -7,12 +7,13 @@
 #              →  slope = acos(normal_z)
 #              →  roughness (RMS plane residual via window std)
 #              →  step_height = max - min in 3x3
-#              →  traversability ∈ [0, 1]  (min of three soft costs, clamped)
+#              →  step_residual = step_height - tan(slope) * 0.30m
+#              →  traversability ∈ [0, 1]  (soft slope/roughness, residual-step veto)
 #
 # Wall vs ramp discrimination is carried by `step_cost`, not slope (see the
-# design doc). A vertical wall has slope=π/2 AND step≫crit → veto. A 25°
-# ramp has slope=0.44 rad AND step≈one-cell rise → passes the step gate
-# and gets a soft slope cost of ~0.27.
+# design doc). A vertical wall has slope=π/2 AND residual step≫crit → veto.
+# A 14° demo_ramp has a non-zero 3x3 max-min, but that height change is
+# explained by tan(slope) over the local support window, so residual step≈0.
 #
 # Node-name keying: must match the node name passed at launch.
 # `filter_chain_runner` (the default) lets us use this yaml unchanged.
@@ -90,16 +91,36 @@
           edge_handling: crop
           window_size: 3
 
-      # 7. step_cost: linear 0 -> 1 over 0 -> 0.20 m local height diff.
-      #    Above 20 cm is a wall / cliff, hard-veto territory.
+      # 7. step_residual: subtract the continuous rise predicted by the local
+      #    plane before applying the step veto. This is the equation that keeps
+      #    a smooth ramp traversable while still rejecting a wall/cliff:
+      #      residual = max(0, local_max_min - tan(slope) * support_width)
+      #    support_width=0.30m matches the 3-cell step window at 0.10m/cell.
       filter7:
+        name: step_residual
+        type: gridMapFilters/MathExpressionFilter
+        params:
+          output_layer: step_residual
+          expression: step_height - tan(slope) * 0.30
+
+      filter8:
+        name: step_residual_clamp_lo
+        type: gridMapFilters/ThresholdFilter
+        params:
+          layer: step_residual
+          lower_threshold: 0.0
+          set_to: 0.0
+
+      # 8. step_cost: linear 0 -> 1 over 0 -> 0.20 m residual height diff.
+      #    Above 20 cm is a wall / cliff, hard-veto territory.
+      filter9:
         name: step_cost
         type: gridMapFilters/MathExpressionFilter
         params:
           output_layer: step_cost
-          expression: step_height / 0.20
+          expression: step_residual / 0.20
 
-      # 8. trav_eth: multiplicative model — product of (1 - cost_i) for
+      # 9. trav_eth: multiplicative model — product of (1 - cost_i) for
       #    the three soft costs. Any cost=1 → trav_eth=0. ThresholdFilters
       #    below clamp to [0,1] for costs that exceed 1.0.
       #    NOTE: named trav_eth (not traversability) to avoid aliasing with the
@@ -109,15 +130,15 @@
       #    CRITICAL: use .* (MATLAB element-wise product) not * (matrix multiply).
       #    EigenLab follows MATLAB semantics: A*B = matrix mul → all-NaN for
       #    sparse grids; A.*B = element-wise → correct per-cell traversability.
-      filter8:
+      filter10:
         name: trav_eth
         type: gridMapFilters/MathExpressionFilter
         params:
           output_layer: trav_eth
           expression: (1.0 - slope_cost) .* (1.0 - roughness_cost) .* (1.0 - step_cost)
 
-      # 9. Final clamp safety net.
-      filter9:
+      # 10. Final clamp safety net.
+      filter11:
         name: trav_eth_clamp_lo
         type: gridMapFilters/ThresholdFilter
         params:
@@ -125,7 +146,7 @@
           lower_threshold: 0.0
           set_to: 0.0
 
-      filter10:
+      filter12:
         name: trav_eth_clamp_hi
         type: gridMapFilters/ThresholdFilter
         params:

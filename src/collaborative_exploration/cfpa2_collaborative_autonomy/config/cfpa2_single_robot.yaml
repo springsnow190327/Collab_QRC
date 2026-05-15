@@ -56,6 +56,19 @@
     adaptive_min_max_targets: 80
     adaptive_min_exploration_gain_radius_cells: 20
     adaptive_max_skip_ticks: 3
-    ig_dimension: 3d
-    voxels_3d_topic_suffix: /voxels_3d
-    cfpa2_ig_height_m: 2.0
+    ig_dimension: 2d
+    cfpa2_max_goal_distance_m: 2.5
+    ramp_ascent_enabled: true
+    ramp_ascent_goal_topic_suffix: /ramp_ascent_goal
+    ramp_ascent_max_goal_distance_m: 5.0
+    ramp_ascent_goal_stale_sec: 8.0
+    ramp_ascent_require_grid_reachable: false
+    ramp_ascent_exclusive: true
+    ramp_ascent_ignore_blacklist: true
+    ramp_ascent_switch_min_dist_m: 0.25
+    ramp_ascent_utility: 100000.0
+    ramp_ascent_corridor_lock_sec: 20.0
+    ramp_ascent_lock_min_x: 5.3
+    ramp_ascent_lock_max_x: 13.0
+    ramp_ascent_lock_max_abs_y: 1.2
+    startup_delay_sec: 24.0
