@@ -298,15 +298,23 @@ are out of scope.
 - backoff after reject: exponential, capped (TBD)
 - backoff after timeout: shorter than reject (treats as comms issue)
 
-### Logs
-- Chunk A - DONE 14/05/2026
-``` bash
-ems@headgoboom:~/Collab_QRC$ $ ros2 topilist | grep negotiation
-/robot_a/cfpa2_peer_coordination/inbox/negotiation_request
-/robot_a/cfpa2_peer_coordination/inbox/negotiation_response
-/robot_b/cfpa2_peer_coordination/inbox/negotiation_request
-/robot_b/cfpa2_peer_coordination/inbox/negotiation_response
-```
+### Peer staleness and in-flight negotiation
+
+A peer's heartbeat timing out invalidates all claims attributed to that
+peer (Option B). This extends to requester state: any `RequesterState`
+targeting a stale peer is reset to `IDLE` at the moment staleness is
+detected, whether a request was in-flight or the slot was sitting in
+post-reject backoff.
+
+Rationale: the alternative — relying on natural request timeout —
+holds only while `request_timeout_sec < peer_timeout_sec` (currently
+2 s < 10 s). Eagerly resetting on peer-stale removes that hidden
+coupling and keeps the design intent ("stop trusting anything tied to
+that peer") robust to future parameter changes.
+
+In-flight cancellations are logged with the cancelled `request_id` so
+post-hoc evidence of stale-peer events stays correlated with the
+negotiation log stream.
 
 ## Status
 - [X] Verify centralisation in cfpa2_coordinator_node.py
