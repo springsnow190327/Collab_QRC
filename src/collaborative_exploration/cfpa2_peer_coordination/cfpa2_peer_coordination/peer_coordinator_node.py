@@ -1,14 +1,11 @@
 """Decentralised peer coordinator node.
 
 Each robot runs one instance of this node. It broadcasts this robot's PeerState heartbeat and (later) negotiates frontier ownership with peers.
-
-This is the skeleton; protocol logic is not yet implemented.
-
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from visualization_msgs.msg import MarkerArray 
 
 import rclpy
@@ -89,6 +86,24 @@ class PeerInfo:
     last_received_ns: int = 0
     was_fresh: bool = False
 
+# Negotiation state machine states for the requester role
+REQUESTER_IDLE = "IDLE"
+REQUESTER_REQUESTING = "REQUESTING"    
+
+@dataclass
+class RequesterState:
+    """Per-peer requester-side negotiation state.
+
+    Tracks one in-flight proposal from this robot to a specific peer.
+    Claims are not committed until the peer accepts the request.
+    """
+    state: str = REQUESTER_IDLE
+    in_flight_request_id: str | None = None
+    request_sent_ns: int = 0
+    proposed_own_claims: list[ClaimedFrontier] = field(default_factory=list)
+    proposed_peer_claims: list[ClaimedFrontier] = field(default_factory=list)
+    consecutive_rejects: int = 0
+    backoff_until_ns: int = 0
 
 class PeerCoordinatorNode(Node):
     """Per-robot peer coordinator. One instance per robot."""
@@ -108,6 +123,11 @@ class PeerCoordinatorNode(Node):
         self.declare_parameter("peer_state_rate_hz", 2.0)
         self.declare_parameter("negotiation_rate_hz", 1.0)
         self.declare_parameter("negotiation_cooldown_sec", 2.0)
+
+        self.declare_parameter("request_timeout_sec", 2.0)
+        self.declare_parameter("request_reject_backoff_sec", 2.0)
+        self.declare_parameter("request_timeout_backoff_sec", 1.0)
+        self.declare_parameter("enable_negotiation_requests", True)
 
         self.declare_parameter("odom_topic_suffix", "/odom/nav")
         self.declare_parameter("frontier_markers_topic", "/mtare/frontier_markers")
@@ -143,6 +163,19 @@ class PeerCoordinatorNode(Node):
         )
         self.negotiation_cooldown_sec: float = float(
             self.get_parameter("negotiation_cooldown_sec").value
+        )
+
+        self.request_timeout_sec: float = float(
+            self.get_parameter("request_timeout_sec").value
+        )
+        self.request_reject_backoff_sec: float = float(
+            self.get_parameter("request_reject_backoff_sec").value
+        )
+        self.request_timeout_backoff_sec: float = float(
+            self.get_parameter("request_timeout_backoff_sec").value
+        )
+        self.enable_negotiation_requests: bool = bool(
+            self.get_parameter("enable_negotiation_requests").value
         )
 
         self.odom_topic_suffix: str = self.get_parameter("odom_topic_suffix").value
@@ -189,6 +222,15 @@ class PeerCoordinatorNode(Node):
         # Request ID counter for negotiation protocol
         # Format: f"{robot_id}-{counter}" — see _next_request_id()
         self._request_counter: int = 0
+
+        # Per-peer requester-side negotiation state
+        self.requester_states: dict[str, RequesterState] = {
+            peer_id: RequesterState() for peer_id in self.peer_ids
+        }
+
+        # Interaction timestamps exposed in PeerState
+        self._last_interaction_attempt_ns: int = 0
+        self._last_successful_interaction_ns: int = 0
 
         # Topic names
         self.own_peer_state_topic = f"/{self.robot_namespace}/{PEER_STATE_TOPIC}"
@@ -327,11 +369,6 @@ class PeerCoordinatorNode(Node):
             self._publish_blocked_frontiers,
         )
 
-        # Throwaway test for Chunk A: send a fake request after startup to verify wire.
-        # Remove when Chunk B's real requester is implemented.
-        self._chunk_a_test_sent: bool = False
-        self._chunk_a_test_timer = self.create_timer(5.0, self._chunk_a_test_fired)
-
         self._logged_negotiation_stub = False  # to avoid spamming logs with the stub message
 
         # Startup logs
@@ -369,6 +406,12 @@ class PeerCoordinatorNode(Node):
             f"time_limit_sec={self.mdvrp_time_limit_sec:.2f}s "
             f"span_cost={self.mdvrp_span_cost_coefficient}"
         )
+        self.get_logger().info(
+            "Negotiation requester | "
+            f"enabled={self.enable_negotiation_requests} "
+            f"request_timeout_sec={self.request_timeout_sec:.2f} "
+            f"cooldown_sec={self.negotiation_cooldown_sec:.2f}"
+        )
     
     # Function for making message headers
     def _make_header(self) -> Header:
@@ -376,6 +419,18 @@ class PeerCoordinatorNode(Node):
         header.stamp = self.get_clock().now().to_msg()
         header.frame_id = "map"
         return header
+
+    # Function for converting nanoseconds since epoch/ROS clock to builtin_interfaces/Time
+    def _ns_to_time_msg(self, ns: int):
+        msg = self.get_clock().now().to_msg()
+        if ns <= 0:
+            msg.sec = 0
+            msg.nanosec = 0
+            return msg
+
+        msg.sec = int(ns // 1_000_000_000)
+        msg.nanosec = int(ns % 1_000_000_000)
+        return msg
 
     # Function for receiving odom 
     def _odom_received(self, msg: Odometry) -> None:
@@ -430,11 +485,12 @@ class PeerCoordinatorNode(Node):
         self._expire_stale_claims()
         msg.claimed_frontiers = list(self.own_claims) 
 
-        # These become meaningful once negotiation is implemented. For now, use zero/default timesteps
-        msg.last_interaction_attempt_stamp.sec = 0
-        msg.last_interaction_attempt_stamp.nanosec = 0
-        msg.last_successful_interaction_stamp.sec = 0
-        msg.last_successful_interaction_stamp.nanosec = 0
+        msg.last_interaction_attempt_stamp = self._ns_to_time_msg(
+            self._last_interaction_attempt_ns
+        )
+        msg.last_successful_interaction_stamp = self._ns_to_time_msg(
+            self._last_successful_interaction_ns
+        )
 
         msg.protocol_version = PROTOCOL_VERSION
 
@@ -555,6 +611,19 @@ class PeerCoordinatorNode(Node):
             if info is not None and info.was_fresh:
                 dropped_claims = len(self.peer_claims.get(peer_id, []))
                 self.peer_claims[peer_id] = []  # drop all claims from this peer
+
+                requester_state = self.requester_states.get(peer_id)
+                if requester_state is not None:
+                    was_in_flight = requester_state.state == REQUESTER_REQUESTING
+                    in_flight_id = requester_state.in_flight_request_id
+                    self.requester_states[peer_id] = RequesterState()
+                    if was_in_flight:
+                        self.get_logger().warn(
+                            "Peer became stale while negotiation request was in-flight; "
+                            "cancelling requester state | "
+                            f"peer_id={peer_id}; "
+                            f"request_id={in_flight_id}"
+                        )
                 info.was_fresh = False  # update was_fresh for next time
 
                 age_sec = (
@@ -654,6 +723,21 @@ class PeerCoordinatorNode(Node):
                 f"dropped={dropped}; details={dropped_details}"
             )
 
+    def _claim_point_key(self, claim: ClaimedFrontier) -> tuple[float, float]:
+        """Rounded 2D key for comparing claim sets without order sensitivity."""
+        return(
+            round(float(claim.position.x), 3),
+            round(float(claim.position.y), 3),
+        )
+
+    def _claim_sets_equivalent(
+        self, 
+        a: list[ClaimedFrontier], 
+        b: list[ClaimedFrontier],
+    ) -> bool:
+        """Return True if two claim lists refer to the same 2D frontier set."""
+        return {self._claim_point_key(c) for c in a} == {self._claim_point_key(c) for c in b}
+
     # Helper functions for frontier matching 
     def _frontier_blocked_by_peer_claim(self, frontier: Point3) -> bool:
         """Return True if a frontier is already claimed by a peer."""
@@ -675,7 +759,7 @@ class PeerCoordinatorNode(Node):
         ]
 
     # Interim MDVRP claim generation. This is deliberately not the final request/response protocol. It lets us create own_claims from the same MDVRP solver that the centralised CFPA2 mode uses, so claim broadcasting and conflict resolution can be tested before negotiation messages exist
-    def _point3_to_claim(self, point: Point3, *, information_gain: float = 0.0) -> ClaimedFrontier:
+    def _point3_to_claim_for(self, point: Point3, *, claimed_by: str, information_gain: float = 0.0) -> ClaimedFrontier:
         """Convert a frontier point into an owned ClaimedFrontier message."""
         claim = ClaimedFrontier()
         
@@ -684,11 +768,19 @@ class PeerCoordinatorNode(Node):
             y=float(point[1]),
             z=float(point[2]),
         )
-        claim.claimed_by = self.robot_id
+        claim.claimed_by = claimed_by
         claim.claim_stamp = self.get_clock().now().to_msg()
         claim.information_gain = float(information_gain)
 
         return claim
+
+    def _point3_to_claim(self, point: Point3, *, information_gain: float = 0.0) -> ClaimedFrontier:
+        """Interim wrapper"""
+        return self._point3_to_claim_for(
+            point,
+            claimed_by=self.robot_id,
+            information_gain=information_gain
+        )
 
     def _generate_mdvrp_own_claims(
         self,
@@ -801,38 +893,51 @@ class PeerCoordinatorNode(Node):
             )
             return
 
-        self.get_logger().info(
-            f"[CHUNK_A_STUB] NegotiationRequest received | "
-            f"request_id={msg.request_id} "
-            f"requester_id={msg.requester_id} "
-            f"responder_id={msg.responder_id} "
-            f"requester_claims={len(msg.requester_claims)} "
-            f"responder_claims={len(msg.responder_claims)} "
-            f"protocol_version={msg.protocol_version}"
-        )
-
-        # Chunk A round-trip test: immediately acknowledge with a fake response.
-        # Remove when Chunk B's real responder logic is implemented.
+        # Chunk B temporary responder behaviour: accept well-formed requests and commit the responder side
+        # Full responder validation and anti-conflict checks come in Chunk C
         response = NegotiationResponse()
         response.header = self._make_header()
         response.request_id = msg.request_id
         response.requester_id = msg.requester_id
         response.responder_id = self.robot_id
-        response.accepted = False
-        response.reason = "chunk_a_stub_ack"
         response.response_stamp = self.get_clock().now().to_msg()
-        response.accepted_requester_claims = []
-        response.accepted_responder_claims = []
-        response.responder_last_interaction_attempt_stamp = (
-            self.get_clock().now().to_msg()
-        )
-        response.protocol_version = PROTOCOL_VERSION
+        response.accepted = True
+        response.reason = "chunk_b_temporary_accept"
+        response.accepted_requester_claims = list(msg.requester_claims)
+        response.accepted_responder_claims = list(msg.responder_claims)
+
+        for claim in msg.responder_claims:
+            if claim.claimed_by != self.robot_id:
+                self.get_logger().warn(
+                    "Rejecting NegotiationRequest with responder claim assigned to wrong robot | "
+                    f"request_id={msg.request_id}; "
+                    f"claim.claimed_by={claim.claimed_by}; "
+                    f"this_robot={self.robot_id}"
+                )
+                return
 
         self.peer_response_pubs[msg.requester_id].publish(response)
+        self.own_claims = list(msg.responder_claims)
+        self._last_successful_interaction_ns = self.get_clock().now().nanoseconds
+
+        response.responder_last_interaction_attempt_stamp = self._ns_to_time_msg(self._last_interaction_attempt_ns)
+        response.protocol_version = PROTOCOL_VERSION
 
         self.get_logger().info(
-            f"[CHUNK_A_STUB] Sent fake NegotiationResponse to "
-            f"{msg.requester_id}: request_id={msg.request_id}"
+            f"NegotiationRequest received | "
+            f"request_id={msg.request_id} "
+            f"requester_id={msg.requester_id} "
+            f"responder_id={msg.responder_id} "
+            f"requester_claims={len(msg.requester_claims)} "
+            f"responder_claims={len(msg.responder_claims)}"
+        )
+
+        self.get_logger().info(
+            f"NegotiationResponse sent | "
+            f"request_id={msg.request_id}; "
+            f"to={msg.requester_id}; "
+            f"accepted={response.accepted}; "
+            f"reason='{response.reason}'"
         )
 
     def _negotiation_response_received(self, msg: NegotiationResponse) -> None:
@@ -861,52 +966,237 @@ class PeerCoordinatorNode(Node):
             )
             return
 
-        self.get_logger().info(
-            f"[CHUNK_A_STUB] NegotiationResponse received | "
-            f"request_id={msg.request_id} "
-            f"accepted={msg.accepted} "
-            f"reason='{msg.reason}'"
-        )
-
-    def _chunk_a_test_fired(self) -> None:
-        """Send a fake NegotiationRequest to each peer to verify wire setup.
-
-        Throwaway code for Chunk A — to be replaced by real requester in Chunk B.
-        """
-        if self._chunk_a_test_sent:
+        state = self.requester_states.get(msg.responder_id)
+        if state is None:
+            self.get_logger().warn(
+                f"Ignoring NegotiationResponse with no requester state: "
+                f"request_id={msg.request_id}; responder_id={msg.responder_id}"
+            )
             return
-        self._chunk_a_test_sent = True
 
-        for peer_id in self.peer_ids:
+        if state.state != REQUESTER_REQUESTING:
+            self.get_logger().warn(
+                f"Ignoring NegotiationResponse while not REQUESTING: "
+                f"request_id={msg.request_id}; "
+                f"responder_id={msg.responder_id}; "
+                f"state={state.state}"
+            )
+            return
+
+        if msg.request_id != state.in_flight_request_id:
+            self.get_logger().warn(
+                f"Ignoring NegotiationResponse for stale/unknown request_id: "
+                f"received={msg.request_id}; "
+                f"expected={state.in_flight_request_id}; "
+                f"responder_id={msg.responder_id}"
+            )
+            return
+
+        now_ns = self.get_clock().now().nanoseconds
+
+        if msg.accepted:
+            self.own_claims = list(msg.accepted_requester_claims)
+
+            state.state = REQUESTER_IDLE
+            state.in_flight_request_id = None
+            state.request_sent_ns = 0
+            state.proposed_own_claims = []
+            state.proposed_peer_claims = []
+            state.consecutive_rejects = 0
+            state.backoff_until_ns = now_ns + int(self.negotiation_cooldown_sec * 1e9)
+
+            self._last_successful_interaction_ns = now_ns
+
+            self.get_logger().info(
+                "Negotiation accepted; committed own claims | "
+                f"request_id={msg.request_id}; "
+                f"peer_id={msg.responder_id}; "
+                f"own_claims={len(self.own_claims)}"
+            )
+        else:
+            state.consecutive_rejects += 1
+            backoff_sec = self.request_reject_backoff_sec * min(4, 2 ** max(0, state.consecutive_rejects - 1))  # exponential backoff with a cap
+
+            state.state = REQUESTER_IDLE
+            state.in_flight_request_id = None
+            state.request_sent_ns = 0
+            state.proposed_own_claims = []
+            state.proposed_peer_claims = []
+            state.backoff_until_ns = now_ns + int(backoff_sec * 1e9)
+
+            self.get_logger().warn(
+                "Negotiation rejected | "
+                f"request_id={msg.request_id}; "
+                f"peer_id={msg.responder_id}; "
+                f"reason='{msg.reason}'; "
+                f"consecutive_rejects={state.consecutive_rejects}; "
+                f"backoff_sec={backoff_sec:.2f}"
+            )
+
+    # Negotiation Chunk B: Requester State Machine
+    def _tick_requester_state(self, *, fresh_peers: list[str], candidate_frontiers: list[Point3]) -> None:
+        """Drive requester-side negotiation state machines.
+
+        Chunk B implements only requester-side behaviour:
+        IDLE -> REQUESTING -> IDLE on accept/reject/timeout.
+        """
+        if not self.enable_negotiation_requests:
+            return
+
+        now_ns = self.get_clock().now().nanoseconds
+        request_timeout_ns = int(self.request_timeout_sec * 1e9)
+
+        for peer_id in fresh_peers:
+            state = self.requester_states[peer_id]
+
+            if state.state == REQUESTER_REQUESTING:
+                age_ns = now_ns - state.request_sent_ns
+                if age_ns > request_timeout_ns:
+                    self.get_logger().warn(
+                        "Negotiation request timed out | "
+                        f"peer_id={peer_id}; "
+                        f"request_id={state.in_flight_request_id}; "
+                        f"age_sec={age_ns / 1e9:.2f}; "
+                        f"timeout_sec={self.request_timeout_sec:.2f}"
+                    )
+
+                    state.state = REQUESTER_IDLE
+                    state.in_flight_request_id = None
+                    state.request_sent_ns = 0
+                    state.proposed_own_claims = []
+                    state.proposed_peer_claims = []
+                    state.backoff_until_ns = now_ns + int(self.request_timeout_backoff_sec * 1e9)
+                continue  # only check timeouts while in REQUESTING state
+
+            if state.state != REQUESTER_IDLE:
+                self.get_logger().warn(
+                    f"Unknown requester state for peer_id={peer_id}: {state.state}; resetting"
+                )
+                self.requester_states[peer_id] = RequesterState()
+                continue
+
+            if now_ns < state.backoff_until_ns:
+                continue
+
+            if self._last_negotiation_attempt_ns > 0:
+                cooldown_age_sec = (now_ns - self._last_negotiation_attempt_ns) / 1e9
+                if cooldown_age_sec < self.negotiation_cooldown_sec:
+                    continue  
+
+            proposal = self._build_negotiation_proposal(peer_id, candidate_frontiers)
+            if proposal is None:
+                continue
+
+            proposed_own_claims, proposed_peer_claims = proposal
+
+            # Avoid repeatedly negotiating the same already-committed allocation
+            if self._claim_sets_equivalent(proposed_own_claims, self.own_claims) and self._claim_sets_equivalent(proposed_peer_claims, self.peer_claims.get(peer_id, [])):
+                continue
+
+            request_id = self._next_request_id()
+
             msg = NegotiationRequest()
             msg.header = self._make_header()
-            msg.request_id = self._next_request_id()
+            msg.request_id = request_id
             msg.requester_id = self.robot_id
             msg.responder_id = peer_id
             msg.request_stamp = self.get_clock().now().to_msg()
-            # Empty claim lists for the test — real proposals come in Chunk B
-            msg.requester_claims = []
-            msg.responder_claims = []
+            msg.requester_claims = list(proposed_own_claims)
+            msg.responder_claims = list(proposed_peer_claims)
             msg.protocol_version = PROTOCOL_VERSION
 
             self.peer_request_pubs[peer_id].publish(msg)
 
+            state.state = REQUESTER_REQUESTING
+            state.in_flight_request_id = request_id
+            state.request_sent_ns = now_ns
+            state.proposed_own_claims = list(proposed_own_claims)
+            state.proposed_peer_claims = list(proposed_peer_claims)
+
+            self._last_negotiation_attempt_ns = now_ns 
+            self._last_interaction_attempt_ns = now_ns
+
             self.get_logger().info(
-                f"[CHUNK_A_TEST] Sent fake NegotiationRequest to {peer_id}: "
-                f"request_id={msg.request_id}"
+                "NegotiationRequest sent | "
+                f"peer_id={peer_id}; "
+                f"request_id={request_id}; "
+                f"own_claims={len(proposed_own_claims)}; "
+                f"peer_claims={len(proposed_peer_claims)}"
             )
+
+    # Function for building an MDVRP proposal for robot + peer
+    def _build_negotiation_proposal(
+        self,
+        peer_id: str,
+        candidate_frontiers: list[Point3],
+    ) -> tuple[list[ClaimedFrontier], list[ClaimedFrontier]] | None:
+        """Returns:
+        (own_claims, peer_claims) if a proposal can be built,
+        otherwise None."""
+        if self._latest_pose is None:
+            self.get_logger().debug(
+                f"Skipping negotiation proposal for {peer_id}: no local odom yet"
+            )
+            return None
+            
+        if not self._peer_is_fresh(peer_id):
+            return None
+
+        if not candidate_frontiers:
+            return None
+
+        info = self.peer_info.get(peer_id)
+        if info is None or info.last_state is None:
+            return None
+
+        robot_poses: dict[str, Point3] = {
+            self.robot_id: pose_msg_to_tuple(self._latest_pose),
+            peer_id: pose_msg_to_tuple(info.last_state.pose),
+        }
+        
+        assignment = solve_frontier_assignment(
+            robot_poses=robot_poses,
+            candidate_frontiers=candidate_frontiers,
+            time_limit_sec=self.mdvrp_time_limit_sec,
+            span_cost_coefficient=self.mdvrp_span_cost_coefficient,
+        )
+
+        own_points = assignment.get(self.robot_id, [])
+        peer_points = assignment.get(peer_id, [])
+
+        proposed_own_claims = [
+            self._point3_to_claim_for(point, claimed_by=self.robot_id)
+            for point in own_points
+        ]
+        proposed_peer_claims = [
+            self._point3_to_claim_for(point, claimed_by=peer_id)
+            for point in peer_points
+        ]
+
+        if not proposed_own_claims and not proposed_peer_claims:
+            return None  # no proposal if neither side gets any frontiers
+
+        return proposed_own_claims, proposed_peer_claims
 
     # Function for negotiation logic 
     def _decide_negotiation(self) -> None:
-        """Decide whether to initiate negotiation with a peer. Stub"""
+        """Decide whether to initiate negotiation with a peer"""
         fresh_peers = self._fresh_peer_ids()
         stale_peers = self._stale_peer_ids()
         available_frontiers = self._available_local_frontiers()
 
-        self._generate_mdvrp_own_claims(
-            fresh_peers=fresh_peers,
-            available_frontiers=available_frontiers,
-        )
+        if self.enable_negotiation_requests:
+            # Negotiation must solve over the full local frontier set
+            # Peer claims are used by the local planner as avoidance constraints, not inputs that remove candidates from the negotiation problem
+            self._tick_requester_state(
+                fresh_peers=fresh_peers,
+                candidate_frontiers=list(self.local_frontiers),
+            )
+        else:
+            self._generate_mdvrp_own_claims(
+                fresh_peers=fresh_peers,
+                available_frontiers=available_frontiers,
+            )
 
         if not self._logged_negotiation_stub:
             self.get_logger().info(
@@ -915,7 +1205,7 @@ class PeerCoordinatorNode(Node):
                 f"stale_peers={stale_peers}; "
                 f"local_frontiers={len(self.local_frontiers)}; "
                 f"available_frontiers={len(available_frontiers)}; "
-                "negotiation logic not yet implemented"
+                f"negotiation_requests_enabled={self.enable_negotiation_requests}"
             )
             self._logged_negotiation_stub = True
         
@@ -940,4 +1230,3 @@ def main(args=None) -> None:
 
 if __name__ == "__main__":
     main()
-
