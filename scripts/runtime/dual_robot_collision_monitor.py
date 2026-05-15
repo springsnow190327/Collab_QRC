@@ -131,7 +131,8 @@ class RobotChecks:
 
     def __init__(self, ns: str, label: str,
                  stuck_window_sec: float, stuck_progress_m: float,
-                 stuck_grace_sec: float, scene_area_m2: float):
+                 stuck_grace_sec: float, scene_area_m2: float,
+                 goal_satisfied_radius_m: float):
         self.ns = ns
         self.label = label  # "A" or "B" — matches classify()
 
@@ -184,6 +185,7 @@ class RobotChecks:
         self.stuck_window_sec = stuck_window_sec
         self.stuck_progress_m = stuck_progress_m
         self.stuck_grace_sec = stuck_grace_sec
+        self.goal_satisfied_radius_m = max(0.0, goal_satisfied_radius_m)
         self.current_goal: tuple[float, float] | None = None
         self.goal_set_t_sec: float | None = None
         # rolling (t_sec, dist_to_goal) samples; trimmed to window.
@@ -420,6 +422,9 @@ class RobotChecks:
             # Window not yet full — don't false-fire.
             return False
         newest_d = self.dist_history[-1][1]
+        if self.goal_satisfied_radius_m > 0.0 and newest_d <= self.goal_satisfied_radius_m:
+            self.is_stuck = False
+            return False
         progress = oldest_d - newest_d  # positive = closer
         if progress < self.stuck_progress_m:
             ev = {
@@ -514,6 +519,7 @@ class RobotChecks:
                 ),
                 "window_sec": self.stuck_window_sec,
                 "progress_threshold_m": self.stuck_progress_m,
+                "goal_satisfied_radius_m": self.goal_satisfied_radius_m,
                 "grace_sec": self.stuck_grace_sec,
                 "events": self.stuck_events[:30],
                 "events_truncated": len(self.stuck_events) > 30,
@@ -566,6 +572,7 @@ class DualRobotSafetyMonitor(Node):
         stuck_progress_m: float,
         stuck_grace_sec: float,
         scene_area_m2: float,
+        goal_satisfied_radius_m: float,
     ):
         super().__init__("dual_robot_collision_monitor")
         self.output_path = output_path
@@ -581,9 +588,11 @@ class DualRobotSafetyMonitor(Node):
         self.scene_area_m2 = scene_area_m2
         self.checks: dict[str, RobotChecks] = {
             "A": RobotChecks(self.ns_a, "A", stuck_window_sec,
-                             stuck_progress_m, stuck_grace_sec, scene_area_m2),
+                             stuck_progress_m, stuck_grace_sec, scene_area_m2,
+                             goal_satisfied_radius_m),
             "B": RobotChecks(self.ns_b, "B", stuck_window_sec,
-                             stuck_progress_m, stuck_grace_sec, scene_area_m2),
+                             stuck_progress_m, stuck_grace_sec, scene_area_m2,
+                             goal_satisfied_radius_m),
         }
 
         # Inter-robot pair tracking (kept from prior version).
@@ -1002,6 +1011,11 @@ def main(argv=None):
                              "denominator for coverage_ratio_of_scene. "
                              "Default 384.0 (demo3_mixed 24×16 m). Pass 0 to "
                              "disable the coverage % column.")
+    parser.add_argument("--goal-satisfied-radius-m", type=float, default=0.5,
+                        help="Do not classify a robot as planner-stuck once "
+                             "it is within this distance of its active "
+                             "frontier goal. This should match the exploration "
+                             "goal-satisfied contract.")
 
     if argv is None:
         argv = sys.argv[1:]
@@ -1020,6 +1034,7 @@ def main(argv=None):
         stuck_progress_m=args.stuck_progress_m,
         stuck_grace_sec=args.stuck_grace_sec,
         scene_area_m2=args.scene_area_m2,
+        goal_satisfied_radius_m=args.goal_satisfied_radius_m,
     )
 
     def _shutdown(*_):

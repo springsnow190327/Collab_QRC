@@ -70,6 +70,37 @@ _ws_root = os.path.abspath(os.path.join(
 ))
 
 
+def _rviz_clean_env() -> dict[str, str]:
+    # RViz is a system/ROS Qt binary. When launched from Snap-packaged VS Code,
+    # Snap/GTK/XDG variables can redirect it into /snap/core* glibc libraries
+    # and crash with GLIBC_PRIVATE symbol errors. Clear only RViz's process env.
+    return {
+        "SNAP": "",
+        "SNAP_NAME": "",
+        "SNAP_REVISION": "",
+        "SNAP_ARCH": "",
+        "SNAP_LIBRARY_PATH": "",
+        "SNAP_DATA": "",
+        "SNAP_COMMON": "",
+        "SNAP_USER_DATA": "",
+        "SNAP_USER_COMMON": "",
+        "SNAP_REAL_HOME": "",
+        "SNAP_INSTANCE_NAME": "",
+        "SNAP_CONTEXT": "",
+        "SNAP_COOKIE": "",
+        "SNAP_EUID": "",
+        "SNAP_UID": "",
+        "SNAP_VERSION": "",
+        "GTK_PATH": "",
+        "GTK_EXE_PREFIX": "",
+        "GIO_MODULE_DIR": "",
+        "GIO_LAUNCHED_DESKTOP_FILE": "",
+        "GIO_LAUNCHED_DESKTOP_FILE_PID": "",
+        "XDG_DATA_HOME": "",
+        "LOCPATH": "",
+    }
+
+
 def _launch_setup(context):
     # ═══════════════════════════════════════════════════════════════════
     # TF CHAIN — SINGLE-ROBOT SIM (Go2W or Go2, ns=robot)
@@ -506,16 +537,32 @@ def _launch_setup(context):
         )
         _tmp_yaml.write(_yaml_text)
         _tmp_yaml.close()
+        nav2_param_rewrites = {
+            "use_sim_time": str(use_sim_time).lower(),
+            # Single sim publishes plain base_link; force it across all
+            # nodes regardless of what the source yaml says (the dual-sim
+            # Go2 yaml says b_base_link, real yaml already says base_link).
+            "robot_base_frame": "base_link",
+        }
+        if not has_wheels:
+            nav2_param_rewrites["default_nav_to_pose_bt_xml"] = os.path.join(
+                go2w_config_pkg,
+                "config",
+                "nav",
+                "behavior_trees",
+                "navigate_to_pose_no_spin_recovery.xml",
+            )
+            nav2_param_rewrites["default_nav_through_poses_bt_xml"] = os.path.join(
+                go2w_config_pkg,
+                "config",
+                "nav",
+                "behavior_trees",
+                "navigate_through_poses_no_spin_recovery.xml",
+            )
         rewritten_nav2 = RewrittenYaml(
             source_file=_tmp_yaml.name,
             root_key=robot_ns,
-            param_rewrites={
-                "use_sim_time": str(use_sim_time).lower(),
-                # Single sim publishes plain base_link; force it across all
-                # nodes regardless of what the source yaml says (the dual-sim
-                # Go2 yaml says b_base_link, real yaml already says base_link).
-                "robot_base_frame": "base_link",
-            },
+            param_rewrites=nav2_param_rewrites,
             convert_types=True,
         )
 
@@ -638,8 +685,9 @@ def _launch_setup(context):
 
         # stuck_watchdog: see CLAUDE.md golden rule #18 — MPPI rarely reports
         # failure in pivot-stuck cases (emits v≈ω≈0 with status=happy), so
-        # Nav2's BT recovery never fires. This watchdog detects 10 s of
-        # no-motion under an active goal and fires a BackUp action.
+        # Nav2's BT recovery never fires. Keep the rolling window configurable
+        # because ramp demos use slow approach/ascent phases where BackUp is
+        # more dangerous than letting the ramp goal/assist layer continue.
         stuck_watchdog_node = ExecuteProcess(
             cmd=[
                 "python3", "-u",
@@ -647,6 +695,14 @@ def _launch_setup(context):
                 "--ros-args",
                 "-p", f"namespace:={robot_ns}",
                 "-p", f"use_sim_time:={'true' if use_sim_time else 'false'}",
+                "-p", f"stuck_window_sec:={os.environ.get('STUCK_WATCHDOG_WINDOW_SEC', '10.0')}",
+                "-p", f"stuck_threshold_m:={os.environ.get('STUCK_WATCHDOG_THRESHOLD_M', '0.20')}",
+                "-p", f"cooldown_sec:={os.environ.get('STUCK_WATCHDOG_COOLDOWN_SEC', '8.0')}",
+                "-p", f"ramp_suppress_enabled:={os.environ.get('STUCK_RAMP_SUPPRESS_ENABLED', 'false')}",
+                "-p", f"ramp_min_x:={os.environ.get('STUCK_RAMP_MIN_X', '-1000000000.0')}",
+                "-p", f"ramp_max_x:={os.environ.get('STUCK_RAMP_MAX_X', '1000000000.0')}",
+                "-p", f"ramp_max_abs_y:={os.environ.get('STUCK_RAMP_MAX_ABS_Y', '1000000000.0')}",
+                "-p", f"ramp_min_forward_goal_m:={os.environ.get('STUCK_RAMP_MIN_FORWARD_GOAL_M', '0.15')}",
             ],
             name=f"stuck_watchdog_{robot_ns}",
             output="screen",
@@ -1011,6 +1067,7 @@ def _launch_setup(context):
                         arguments=["-d", rviz_config],
                         parameters=[{"use_sim_time": use_sim_time}],
                         remappings=tf_remaps,
+                        additional_env=_rviz_clean_env(),
                         output="screen",
                     ),
                 ],

@@ -112,9 +112,10 @@
     service_namespace: "/elevation_mapping_cupy"
 
     # ---- Input ----
-    # PointCloud2 from Point-LIO; the subscriber path uses the relative
-    # topic 'cloud_registered_body' which becomes /robot/cloud_registered_body
-    # under our launch namespace.
+    # PointCloud2 from Point-LIO; this remains the stable costmap source.
+    # Ramp ascent target generation independently consumes the raw LiDAR cloud
+    # with TF, because the Kalman height map can smooth the ramp surface in
+    # this demo before the robot reaches the foot.
     subscribers:
       cloud:
         topic_name: "cloud_registered_body"

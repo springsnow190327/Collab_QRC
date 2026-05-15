@@ -18,11 +18,13 @@ trigger a recovery sequence:
      behavior_server (already running per nav2_go2*_full_stack.yaml)
      handles this action — drives the robot backward at a safe speed,
      stops on collision via collision_checker, re-checks costmap.
-  2. After backup finishes (success or abort), republish the cached
+  2. Notify CFPA2 on /<ns>/frontier_replan so the task layer blacklists
+     the stale frontier instead of continuing to feed Nav2 the same
+     locally-dead goal.
+  3. After backup finishes (success or abort), republish the cached
      goal_pose so bt_navigator picks up a fresh NavigateToPose request.
-     SmacPlannerHybrid then replans from the new (post-backup) pose;
-     because the planner uses REEDS_SHEPP, the new path naturally
-     supports forward+reverse segments to escape the previous wedge.
+     If CFPA2 has already selected a new frontier, that newer goal will
+     supersede this cached-goal nudge on the normal goal_pose path.
 
 Combine with CFPA2's pivot-lock: as soon as the robot moves 0.4 m
 backward, clearance is recomputed and the pivot-lock typically releases.
@@ -54,7 +56,7 @@ from rclpy.qos import (
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
 from nav2_msgs.action import BackUp
-from std_msgs.msg import String
+from std_msgs.msg import Empty, String
 
 
 def _split_ros_argv(argv):
@@ -71,6 +73,7 @@ class StuckWatchdog(Node):
         self.declare_parameter("odom_topic", "odom/nav")
         self.declare_parameter("goal_topic", "goal_pose")
         self.declare_parameter("backup_action", "backup")
+        self.declare_parameter("frontier_replan_topic", "frontier_replan")
         # Stuck = moved < threshold over the rolling window with an
         # active goal. Tune threshold for IMU/odom noise floor: 0.20 m
         # is generous (robot would normally move 1+ m in 10 s under
@@ -83,6 +86,10 @@ class StuckWatchdog(Node):
         self.declare_parameter("backup_distance_m", 0.40)
         self.declare_parameter("backup_speed_mps", 0.10)
         self.declare_parameter("backup_time_allowance_sec", 8.0)
+        # If the robot is already close enough to an exploration goal, do
+        # not run recovery. Frontiers are sensing waypoints, not docking
+        # poses, and near-wall recovery can be less safe than switching goal.
+        self.declare_parameter("goal_reached_radius_m", 0.50)
         # Cooldown — don't re-trigger immediately after a recovery (let
         # the new plan execute for at least this long before checking
         # stuck again). Without this we'd loop-fire when the post-
@@ -91,6 +98,14 @@ class StuckWatchdog(Node):
         # Goal-change reset: when a fresh goal arrives, clear the pose
         # history so we measure stuck-ness against the new goal only.
         self.declare_parameter("goal_change_threshold_m", 0.50)
+        # On an active ramp ascent, Nav2 BackUp is the wrong recovery: a
+        # reverse body-frame command drives the robot down the slope and can
+        # tip it. Let the ramp goal/assist layer continue instead.
+        self.declare_parameter("ramp_suppress_enabled", False)
+        self.declare_parameter("ramp_min_x", -1.0e9)
+        self.declare_parameter("ramp_max_x", 1.0e9)
+        self.declare_parameter("ramp_max_abs_y", 1.0e9)
+        self.declare_parameter("ramp_min_forward_goal_m", 0.15)
         # Heartbeat
         self.declare_parameter("check_rate_hz", 2.0)
 
@@ -98,6 +113,9 @@ class StuckWatchdog(Node):
         odom_topic = f"/{ns}/{self.get_parameter('odom_topic').value}"
         goal_topic = f"/{ns}/{self.get_parameter('goal_topic').value}"
         backup_action = f"/{ns}/{self.get_parameter('backup_action').value}"
+        frontier_replan_topic = (
+            f"/{ns}/{self.get_parameter('frontier_replan_topic').value}"
+        )
 
         self.window_sec = float(self.get_parameter("stuck_window_sec").value)
         self.threshold_m = float(self.get_parameter("stuck_threshold_m").value)
@@ -106,9 +124,23 @@ class StuckWatchdog(Node):
         self.backup_timeout = float(
             self.get_parameter("backup_time_allowance_sec").value
         )
+        self.goal_reached_radius = max(
+            0.0, float(self.get_parameter("goal_reached_radius_m").value)
+        )
         self.cooldown_sec = float(self.get_parameter("cooldown_sec").value)
         self.goal_change_thr = float(
             self.get_parameter("goal_change_threshold_m").value
+        )
+        self.ramp_suppress_enabled = bool(
+            self.get_parameter("ramp_suppress_enabled").value
+        )
+        self.ramp_min_x = float(self.get_parameter("ramp_min_x").value)
+        self.ramp_max_x = float(self.get_parameter("ramp_max_x").value)
+        self.ramp_max_abs_y = max(
+            0.0, float(self.get_parameter("ramp_max_abs_y").value)
+        )
+        self.ramp_min_forward_goal_m = max(
+            0.0, float(self.get_parameter("ramp_min_forward_goal_m").value)
         )
         check_period = 1.0 / max(0.1,
                                  float(self.get_parameter("check_rate_hz").value))
@@ -143,6 +175,8 @@ class StuckWatchdog(Node):
         #         "backup_aborted" | "backup_unavailable".
         self._recovery_pub = self.create_publisher(
             String, f"/{ns}/recovery_event", 10)
+        self._frontier_replan_pub = self.create_publisher(
+            Empty, frontier_replan_topic, 10)
         self._backup_client = ActionClient(self, BackUp, backup_action)
         self.create_timer(check_period, self._check_stuck)
 
@@ -182,6 +216,36 @@ class StuckWatchdog(Node):
                 self._pose_hist.clear()
         self._latest_goal = new
 
+    def _ramp_recovery_suppressed(
+        self,
+        *,
+        robot_x: float,
+        robot_y: float,
+        goal_x: float,
+        goal_y: float,
+    ) -> bool:
+        if not bool(getattr(self, "ramp_suppress_enabled", False)):
+            return False
+        if not all(math.isfinite(v) for v in (robot_x, robot_y, goal_x, goal_y)):
+            return False
+        if not (
+            float(getattr(self, "ramp_min_x", -1.0e9))
+            <= robot_x
+            <= float(getattr(self, "ramp_max_x", 1.0e9))
+        ):
+            return False
+        if abs(robot_y) > float(getattr(self, "ramp_max_abs_y", 1.0e9)):
+            return False
+        if not (
+            float(getattr(self, "ramp_min_x", -1.0e9))
+            <= goal_x
+            <= float(getattr(self, "ramp_max_x", 1.0e9))
+        ):
+            return False
+        if abs(goal_y) > float(getattr(self, "ramp_max_abs_y", 1.0e9)):
+            return False
+        return goal_x - robot_x >= float(getattr(self, "ramp_min_forward_goal_m", 0.15))
+
     def _check_stuck(self) -> None:
         if self._recovery_in_flight:
             return
@@ -213,10 +277,17 @@ class StuckWatchdog(Node):
         gx = self._latest_goal.pose.position.x
         gy = self._latest_goal.pose.position.y
         d2g = math.hypot(xs[-1] - gx, ys[-1] - gy)
-        # If we're already AT the goal (within 0.5 m), don't recover —
-        # nav2 will mark goal succeeded soon. Avoid spurious backup at
-        # arrival.
-        if d2g < 0.5:
+        # If we're already effectively at an exploration goal, don't
+        # recover; Nav2/CFPA2 should mark success or switch target soon.
+        if d2g < self.goal_reached_radius:
+            return
+        if self._ramp_recovery_suppressed(
+            robot_x=xs[-1],
+            robot_y=ys[-1],
+            goal_x=gx,
+            goal_y=gy,
+        ):
+            self._pose_hist.clear()
             return
 
         self.get_logger().warn(
@@ -225,12 +296,16 @@ class StuckWatchdog(Node):
             f"d2g={d2g:.2f} m — triggering BackUp + replan"
         )
         self._emit_recovery("stuck_detected")
+        self._emit_frontier_replan()
         self._trigger_recovery()
 
     def _emit_recovery(self, kind: str) -> None:
         msg = String()
         msg.data = kind
         self._recovery_pub.publish(msg)
+
+    def _emit_frontier_replan(self) -> None:
+        self._frontier_replan_pub.publish(Empty())
 
     def _trigger_recovery(self) -> None:
         if not self._backup_client.wait_for_server(timeout_sec=2.0):

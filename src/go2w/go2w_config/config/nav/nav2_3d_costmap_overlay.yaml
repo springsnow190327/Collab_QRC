@@ -46,12 +46,34 @@ planner_server:
       # stalls the BT and stops the robot for no reason.
       max_planning_time: 1.5
 
-# Local costmap intentionally NOT overridden here.
-# Nav2's local costmap uses rolling_window: true (6×6 m in odom frame).
-# StaticLayer is incompatible with rolling_window — it receives the full
-# 20×20 m traversability_grid and overrides the size, causing the planner
-# to report "Robot is out of bounds of the costmap" at every 2 Hz map
-# update as the costmap origin shifts. The local costmap keeps its original
-# ObstacleLayer (scan_3d) for dynamic obstacle avoidance around the robot.
-# The global costmap swap above is sufficient for the planner to route
-# through ramps; MPPI follows the global path with local scan_3d avoidance.
+controller_server:
+  ros__parameters:
+    goal_checker:
+      # Ramp waypoints are control waypoints, not loose frontier centroids.
+      # The base 0.50 m tolerance lets Nav2 mark a ramp goal reached while
+      # the robot is still at the ramp foot.
+      xy_goal_tolerance: 0.20
+      # Rapid ramp waypoint preemption must re-evaluate each new pose from
+      # scratch; stateful=true can carry a reached state across consecutive
+      # short-horizon goals.
+      stateful: false
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      # MPPI must use the same ETH traversability surface as the global
+      # planner. A 2D LaserScan ObstacleLayer marks ramp floor returns as
+      # obstacles, which pins the robot at the ramp foot even when the global
+      # plan correctly crosses the slope.
+      global_frame: map
+      rolling_window: false
+      resolution: 0.10
+      plugins: ["static_layer", "inflation_layer"]
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_topic: /robot/traversability_grid
+        map_subscribe_transient_local: true
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        inflation_radius: 0.30
+        cost_scaling_factor: 5.0

@@ -10,21 +10,23 @@ router):
     /odom/nav ─────────────┘
                             └──> /cmd_vel_stamped ──> twist_bridge
 
-For every TwistStamped received, we measure the robot's pivot-clearance
-disk against the current /map. If the disk contains an occupied cell
-(robot is "hugging a wall"), we kill the angular component — translation
-along the body axis is still allowed (so robot can drive OUT of the
-narrow zone) but rotation in place is suppressed (which would sweep the
-body/wheels through the wall).
+For every command received, we measure the robot's footprint against the
+current /map. The default stamped mode kills unsafe angular commands but
+keeps translation so the robot can drive out of a narrow zone. Optional
+linear-stop mode adds a predictive footprint check for legged Nav2
+controllers: if the combined command clips, split the command by DOF and
+preserve any safe escape component before resorting to a full stop. When
+enabled, a bounded reverse-escape reflex may publish a small opposite
+body-x command if the requested motion clips but reversing is clear.
 
 This complements CFPA2's pivot-lock (which only blocks goal CHANGES).
 The shield enforces the same "no pivot in tight clearance" invariant at
 cmd_vel level, so even if the held goal demands rotation, the rotation
 is suppressed until the robot has cleared the corridor.
 
-Why we don't kill linear too: stopping linear leaves the robot frozen
-forever in the narrow zone (no recovery). Letting linear through means
-"go straight ahead" — usually the only way out of a narrow corridor.
+Why we avoid hard-stop first: stopping both linear and angular can leave
+the robot frozen in the narrow zone. Preserving safe translation while
+killing an unsafe yaw command is usually the practical escape motion.
 """
 
 from __future__ import annotations
@@ -40,7 +42,7 @@ import tf2_ros
 from rclpy.duration import Duration
 from rclpy.time import Time
 from nav_msgs.msg import OccupancyGrid, Odometry
-from geometry_msgs.msg import TwistStamped
+from geometry_msgs.msg import Twist, TwistStamped
 from std_msgs.msg import String
 
 
@@ -51,9 +53,14 @@ class CmdVelSafetyShield(Node):
         self.declare_parameter("clearance_radius_m", 0.50)
         self.declare_parameter("occ_threshold", 50)
         self.declare_parameter("angular_kill_threshold_rad_s", 0.10)
+        self.declare_parameter("linear_stop_enabled", False)
+        self.declare_parameter("linear_kill_threshold_mps", 0.03)
+        self.declare_parameter("reverse_escape_enabled", False)
+        self.declare_parameter("reverse_escape_speed_mps", 0.10)
         self.declare_parameter("footprint_length_m", 0.65)
         self.declare_parameter("footprint_width_m", 0.45)
         self.declare_parameter("predict_horizon_sec", 0.4)
+        self.declare_parameter("message_type", "stamped")
         self.declare_parameter("input_topic", "cmd_vel_stamped_raw")
         self.declare_parameter("output_topic", "cmd_vel_stamped")
         self.declare_parameter("map_topic", "map")
@@ -68,11 +75,24 @@ class CmdVelSafetyShield(Node):
         self.angular_kill_thr = float(
             self.get_parameter("angular_kill_threshold_rad_s").value
         )
+        self.linear_stop_enabled = bool(
+            self.get_parameter("linear_stop_enabled").value
+        )
+        self.linear_kill_thr = float(
+            self.get_parameter("linear_kill_threshold_mps").value
+        )
+        self.reverse_escape_enabled = bool(
+            self.get_parameter("reverse_escape_enabled").value
+        )
+        self.reverse_escape_speed = abs(float(
+            self.get_parameter("reverse_escape_speed_mps").value
+        ))
         self.fp_length = float(self.get_parameter("footprint_length_m").value)
         self.fp_width = float(self.get_parameter("footprint_width_m").value)
         self.predict_horizon_sec = float(
             self.get_parameter("predict_horizon_sec").value
         )
+        self.message_type = str(self.get_parameter("message_type").value).strip().lower()
         in_topic = str(self.get_parameter("input_topic").value)
         out_topic = str(self.get_parameter("output_topic").value)
         map_topic = str(self.get_parameter("map_topic").value)
@@ -92,9 +112,14 @@ class CmdVelSafetyShield(Node):
             depth=1,
         )
         self.create_subscription(OccupancyGrid, map_topic, self._on_map, map_qos)
-        self.create_subscription(TwistStamped, in_topic, self._on_cmd, 5)
+        if self.message_type == "twist":
+            self.create_subscription(Twist, in_topic, self._on_cmd_twist, 5)
+            self.cmd_pub = self.create_publisher(Twist, out_topic, 5)
+        else:
+            self.message_type = "stamped"
+            self.create_subscription(TwistStamped, in_topic, self._on_cmd_stamped, 5)
+            self.cmd_pub = self.create_publisher(TwistStamped, out_topic, 5)
         self.create_subscription(Odometry, odom_topic, self._on_odom, 10)
-        self.cmd_pub = self.create_publisher(TwistStamped, out_topic, 5)
         self.status_pub = self.create_publisher(String, status_topic, 5)
 
         if self.use_tf:
@@ -106,6 +131,9 @@ class CmdVelSafetyShield(Node):
         self.get_logger().info(
             f"cmd_vel_safety_shield armed. clearance_radius={self.radius_m:.2f}m "
             f"angular_kill>{self.angular_kill_thr:.2f}rad/s | "
+            f"linear_stop={self.linear_stop_enabled} "
+            f"reverse_escape={self.reverse_escape_enabled} "
+            f"type={self.message_type} | "
             f"in={in_topic} out={out_topic} map={map_topic} odom={odom_topic}"
         )
 
@@ -122,26 +150,131 @@ class CmdVelSafetyShield(Node):
             float(msg.pose.pose.position.y),
         )
 
-    def _on_cmd(self, msg: TwistStamped) -> None:
+    def _on_cmd_stamped(self, msg: TwistStamped) -> None:
+        vx, vy, wz, action = self._filter_command(
+            float(msg.twist.linear.x),
+            float(msg.twist.linear.y),
+            float(msg.twist.angular.z),
+        )
+        out = TwistStamped()
+        out.header = msg.header
+        out.twist.linear.x = vx
+        out.twist.linear.y = vy
+        out.twist.linear.z = 0.0
+        out.twist.angular.x = 0.0
+        out.twist.angular.y = 0.0
+        out.twist.angular.z = wz
+        self.cmd_pub.publish(out)
+        self._publish_status(action, float(msg.twist.linear.x), float(msg.twist.angular.z))
+
+    def _on_cmd_twist(self, msg: Twist) -> None:
+        vx, vy, wz, action = self._filter_command(
+            float(msg.linear.x),
+            float(msg.linear.y),
+            float(msg.angular.z),
+        )
+        out = Twist()
+        out.linear.x = vx
+        out.linear.y = vy
+        out.linear.z = 0.0
+        out.angular.x = 0.0
+        out.angular.y = 0.0
+        out.angular.z = wz
+        self.cmd_pub.publish(out)
+        self._publish_status(action, float(msg.linear.x), float(msg.angular.z))
+
+    def _filter_command(self, vx: float, vy: float, wz: float) -> tuple[float, float, float, str]:
         if self._latest_map is None:
-            self.cmd_pub.publish(msg)
-            self._publish_status("passthrough_no_map", msg)
-            return
+            return vx, vy, wz, "passthrough_no_map"
 
         # Need full pose (xy + yaw) for predictive check.
         pose = self._lookup_pose_xyyaw()
         if pose is None:
-            self.cmd_pub.publish(msg)
-            self._publish_status("passthrough_no_pose", msg)
-            return
+            return vx, vy, wz, "passthrough_no_pose"
         rx, ry, ryaw = pose
 
-        ang = msg.twist.angular.z
+        has_linear = math.hypot(vx, vy) > self.linear_kill_thr
+        has_angular = abs(wz) > self.angular_kill_thr
+        if self.linear_stop_enabled and (has_linear or has_angular):
+            motion_clips = self._motion_footprint_clips(
+                rx,
+                ry,
+                ryaw,
+                vx=vx,
+                vy=vy,
+                wz=wz,
+                horizon_sec=self.predict_horizon_sec,
+            )
+            if not motion_clips:
+                return vx, vy, wz, "passthrough_motion_safe"
+
+            translation_clips = has_linear and self._motion_footprint_clips(
+                rx,
+                ry,
+                ryaw,
+                vx=vx,
+                vy=vy,
+                wz=0.0,
+                horizon_sec=self.predict_horizon_sec,
+            )
+            rotation_clips = has_angular and self._motion_footprint_clips(
+                rx,
+                ry,
+                ryaw,
+                vx=0.0,
+                vy=0.0,
+                wz=wz,
+                horizon_sec=self.predict_horizon_sec,
+            )
+
+            if has_linear and not translation_clips:
+                self.get_logger().warn(
+                    f"omega-killed @ pose ({rx:.2f},{ry:.2f},{math.degrees(ryaw):.0f}°): "
+                    f"combined motion would clip footprint, translation "
+                    f"v=({vx:.2f},{vy:.2f}) is clear, requested ω={wz:.2f} → 0.00"
+                )
+                return vx, vy, 0.0, "omega_killed_motion_clip"
+
+            if has_angular and not rotation_clips:
+                self.get_logger().warn(
+                    f"linear-stopped @ pose ({rx:.2f},{ry:.2f},{math.degrees(ryaw):.0f}°): "
+                    f"combined motion would clip footprint, rotation "
+                    f"ω={wz:.2f} is clear, requested v=({vx:.2f},{vy:.2f}) → 0.00"
+                )
+                return 0.0, 0.0, wz, "linear_stopped_rotation_safe"
+
+            if self.reverse_escape_enabled and abs(vx) > self.linear_kill_thr:
+                escape_vx = -math.copysign(
+                    min(abs(vx), self.reverse_escape_speed),
+                    vx,
+                )
+                escape_clips = self._motion_footprint_clips(
+                    rx,
+                    ry,
+                    ryaw,
+                    vx=escape_vx,
+                    vy=0.0,
+                    wz=0.0,
+                    horizon_sec=self.predict_horizon_sec,
+                )
+                if not escape_clips:
+                    self.get_logger().warn(
+                        f"reverse-escape @ pose ({rx:.2f},{ry:.2f},{math.degrees(ryaw):.0f}°): "
+                        f"requested motion clips footprint; "
+                        f"publishing v=({escape_vx:.2f},0.00) ω=0.00"
+                    )
+                    return escape_vx, 0.0, 0.0, "reverse_escape"
+
+            self.get_logger().warn(
+                f"motion-stopped @ pose ({rx:.2f},{ry:.2f},{math.degrees(ryaw):.0f}°): "
+                f"predicted footprint clip, requested v=({vx:.2f},{vy:.2f}) "
+                f"ω={wz:.2f} → stop"
+            )
+            return 0.0, 0.0, 0.0, "motion_stopped"
+
         # Small ω is always safe — pass through.
-        if abs(ang) <= self.angular_kill_thr:
-            self.cmd_pub.publish(msg)
-            self._publish_status("passthrough_small_omega", msg)
-            return
+        if abs(wz) <= self.angular_kill_thr:
+            return vx, vy, wz, "passthrough_small_omega"
 
         # PREDICTIVE CHECK: simulate the requested rotation forward by
         # `predict_horizon_sec` and test the rotated footprint. If the
@@ -149,40 +282,29 @@ class CmdVelSafetyShield(Node):
         # even if current pose is hugging a wall (means we're rotating
         # AWAY from it). Only kill ω when the rotation would sweep the
         # body INTO a wall.
-        future_yaw = ryaw + ang * self.predict_horizon_sec
+        future_yaw = ryaw + wz * self.predict_horizon_sec
         # Sweep the rotation in N samples to catch mid-rotation clips
         sweep_n = 4
         rotation_safe = True
         for k in range(sweep_n + 1):
             t = k / sweep_n
-            yaw_k = ryaw + ang * self.predict_horizon_sec * t
+            yaw_k = ryaw + wz * self.predict_horizon_sec * t
             if self._oriented_footprint_clips(rx, ry, yaw_k):
                 rotation_safe = False
                 break
 
         if rotation_safe:
             # Rotation OK — pass full cmd through.
-            self.cmd_pub.publish(msg)
-            self._publish_status("passthrough_rotation_safe", msg)
-            return
+            return vx, vy, wz, "passthrough_rotation_safe"
 
         # Rotation would clip wall — kill ω, keep linear so we can
         # back/forward out of corridor.
-        out = TwistStamped()
-        out.header = msg.header
-        out.twist.linear.x = msg.twist.linear.x
-        out.twist.linear.y = msg.twist.linear.y
-        out.twist.linear.z = 0.0
-        out.twist.angular.x = 0.0
-        out.twist.angular.y = 0.0
-        out.twist.angular.z = 0.0
-        self.cmd_pub.publish(out)
         self.get_logger().warn(
             f"omega-killed @ pose ({rx:.2f},{ry:.2f},{math.degrees(ryaw):.0f}°): "
-            f"rotation by {math.degrees(ang*self.predict_horizon_sec):.0f}° "
-            f"would clip footprint, requested ω={ang:.2f} → 0.00"
+            f"rotation by {math.degrees(wz*self.predict_horizon_sec):.0f}° "
+            f"would clip footprint, requested ω={wz:.2f} → 0.00"
         )
-        self._publish_status("omega_killed", msg)
+        return vx, vy, 0.0, "omega_killed"
 
     # ── Geometry helpers ───────────────────────────────────────────────
     def _lookup_pose_xy(self) -> Optional[tuple[float, float]]:
@@ -271,6 +393,41 @@ class CmdVelSafetyShield(Node):
                     return True
         return False
 
+    def _motion_footprint_clips(
+        self,
+        cx: float,
+        cy: float,
+        yaw: float,
+        *,
+        vx: float,
+        vy: float,
+        wz: float,
+        horizon_sec: float,
+    ) -> bool:
+        """Predict whether the commanded body-frame twist clips the map.
+
+        Samples future poses only. If the current pose is already close to
+        an obstacle, backing away can still be allowed when its future
+        footprint is clear.
+        """
+        horizon = max(0.0, float(horizon_sec))
+        if horizon <= 0.0:
+            return False
+        steps = max(2, int(math.ceil(horizon / 0.1)))
+        dt = horizon / steps
+        x = float(cx)
+        y = float(cy)
+        th = float(yaw)
+        for _ in range(steps):
+            c = math.cos(th)
+            s = math.sin(th)
+            x += (c * vx - s * vy) * dt
+            y += (s * vx + c * vy) * dt
+            th += wz * dt
+            if self._oriented_footprint_clips(x, y, th):
+                return True
+        return False
+
     def _clearance_blocked(self, rxy: tuple[float, float]) -> bool:
         msg = self._latest_map
         if msg is None:
@@ -307,12 +464,12 @@ class CmdVelSafetyShield(Node):
                     return True
         return False
 
-    def _publish_status(self, action: str, cmd: TwistStamped) -> None:
+    def _publish_status(self, action: str, v_in: float, w_in: float) -> None:
         s = String()
         s.data = (
             '{"schema":"cmd_vel_shield/v1","action":"' + action + '"'
-            f',"v_in":{cmd.twist.linear.x:.3f}'
-            f',"w_in":{cmd.twist.angular.z:.3f}'
+            f',"v_in":{v_in:.3f}'
+            f',"w_in":{w_in:.3f}'
             "}"
         )
         self.status_pub.publish(s)

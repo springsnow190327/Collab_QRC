@@ -155,6 +155,13 @@ class CFPA2Coordinator(Node):
         self.declare_parameter("sensor_range", 3.5)
         self.declare_parameter("frontier_stride", 2)
         self.declare_parameter("max_targets", 800)
+        # The C++ frontier extractor streams raw frontier cells in grid scan
+        # order. Large robot-centric elevation maps can otherwise fill the raw
+        # target buffer with distant border frontiers before local reachable
+        # frontiers are seen. Over-fetch raw cells, then cluster/filter them in
+        # Python so max_targets limits representative goals, not scan order.
+        self.declare_parameter("frontier_raw_overfetch_factor", 20)
+        self.declare_parameter("frontier_raw_overfetch_min", 4096)
         self.declare_parameter("goal_topic_suffix", "/way_point_coord")
         self.declare_parameter("nav_status_topic_suffix", "/nav_status")
         # Map source for frontier extraction + BFS reachability. Two practical choices:
@@ -202,6 +209,23 @@ class CFPA2Coordinator(Node):
         self.declare_parameter("blacklist_ttl_sec", 30.0)
         self.declare_parameter("blacklist_key_resolution", 0.5)
         self.declare_parameter("reached_blacklist_dist", 0.30)
+        # Distance at which an exploration frontier is considered satisfied.
+        # This is a sensing waypoint contract, not a docking tolerance. If left
+        # <=0, it follows max(switch_min_dist, reached_blacklist_dist).
+        self.declare_parameter("goal_satisfied_dist", 0.0)
+        # The relaxed sensing radius is valid only when the frontier is
+        # visible through known-free map cells. This prevents small obstacles
+        # from making an occluded frontier look reached by Euclidean distance.
+        self.declare_parameter("goal_satisfied_requires_los", True)
+        # Very close goals count as reached even if the line check is noisy
+        # at the robot footprint. Keep this much smaller than the sensing
+        # radius.
+        self.declare_parameter("goal_satisfied_direct_dist", 0.30)
+        # Optional local-waypoint horizon. Disabled by default for legacy maps;
+        # nav_test_3d_explore enables it because elevation maps can expose
+        # distant frontier cells before the controller can safely traverse the
+        # intermediate terrain.
+        self.declare_parameter("cfpa2_max_goal_distance_m", 0.0)
         self.declare_parameter("reached_blacklist_repeat_count", 3)
         self.declare_parameter("reached_blacklist_ttl_sec", 12.0)
         self.declare_parameter("overlap_weight", 1.0)
@@ -302,6 +326,11 @@ class CFPA2Coordinator(Node):
         self.declare_parameter("cfpa2_space_time_max_speed_mps", 0.60)
         self.declare_parameter("cfpa2_frontier_min_cluster_area_m2", 0.20)
         self.declare_parameter("cfpa2_frontier_obstacle_clearance_m", 0.40)
+        # Goal-level clearance is re-evaluated every tick. Frontier extraction
+        # can accept a point before a small obstacle is mapped; once the
+        # obstacle appears, the active goal must be invalidated instead of held
+        # by min-hold / pivot-lock.
+        self.declare_parameter("cfpa2_goal_obstacle_clearance_m", 0.0)
         self.declare_parameter("exploration_gain_radius_cells", 4)
         self.declare_parameter("marker_frame_override", "world")
         self.declare_parameter("coordinator_map_topic", "/mtare/coordinator_map")
@@ -331,6 +360,13 @@ class CFPA2Coordinator(Node):
         self.sensor_range = max(0.1, float(self.get_parameter("sensor_range").value))
         self.frontier_stride = max(1, int(self.get_parameter("frontier_stride").value))
         self.max_targets = max(50, int(self.get_parameter("max_targets").value))
+        self.frontier_raw_overfetch_factor = max(
+            1, int(self.get_parameter("frontier_raw_overfetch_factor").value)
+        )
+        self.frontier_raw_overfetch_min = max(
+            self.max_targets,
+            int(self.get_parameter("frontier_raw_overfetch_min").value),
+        )
         self.goal_topic_suffix = str(self.get_parameter("goal_topic_suffix").value)
         # output_mode used to be a parameter (cfpa2_single_robot.yaml + ROS
         # param) with values 'waypoint_coord' (default) and 'exact_split'
@@ -394,6 +430,25 @@ class CFPA2Coordinator(Node):
             float(self.get_parameter("blacklist_key_resolution").value),
         )
         self.reached_blacklist_dist = max(0.0, float(self.get_parameter("reached_blacklist_dist").value))
+        configured_goal_satisfied_dist = float(self.get_parameter("goal_satisfied_dist").value)
+        if configured_goal_satisfied_dist > 0.0:
+            self.goal_satisfied_dist = max(0.1, configured_goal_satisfied_dist)
+        else:
+            self.goal_satisfied_dist = max(self.switch_min_dist, self.reached_blacklist_dist)
+        self.goal_satisfied_requires_los = bool(
+            self.get_parameter("goal_satisfied_requires_los").value
+        )
+        self.goal_satisfied_direct_dist = min(
+            self.goal_satisfied_dist,
+            max(0.0, float(self.get_parameter("goal_satisfied_direct_dist").value)),
+        )
+        self.cfpa2_max_goal_distance_m = max(
+            0.0, float(self.get_parameter("cfpa2_max_goal_distance_m").value)
+        )
+        # A goal that is satisfied by the exploration contract must also be
+        # eligible for reached-goal blacklisting; otherwise the coordinator can
+        # keep reassigning a point Nav2 already treats as complete.
+        self.reached_blacklist_dist = max(self.reached_blacklist_dist, self.goal_satisfied_dist)
         self.reached_blacklist_repeat_count = max(
             1,
             int(self.get_parameter("reached_blacklist_repeat_count").value),
@@ -513,16 +568,20 @@ class CFPA2Coordinator(Node):
         )
         # Cache map for _set_active_goal pivot check (set each tick).
         self._cur_planning_map: Optional[OccupancyGrid] = None
-        # Per-namespace start time of pivot-lock (when we first refused
-        # a goal change). After pivot_lock_max_hold_sec, we release the
-        # lock — necessary escape valve when held goal demands rotation
-        # the executor can't perform (shield kills ω) → B would
-        # otherwise sit forever with no way out.
+        # After pivot_lock_max_hold_sec, we release the lock — necessary
+        # escape valve when the held goal itself becomes the stale command
+        # keeping the executor in lethal space.
         self.declare_parameter("pivot_lock_max_hold_sec", 15.0)
         self.pivot_lock_max_hold_sec = max(
             0.0, float(self.get_parameter("pivot_lock_max_hold_sec").value)
         )
-        self._pivot_lock_start_ns: dict[str, int] = {}
+        # Release earlier than max-hold if the held goal is actively
+        # regressing. At box corners the pivot lock can be locally safe but
+        # globally stale; increasing distance to the held goal is the signal.
+        self.declare_parameter("pivot_lock_regress_release_m", 0.50)
+        self.pivot_lock_regress_release_m = max(
+            0.0, float(self.get_parameter("pivot_lock_regress_release_m").value)
+        )
         self.cfpa2_close_stop_radius_m = max(
             0.0, float(self.get_parameter("cfpa2_close_stop_radius_m").value)
         )
@@ -560,6 +619,14 @@ class CFPA2Coordinator(Node):
         )
         self.cfpa2_frontier_obstacle_clearance_m = max(
             0.0, float(self.get_parameter("cfpa2_frontier_obstacle_clearance_m").value)
+        )
+        configured_goal_clearance = float(
+            self.get_parameter("cfpa2_goal_obstacle_clearance_m").value
+        )
+        self.cfpa2_goal_obstacle_clearance_m = (
+            max(0.0, configured_goal_clearance)
+            if configured_goal_clearance > 0.0
+            else self.cfpa2_frontier_obstacle_clearance_m
         )
         self.exploration_gain_radius_cells = max(1, int(self.get_parameter("exploration_gain_radius_cells").value))
         self.marker_frame_override = str(self.get_parameter("marker_frame_override").value).strip()
@@ -627,6 +694,7 @@ class CFPA2Coordinator(Node):
         # change goal — it stays in legged/idle indefinitely (CLAUDE.md
         # golden rule #12 — multi-layer safety stacks deadlock easily).
         self._pivot_lock_held_since_ns: dict[str, int] = {}
+        self._pivot_lock_start_dist_m: dict[str, float] = {}
         # Stable-challenger streak tracking — see _apply_goal_policy override.
         self._challenger_id: dict[str, tuple[int, int]] = {}
         self._challenger_streak: dict[str, int] = {}
@@ -765,6 +833,8 @@ class CFPA2Coordinator(Node):
             f"stuck_window={self.cfpa2_stuck_window_sec:.0f}s  "
             f"bl_ttl={self.blacklist_ttl_sec:.0f}s  "
             f"bl_radius={self.blacklist_cluster_radius_m:.2f}m  "
+            f"goal_satisfied={self.goal_satisfied_dist:.2f}m  "
+            f"goal_los={'on' if self.goal_satisfied_requires_los else 'off'}  "
             f"reached_bl_dist={self.reached_blacklist_dist:.2f}m  "
             f"hyst_lock_age={self.switch_hysteresis_max_lock_sec:.0f}s"
         )
@@ -940,6 +1010,7 @@ class CFPA2Coordinator(Node):
             self.goal_blacklist_until_ns[ns].get(key, 0),
             until_ns,
         )
+        self._add_blacklist_disk(ns, current_goal, until_ns)
         self.goal_fail_counts[ns][key] = 0
         self.goal_progress_samples[ns].clear()
         self.get_logger().warn(
@@ -973,6 +1044,29 @@ class CFPA2Coordinator(Node):
             msg.info.origin.position.y + (gy + 0.5) * msg.info.resolution,
         )
 
+    @staticmethod
+    def _grid_line_cells(x0: int, y0: int, x1: int, y1: int) -> list[tuple[int, int]]:
+        """Bresenham cells from start to end, inclusive."""
+        cells: list[tuple[int, int]] = []
+        dx = abs(x1 - x0)
+        dy = -abs(y1 - y0)
+        sx = 1 if x0 < x1 else -1
+        sy = 1 if y0 < y1 else -1
+        err = dx + dy
+        x, y = x0, y0
+        while True:
+            cells.append((x, y))
+            if x == x1 and y == y1:
+                break
+            e2 = 2 * err
+            if e2 >= dy:
+                err += dy
+                x += sx
+            if e2 <= dx:
+                err += dx
+                y += sy
+        return cells
+
     def _is_free(self, data: list[int], idx: int) -> bool:
         v = data[idx]
         return v != self.unknown_value and 0 <= v < self.occ_thresh
@@ -1000,6 +1094,41 @@ class CFPA2Coordinator(Node):
                 if data[self._grid_index(nx, ny, w)] >= self.occ_thresh:
                     return False
         return True
+
+    def _goal_has_obstacle_clearance(
+        self,
+        map_msg: OccupancyGrid,
+        goal: tuple[float, float],
+        clearance_m: Optional[float] = None,
+    ) -> bool:
+        """Return True when a goal point has the configured obstacle buffer.
+
+        This intentionally uses the same occupied-cell test as frontier
+        extraction, but runs on active goals too. That catches frontiers which
+        were valid before a clutter obstacle entered the map and later become
+        unsafe while hysteresis or pivot-lock would otherwise keep them alive.
+        """
+        if clearance_m is None:
+            clearance_m = getattr(
+                self,
+                "cfpa2_goal_obstacle_clearance_m",
+                getattr(self, "cfpa2_frontier_obstacle_clearance_m", 0.0),
+            )
+        if clearance_m <= 0.0:
+            return True
+        grid = self._world_to_grid(map_msg, goal[0], goal[1])
+        if grid is None:
+            return False
+        res = max(1e-6, float(map_msg.info.resolution))
+        radius_cells = int(math.ceil(clearance_m / res))
+        return self._has_frontier_obstacle_clearance(
+            map_msg.data,
+            grid[0],
+            grid[1],
+            int(map_msg.info.width),
+            int(map_msg.info.height),
+            radius_cells,
+        )
 
     def _build_fallback_map(self) -> Optional[OccupancyGrid]:
         return build_fallback_map(
@@ -1030,11 +1159,16 @@ class CFPA2Coordinator(Node):
         min_area_m2 = self.cfpa2_frontier_min_cluster_area_m2
         clearance_cells = int(math.ceil(self.cfpa2_frontier_obstacle_clearance_m / res))
         max_targets = self._adaptive_max_targets
+        raw_capacity = self._frontier_raw_capacity(w, h, max_targets)
 
         if _GRID_OPS_LIB is not None:
-            raw = self._extract_frontiers_cpp(msg, w, h, res, s, min_area_m2, clearance_cells, max_targets)
+            raw = self._extract_frontiers_cpp(
+                msg, w, h, res, s, min_area_m2, clearance_cells, raw_capacity
+            )
         else:
-            raw = self._extract_frontiers_py(msg, w, h, res, s, min_area_m2, clearance_cells, max_targets)
+            raw = self._extract_frontiers_py(
+                msg, w, h, res, s, min_area_m2, clearance_cells, raw_capacity
+            )
         # Collapse per-cell samples into one representative per spatial
         # cluster.
         clustered = self._cluster_representatives(raw, self.cfpa2_frontier_cluster_radius_m)
@@ -1051,7 +1185,14 @@ class CFPA2Coordinator(Node):
         # permanently invisible to LiDAR. A drove there, FL_wheel hit
         # wall_north, body climbed; A wedged there for 156 s while
         # CFPA2 kept reassigning the same trap frontier.
-        return self._filter_dead_frontiers(clustered, msg)
+        return self._filter_dead_frontiers(clustered, msg)[:max_targets]
+
+    def _frontier_raw_capacity(self, width: int, height: int, max_targets: int) -> int:
+        map_cells = max(1, int(width) * int(height))
+        factor = max(1, int(getattr(self, "frontier_raw_overfetch_factor", 20)))
+        minimum = max(max_targets, int(getattr(self, "frontier_raw_overfetch_min", 4096)))
+        requested = max(max_targets, minimum, max_targets * factor)
+        return min(map_cells, requested)
 
     def _filter_dead_frontiers(
         self, points: list[tuple[float, float]], msg: OccupancyGrid
@@ -1130,7 +1271,11 @@ class CFPA2Coordinator(Node):
         r2 = cluster_radius_m * cluster_radius_m
         # Each entry: [cx, cy, [members]]. Greedy: each new point
         # joins the first existing cluster within radius (centroid
-        # then updated), else seeds a new cluster.
+        # then updated), else seeds a new cluster. Return the cluster
+        # medoid (raw member nearest the centroid), not the centroid
+        # itself: raw frontier members already passed obstacle-clearance
+        # filtering, while a synthesized centroid can land closer to an
+        # obstacle than any sampled member.
         clusters: list[list] = []
         for px, py in points:
             joined = False
@@ -1145,7 +1290,13 @@ class CFPA2Coordinator(Node):
                     break
             if not joined:
                 clusters.append([px, py, [(px, py)]])
-        return [(c[0], c[1]) for c in clusters]
+        reps: list[tuple[float, float]] = []
+        for cx, cy, members in clusters:
+            reps.append(min(
+                members,
+                key=lambda p: (p[0] - cx) * (p[0] - cx) + (p[1] - cy) * (p[1] - cy),
+            ))
+        return reps
 
     def _extract_frontiers_cpp(self, msg, w, h, res, s, min_area_m2, clearance_cells, max_targets):
         grid_np = np.array(msg.data, dtype=np.int8)
@@ -1381,6 +1532,7 @@ class CFPA2Coordinator(Node):
 
         until_ns = now_ns + int(self.blacklist_ttl_sec * 1e9)
         self.goal_blacklist_until_ns[ns][key] = until_ns
+        self._add_blacklist_disk(ns, goal, until_ns)
         self.get_logger().warn(
             f"{ns}: blacklisting goal ({goal[0]:.2f},{goal[1]:.2f}) for {self.blacklist_ttl_sec:.1f}s "
             f"after repeated {reason} failures."
@@ -1443,6 +1595,69 @@ class CFPA2Coordinator(Node):
             return False
         return self._distance_robot_to_goal(ns, goal) <= self.min_assign_distance
 
+    def _goal_too_far(self, ns: str, goal: tuple[float, float]) -> bool:
+        max_distance = float(getattr(self, "cfpa2_max_goal_distance_m", 0.0))
+        if max_distance <= 0.0:
+            return False
+        return self._distance_robot_to_goal(ns, goal) > max_distance
+
+    def _goal_satisfaction_map(
+        self,
+        ns: str,
+        map_msg: Optional[OccupancyGrid] = None,
+    ) -> Optional[OccupancyGrid]:
+        if map_msg is not None:
+            return map_msg
+        msg = getattr(self, "maps", {}).get(ns)
+        if msg is not None:
+            return msg
+        return getattr(self, "_cur_planning_map", None)
+
+    def _goal_line_of_sight_clear(
+        self,
+        ns: str,
+        goal: tuple[float, float],
+        map_msg: Optional[OccupancyGrid] = None,
+    ) -> bool:
+        msg = self._goal_satisfaction_map(ns, map_msg)
+        if msg is None or ns not in self.odoms:
+            return False
+
+        od = self.odoms[ns]
+        start = self._world_to_grid(
+            msg,
+            float(od.pose.pose.position.x),
+            float(od.pose.pose.position.y),
+        )
+        end = self._world_to_grid(msg, goal[0], goal[1])
+        if start is None or end is None:
+            return False
+
+        w = int(msg.info.width)
+        data = msg.data
+        for i, (gx, gy) in enumerate(self._grid_line_cells(start[0], start[1], end[0], end[1])):
+            if i == 0:
+                continue
+            v = data[self._grid_index(gx, gy, w)]
+            if v == self.unknown_value or v >= self.occ_thresh:
+                return False
+        return True
+
+    def _goal_satisfied(
+        self,
+        ns: str,
+        goal: tuple[float, float],
+        map_msg: Optional[OccupancyGrid] = None,
+    ) -> bool:
+        dist = self._distance_robot_to_goal(ns, goal)
+        if dist > self.goal_satisfied_dist:
+            return False
+        if dist <= getattr(self, "goal_satisfied_direct_dist", 0.0):
+            return True
+        if not getattr(self, "goal_satisfied_requires_los", True):
+            return True
+        return self._goal_line_of_sight_clear(ns, goal, map_msg)
+
     def _goals_equivalent(
         self,
         a: Optional[tuple[float, float]],
@@ -1460,7 +1675,12 @@ class CFPA2Coordinator(Node):
             return False
         return math.hypot(a[0] - b[0], a[1] - b[1]) <= tol_m
 
-    def _update_reached_goal_blacklist(self, ns: str, now_ns: int) -> None:
+    def _update_reached_goal_blacklist(
+        self,
+        ns: str,
+        now_ns: int,
+        map_msg: Optional[OccupancyGrid] = None,
+    ) -> None:
         if self.reached_blacklist_ttl_sec <= 0.0 or self.reached_blacklist_dist <= 0.0:
             return
 
@@ -1471,8 +1691,7 @@ class CFPA2Coordinator(Node):
             return
 
         key = self._goal_key(goal)
-        dist = self._distance_robot_to_goal(ns, goal)
-        if dist > self.reached_blacklist_dist:
+        if not self._goal_satisfied(ns, goal, map_msg):
             self.reached_goal_last_key[ns] = key
             self.reached_goal_repeat_count[ns] = 0
             return
@@ -1491,13 +1710,15 @@ class CFPA2Coordinator(Node):
         if self.reached_goal_repeat_count[ns] < self.reached_blacklist_repeat_count:
             return
 
+        repeat_count = self.reached_goal_repeat_count[ns]
         self.reached_goal_repeat_count[ns] = 0
         until_ns = now_ns + int(self.reached_blacklist_ttl_sec * 1e9)
         self.goal_blacklist_until_ns[ns][key] = until_ns
+        self._add_blacklist_disk(ns, goal, until_ns)
         self.get_logger().warn(
             f"{ns}: blacklisting repeatedly reached goal ({goal[0]:.2f},{goal[1]:.2f}) "
             f"for {self.reached_blacklist_ttl_sec:.1f}s "
-            f"after {self.reached_blacklist_repeat_count} near-goal repeats "
+            f"after {repeat_count} near-goal repeats "
             f"(dist<={self.reached_blacklist_dist:.2f}m)."
         )
         # Notify subclass-installed listeners (e.g. cfpa2_single_robot_node's
@@ -1518,6 +1739,42 @@ class CFPA2Coordinator(Node):
             return False
         idx = self._grid_index(g[0], g[1], int(map_msg.info.width))
         return idx in dist_map
+
+    def _held_goal_safety_failure(
+        self,
+        map_msg: OccupancyGrid,
+        dist_map: dict[int, int],
+        goal: tuple[float, float],
+    ) -> Optional[str]:
+        if not self._goal_reachable(map_msg, dist_map, goal):
+            return "unreachable"
+        if not self._goal_has_obstacle_clearance(map_msg, goal):
+            return "unsafe_clearance"
+        return None
+
+    def _blacklist_active_goal(
+        self,
+        ns: str,
+        goal: tuple[float, float],
+        now_ns: int,
+        reason: str,
+        ttl_sec: Optional[float] = None,
+    ) -> None:
+        key = self._goal_key(goal)
+        if ttl_sec is None:
+            ttl_sec = max(30.0, self.blacklist_ttl_sec, self.local_nav_stall_blacklist_sec)
+        until_ns = now_ns + int(max(1.0, ttl_sec) * 1e9)
+        self.goal_blacklist_until_ns[ns][key] = max(
+            self.goal_blacklist_until_ns[ns].get(key, 0),
+            until_ns,
+        )
+        self._add_blacklist_disk(ns, goal, until_ns)
+        self.goal_fail_counts[ns][key] = 0
+        self.goal_progress_samples[ns].clear()
+        self.get_logger().warn(
+            f"{ns}: blacklisting active goal ({goal[0]:.2f},{goal[1]:.2f}) "
+            f"after {reason}; ttl={max(1.0, ttl_sec):.1f}s."
+        )
 
     def _progress_delta(self, ns: str) -> Optional[float]:
         samples = self.goal_progress_samples[ns]
@@ -1565,28 +1822,125 @@ class CFPA2Coordinator(Node):
                     return True
         return False
 
-    def _set_active_goal(self, ns: str, goal: tuple[float, float], now_ns: int) -> None:
+    def _set_active_goal(self, ns: str, goal: tuple[float, float], now_ns: int) -> tuple[float, float]:
         prev = self.last_goal.get(ns)
         # Narrow-passage pivot lock: if the robot can't pivot at its
         # current pose without scraping a wall, refuse a goal change
         # that would demand reorientation. Keep the previous goal so
         # the executor drives the robot OUT of the corridor in a
         # straight line. Lock auto-releases as soon as clearance opens.
-        if (
+        goal_changed = (
             prev is not None
             and goal is not None
             and (abs(prev[0] - goal[0]) > 1e-3 or abs(prev[1] - goal[1]) > 1e-3)
-            and self._pivot_clearance_blocked(ns)
+        )
+        pivot_blocked = (
+            self._pivot_clearance_blocked(ns)
+            if (goal_changed or ns in self._pivot_lock_held_since_ns)
+            else False
+        )
+        if not pivot_blocked:
+            self._pivot_lock_held_since_ns.pop(ns, None)
+            self._pivot_lock_start_dist_m.pop(ns, None)
+
+        prev_satisfied = (
+            prev is not None
+            and ns in self.odoms
+            and self._goal_satisfied(ns, prev)
+        )
+        prev_blacklisted = (
+            prev is not None
+            and self._is_blacklisted(ns, prev, now_ns)
+        )
+        if (
+            goal_changed
+            and pivot_blocked
+            and not prev_satisfied
+            and not prev_blacklisted
         ):
-            self.get_logger().info(
-                f"{ns}: pivot-lock — clearance < {self.pivot_lock_radius_m:.2f} m "
-                f"at ({self.odoms[ns].pose.pose.position.x:.2f},"
-                f"{self.odoms[ns].pose.pose.position.y:.2f}); "
-                f"keeping prev goal ({prev[0]:.2f},{prev[1]:.2f}) instead of "
-                f"({goal[0]:.2f},{goal[1]:.2f})"
+            held_since_ns = self._pivot_lock_held_since_ns.get(ns)
+            if held_since_ns is None:
+                held_since_ns = now_ns
+                self._pivot_lock_held_since_ns[ns] = held_since_ns
+                self._pivot_lock_start_dist_m[ns] = self._distance_robot_to_goal(ns, prev)
+            held_sec = max(0.0, (now_ns - held_since_ns) * 1e-9)
+            start_dist = self._pivot_lock_start_dist_m.get(
+                ns,
+                self._distance_robot_to_goal(ns, prev),
             )
-            self._set_policy_reason(ns, "hold/narrow_passage_pivot_lock")
-            goal = prev
+            current_dist = self._distance_robot_to_goal(ns, prev)
+            regress_m = current_dist - start_dist
+            regress_release = (
+                self.pivot_lock_regress_release_m > 0.0
+                and regress_m >= self.pivot_lock_regress_release_m
+            )
+            max_hold_release = (
+                self.pivot_lock_max_hold_sec > 0.0
+                and held_sec >= self.pivot_lock_max_hold_sec
+            )
+            if max_hold_release or regress_release:
+                self._pivot_lock_held_since_ns.pop(ns, None)
+                self._pivot_lock_start_dist_m.pop(ns, None)
+                if regress_release:
+                    reason = "pivot-lock regress release"
+                    detail = (
+                        f"distance to held goal grew {regress_m:.2f}m "
+                        f">= {self.pivot_lock_regress_release_m:.2f}m"
+                    )
+                    policy = "switch/pivot_lock_regress_release"
+                else:
+                    reason = "pivot-lock max-hold release"
+                    detail = f"held {held_sec:.1f}s >= {self.pivot_lock_max_hold_sec:.1f}s"
+                    policy = "switch/pivot_lock_max_hold"
+                self.get_logger().warn(
+                    f"{ns}: {reason} — {detail} at "
+                    f"({self.odoms[ns].pose.pose.position.x:.2f},"
+                    f"{self.odoms[ns].pose.pose.position.y:.2f}); accepting "
+                    f"({goal[0]:.2f},{goal[1]:.2f}) instead of stale prev goal "
+                    f"({prev[0]:.2f},{prev[1]:.2f})."
+                )
+                self._set_policy_reason(ns, policy)
+            else:
+                self.get_logger().info(
+                    f"{ns}: pivot-lock — clearance < {self.pivot_lock_radius_m:.2f} m "
+                    f"at ({self.odoms[ns].pose.pose.position.x:.2f},"
+                    f"{self.odoms[ns].pose.pose.position.y:.2f}); "
+                    f"keeping prev goal ({prev[0]:.2f},{prev[1]:.2f}) instead of "
+                    f"({goal[0]:.2f},{goal[1]:.2f}) "
+                    f"(held {held_sec:.1f}/{self.pivot_lock_max_hold_sec:.1f}s)"
+                )
+                self._set_policy_reason(ns, "hold/narrow_passage_pivot_lock")
+                goal = prev
+        elif (
+            goal_changed
+            and prev_satisfied
+            and pivot_blocked
+        ):
+            self._pivot_lock_held_since_ns.pop(ns, None)
+            self._pivot_lock_start_dist_m.pop(ns, None)
+            self.get_logger().info(
+                f"{ns}: pivot-lock released — previous goal "
+                f"({prev[0]:.2f},{prev[1]:.2f}) is already satisfied "
+                f"(d<={self.goal_satisfied_dist:.2f}m); accepting "
+                f"({goal[0]:.2f},{goal[1]:.2f})."
+            )
+            self._set_policy_reason(ns, "switch/pivot_lock_prev_satisfied")
+        elif (
+            goal_changed
+            and prev_blacklisted
+            and pivot_blocked
+        ):
+            self._pivot_lock_held_since_ns.pop(ns, None)
+            self._pivot_lock_start_dist_m.pop(ns, None)
+            self.get_logger().info(
+                f"{ns}: pivot-lock released — previous goal "
+                f"({prev[0]:.2f},{prev[1]:.2f}) is blacklisted; accepting "
+                f"({goal[0]:.2f},{goal[1]:.2f})."
+            )
+            self._set_policy_reason(ns, "switch/pivot_lock_prev_blacklisted")
+        elif goal_changed:
+            self._pivot_lock_held_since_ns.pop(ns, None)
+            self._pivot_lock_start_dist_m.pop(ns, None)
         if prev is None or math.hypot(prev[0] - goal[0], prev[1] - goal[1]) > 1e-6:
             self.last_goal_set_time_ns[ns] = now_ns
             self.goal_progress_samples[ns].clear()
@@ -1603,6 +1957,7 @@ class CFPA2Coordinator(Node):
         elif self.goal_lock_start_xy.get(ns) is None and ns in self.odoms:
             self.goal_lock_start_xy[ns] = self._robot_xy(ns)
         self.last_goal[ns] = goal
+        return goal
 
     def _max_displacement_in_window(
         self, ns: str, window_ns: int
@@ -1759,9 +2114,9 @@ class CFPA2Coordinator(Node):
                 return candidate_goal
 
         dist_to_last = self._distance_robot_to_goal(ns, last)
-        reached_last = dist_to_last <= self.switch_min_dist
-        last_reachable = self._goal_reachable(map_msg, dist_map, last)
-        hard_failure = not last_reachable
+        reached_last = self._goal_satisfied(ns, last, map_msg)
+        safety_failure = self._held_goal_safety_failure(map_msg, dist_map, last)
+        hard_failure = safety_failure is not None
 
         last_set_ns = self.last_goal_set_time_ns.get(ns, 0)
         lock_active = (
@@ -1848,7 +2203,7 @@ class CFPA2Coordinator(Node):
                 return last
 
         if not reached_last and (hard_failure or stalled):
-            reason = "unreachable" if hard_failure else "stalled"
+            reason = safety_failure if hard_failure else "stalled"
             self._register_goal_failure(ns, last, now_ns, reason)
             self._set_policy_reason(ns, f"switch/{reason}")
             return candidate_goal
@@ -2522,6 +2877,8 @@ class CFPA2Coordinator(Node):
         map_msg: OccupancyGrid,
         dist_map: dict[int, int],
     ) -> float:
+        if not self._goal_has_obstacle_clearance(map_msg, goal):
+            return -1e18
         dist_m = self._grid_path_cost_m(map_msg, dist_map, goal)
         if dist_m is None or dist_m <= 0.0:
             return -1e18
@@ -2882,28 +3239,37 @@ class CFPA2Coordinator(Node):
         utilities: dict[tuple[float, float], float],
         exclude_goal: Optional[tuple[float, float]] = None,
         fallback_targets: Optional[list[tuple[float, float]]] = None,
+        map_msg: Optional[OccupancyGrid] = None,
+        dist_map: Optional[dict[int, int]] = None,
     ) -> Optional[tuple[float, float]]:
         # TODO(maybe): Move fallback target prioritization into cfpa2_demo.core for reuse.
         excluded_key = self._goal_key(exclude_goal) if exclude_goal is not None else None
 
-        for goal, _score in sorted(utilities.items(), key=lambda kv: kv[1], reverse=True):
+        def is_available(goal: tuple[float, float]) -> bool:
             if excluded_key is not None and self._goal_key(goal) == excluded_key:
-                continue
+                return False
             if self._goal_too_close(ns, goal):
-                continue
+                return False
+            if self._goal_too_far(ns, goal):
+                return False
             if self._is_blacklisted(ns, goal, now_ns):
-                continue
-            return goal
+                return False
+            if map_msg is not None and not self._goal_has_obstacle_clearance(map_msg, goal):
+                return False
+            if map_msg is not None and dist_map is not None and not self._goal_reachable(
+                map_msg, dist_map, goal
+            ):
+                return False
+            return True
+
+        for goal, _score in sorted(utilities.items(), key=lambda kv: kv[1], reverse=True):
+            if is_available(goal):
+                return goal
 
         if fallback_targets:
             for goal in sorted(fallback_targets, key=lambda g: self._distance_robot_to_goal(ns, g)):
-                if excluded_key is not None and self._goal_key(goal) == excluded_key:
-                    continue
-                if self._goal_too_close(ns, goal):
-                    continue
-                if self._is_blacklisted(ns, goal, now_ns):
-                    continue
-                return goal
+                if is_available(goal):
+                    return goal
         return None
 
     def _maybe_force_cfpa2_stuck_recovery(
@@ -2913,6 +3279,7 @@ class CFPA2Coordinator(Node):
         now_ns: int,
         utilities: dict[tuple[float, float], float],
         fallback_targets: list[tuple[float, float]],
+        map_msg: Optional[OccupancyGrid] = None,
     ) -> Optional[tuple[float, float]]:
         if self.cfpa2_stuck_lock_sec <= 0.0 or self.cfpa2_stuck_blacklist_sec <= 0.0:
             return None
@@ -2922,7 +3289,7 @@ class CFPA2Coordinator(Node):
         current_goal = self.last_goal.get(ns)
         if current_goal is None:
             return None
-        if self._goal_too_close(ns, current_goal):
+        if self._goal_satisfied(ns, current_goal, map_msg):
             return None
 
         lock_start_ns = self.last_goal_set_time_ns.get(ns, 0)
@@ -2960,6 +3327,7 @@ class CFPA2Coordinator(Node):
             utilities=utilities,
             exclude_goal=current_goal,
             fallback_targets=fallback_targets,
+            map_msg=map_msg,
         )
 
         last_event_ns = self.cfpa2_last_stuck_event_ns.get(ns, 0)
@@ -3102,7 +3470,8 @@ class CFPA2Coordinator(Node):
 
         for ns in self.namespaces:
             self._prune_blacklist(ns, now_ns)
-            self._update_reached_goal_blacklist(ns, now_ns)
+            reached_map = planning_map if using_shared_map else self.maps.get(ns)
+            self._update_reached_goal_blacklist(ns, now_ns, reached_map)
 
         per_ns_targets: dict[str, list[tuple[float, float]]] = {}
         for ns in self.namespaces:
@@ -3141,7 +3510,7 @@ class CFPA2Coordinator(Node):
                     float(od.pose.pose.position.y),
                 )
                 self._set_policy_reason(ns, "hold/exploration_complete")
-                self._set_active_goal(ns, park_goal, now_ns)
+                park_goal = self._set_active_goal(ns, park_goal, now_ns)
                 publish_map = self.maps.get(ns, planning_map)
                 self._publish_goal(ns, publish_map, park_goal)
             return
@@ -3296,11 +3665,13 @@ class CFPA2Coordinator(Node):
 
             forced_switch_namespaces: set[str] = set(local_nav_forced_switch_namespaces)
             for ns in self.namespaces:
+                recovery_map = planning_map if using_shared_map else self.maps.get(ns)
                 forced_goal = self._maybe_force_cfpa2_stuck_recovery(
                     ns=ns,
                     now_ns=now_ns,
                     utilities=utilities_by_ns.get(ns, {}),
                     fallback_targets=per_ns_targets.get(ns, []),
+                    map_msg=recovery_map,
                 )
                 if forced_goal is None:
                     continue
@@ -3319,8 +3690,53 @@ class CFPA2Coordinator(Node):
             per_ns_assigned: dict[str, tuple[float, float]] = {}
             for ns in self.namespaces:
                 candidate = candidate_goals.get(ns)
+                held = self.last_goal.get(ns)
+                safety_map = planning_map if using_shared_map else self.maps.get(ns)
+                if (
+                    held is not None
+                    and safety_map is not None
+                    and not self._is_blacklisted(ns, held, now_ns)
+                ):
+                    held_failure = self._held_goal_safety_failure(
+                        safety_map,
+                        dist_maps.get(ns, {}),
+                        held,
+                    )
+                    if held_failure is not None:
+                        self._blacklist_active_goal(
+                            ns,
+                            held,
+                            now_ns,
+                            f"held_goal_{held_failure}",
+                        )
+                        forced_switch_namespaces.add(ns)
+                        if candidate is None or self._is_blacklisted(ns, candidate, now_ns):
+                            fallback = self._cfpa2_best_available_goal(
+                                ns=ns,
+                                now_ns=now_ns,
+                                utilities=utilities_by_ns.get(ns, {}),
+                                exclude_goal=held,
+                                fallback_targets=per_ns_targets.get(ns, []),
+                                map_msg=safety_map,
+                                dist_map=dist_maps.get(ns, {}),
+                            )
+                            if fallback is not None:
+                                candidate = fallback
+                                candidate_goals[ns] = candidate
+                                assignment_scores[ns] = utilities_by_ns.get(ns, {}).get(
+                                    fallback, 0.0
+                                )
+                            else:
+                                candidate = self._robot_xy(ns)
+                                candidate_goals[ns] = candidate
+                                assignment_scores[ns] = -1e6
+                                forced_stop_namespaces.add(ns)
+                                self._set_policy_reason(
+                                    ns, f"hold/held_goal_{held_failure}_stop"
+                                )
+                        if ns not in forced_stop_namespaces:
+                            self._set_policy_reason(ns, f"switch/held_goal_{held_failure}")
                 if candidate is None:
-                    held = self.last_goal.get(ns)
                     if held is None:
                         self._set_policy_reason(ns, "hold/cfpa2_no_candidate")
                         continue
@@ -3331,6 +3747,8 @@ class CFPA2Coordinator(Node):
                             utilities=utilities_by_ns.get(ns, {}),
                             exclude_goal=held,
                             fallback_targets=per_ns_targets.get(ns, []),
+                            map_msg=safety_map,
+                            dist_map=dist_maps.get(ns, {}),
                         )
                         if fallback is not None:
                             candidate = fallback
@@ -3358,6 +3776,8 @@ class CFPA2Coordinator(Node):
                                 utilities=utilities_by_ns.get(ns, {}),
                                 exclude_goal=held,
                                 fallback_targets=per_ns_targets.get(ns, []),
+                                map_msg=safety_map,
+                                dist_map=dist_maps.get(ns, {}),
                             )
                             if alt is not None:
                                 candidate = alt
@@ -3383,7 +3803,7 @@ class CFPA2Coordinator(Node):
                             assignment_scores.get(ns, 0.0),
                         )
 
-                self._set_active_goal(ns, goal, now_ns)
+                goal = self._set_active_goal(ns, goal, now_ns)
                 publish_map = self.maps.get(ns, planning_map)
                 publish_goal = goal
                 if (
@@ -3438,7 +3858,7 @@ class CFPA2Coordinator(Node):
                 park_goal = (float(od.pose.pose.position.x),
                              float(od.pose.pose.position.y))
                 self._set_policy_reason(ns, "hold/exploration_complete")
-                self._set_active_goal(ns, park_goal, now_ns)
+                park_goal = self._set_active_goal(ns, park_goal, now_ns)
                 publish_map = self.maps.get(ns, planning_map)
                 self._publish_goal(ns, publish_map, park_goal)
                 per_ns_assigned[ns] = park_goal
@@ -3561,7 +3981,7 @@ class CFPA2Coordinator(Node):
                         continue
                     self._set_policy_reason(ns, "hold/no_local_map")
                     goal = held
-                    self._set_active_goal(ns, goal, now_ns)
+                    goal = self._set_active_goal(ns, goal, now_ns)
                     publish_map = self.maps.get(ns, planning_map)
                     self._publish_goal(ns, publish_map, goal)
                     per_ns_assigned[ns] = goal
@@ -3576,7 +3996,7 @@ class CFPA2Coordinator(Node):
                     current_targets=per_ns_targets.get(ns, []),
                 )
 
-            self._set_active_goal(ns, goal, now_ns)
+            goal = self._set_active_goal(ns, goal, now_ns)
             publish_map = self.maps.get(ns, planning_map)
             self._publish_goal(ns, publish_map, goal)
             per_ns_assigned[ns] = goal
@@ -3642,7 +4062,7 @@ class CFPA2Coordinator(Node):
             park_goal = (float(od.pose.pose.position.x),
                          float(od.pose.pose.position.y))
             self._set_policy_reason(ns, "hold/exploration_complete")
-            self._set_active_goal(ns, park_goal, now_ns)
+            park_goal = self._set_active_goal(ns, park_goal, now_ns)
             publish_map = self.maps.get(ns, planning_map)
             self._publish_goal(ns, publish_map, park_goal)
             per_ns_assigned[ns] = park_goal
