@@ -327,7 +327,7 @@ negotiation log stream.
 - [X] Bonus: real-pose ingestion from `/odom/nav`
 - [ ] Pairwise frontier negotiation (request/response protocol)
   - [X] Chunk A: request/response inbox wiring
-  - [ ] Chunk B: requester state machine
+  - [X] Chunk B: requester state machine
   - [ ] Chunk C: responder validation + accept/reject
   - [ ] Chunk D: replace interim MDVRP auto-claim path
 - [X] Claim management: storage, expiry, and peer-claim blocking implemented/tested
