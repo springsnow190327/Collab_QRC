@@ -1,0 +1,131 @@
+# elevation_mapping_cupy setup override for the 3D-frontier-exploration sim.
+#
+# Used alongside upstream core_param.yaml (provides ~50 base params:
+# use_chainer, mahalanobis_thresh, initialized_variance, ramped_height_range_*,
+# enable_visibility_cleanup, ...). Both files must be passed to the node;
+# parameter order in launch matters — last file wins on key conflict.
+#
+# Scene: demo_ramp (24m × 16m, ramp climbing to z≈1.0m)
+# Robot: Go2W, Mid-360 mounted ~0.4m on base_link
+# Input: /robot/cloud_registered_body (Point-LIO deskewed body-frame cloud)
+# Output: /robot/elevation_map_raw (consumed by grid_map_filters chain)
+#
+# Frames:
+#   map_frame:  "map"          (Fast-LIO/Point-LIO global frame, NOT namespaced)
+#   base_frame: "base_link"    (relative — namespace prefixes in launch)
+# This matches the fast_lio_tf_adapter publisher chain (rule #16 in CLAUDE.md).
+
+/**:
+  ros__parameters:
+    # Frames — override the core defaults ('odom' / 'base_link').
+    # Our SLAM publishes /robot/odom/nav (relative) and the global map is "map".
+    map_frame: "map"
+    base_frame: "base_link"
+    corrected_map_frame: "map"
+
+    # 30m × 30m world-fixed window covering demo_ramp (24×16) with margin.
+    # 0.10m resolution matches nvblox voxel_size_m so future fusion is aligned.
+    map_length: 30.0
+    resolution: 0.10
+
+    # Mid-360 specifics: range up to ~30m but useful traversal info ≤ 15m.
+    # max_height_range (above sensor) suppresses ceiling-like points; ramped
+    # bounds reject far-field points that come back at sharp incidence.
+    max_height_range: 5.0
+    ramped_height_range_a: 0.3
+    ramped_height_range_b: 1.0
+    ramped_height_range_c: 0.2
+    min_valid_distance: 0.30                # match nvblox geometric blind zone
+
+    # Map refresh — same cadence the legacy mapper_node ran at.
+    map_acquire_fps: 5.0
+    update_variance_fps: 5.0
+    update_pose_fps: 10.0
+    publish_statistics_fps: 1.0
+
+    # Probabilistic fusion knobs — start at upstream defaults; tune later
+    # once we see the new pipeline in action against the legacy A/B.
+    sensor_noise_factor: 0.05
+    mahalanobis_thresh: 2.0
+    outlier_variance: 0.01
+    initialized_variance: 10.0
+    initial_variance: 1000.0
+    max_variance: 100.0
+    time_variance: 0.0001
+
+    # Drift compensation: Point-LIO is reliable enough to leave the default on;
+    # disable later if we see oscillations after long traverses.
+    enable_drift_compensation: true
+    max_drift: 0.1
+    drift_compensation_alpha: 0.1
+    traversability_inlier: 0.9
+    min_height_drift_cnt: 100
+    position_noise_thresh: 0.01
+    orientation_noise_thresh: 0.01
+    position_lowpass_alpha: 0.2
+    orientation_lowpass_alpha: 0.2
+
+    # Visibility cleanup and edge sharpening — keep on for now.
+    enable_visibility_cleanup: true
+    enable_edge_sharpen: true
+    enable_overlap_clearance: true
+    overlap_clear_range_xy: 4.0
+    overlap_clear_range_z: 2.0
+    max_ray_length: 10.0
+    cleanup_step: 0.1
+    cleanup_cos_thresh: 0.1
+    dilation_size: 3
+    wall_num_thresh: 20
+
+    # We're not using the internal traversability filter — grid_map_filters
+    # chain produces the final cost layer. Keep these defaults so the
+    # internal layer at least populates for debugging.
+    use_chainer: false
+    safe_thresh: 0.7
+    safe_min_thresh: 0.4
+    max_unsafe_n: 10
+    use_only_above_for_upper_bound: false
+
+    # Don't republish pointcloud; nvblox already handles 3D output.
+    enable_pointcloud_publishing: false
+    enable_drift_corrected_TF_publishing: false
+    enable_normal_arrow_publishing: false
+    recordable_fps: 0.0
+
+    # Initializer — flat patch around base_link at startup so map has a
+    # FREE seed instead of all-UNK. Same as upstream defaults.
+    initialize_method: "linear"
+    initialize_frame_id: ["base_link"]
+    initialize_tf_offset: [0.0]
+    dilation_size_initialize: 2
+    initialize_tf_grid_size: 1.0
+    use_initializer_at_start: true
+
+    # Other internal knobs the core file declares — supply defaults so the
+    # node doesn't fall back to its hardcoded values silently.
+    drift_compensation_variance_inlier: 0.1
+    checker_layer: "elevation"
+    time_interval: 0.1
+    masked_replace_service_mask_layer_name: "mask"
+    save_map_default_topic: "elevation_map"
+    save_map_storage_id: "mcap"
+    service_namespace: "/elevation_mapping_cupy"
+
+    # ---- Input ----
+    # PointCloud2 from Point-LIO; the subscriber path uses the relative
+    # topic 'cloud_registered_body' which becomes /robot/cloud_registered_body
+    # under our launch namespace.
+    subscribers:
+      cloud:
+        topic_name: "cloud_registered_body"
+        data_type: "pointcloud"
+
+    # ---- Output ----
+    # /robot/elevation_map_raw is the input to grid_map_filters in Phase 4.
+    # layers list keeps minimal — elevation + variance + the upstream
+    # traversability layer (we'll overwrite it with our own chain output).
+    publishers:
+      elevation_map_raw:
+        layers: ["elevation", "variance", "traversability"]
+        basic_layers: ["elevation"]
+        fps: 5.0

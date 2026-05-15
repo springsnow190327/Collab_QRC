@@ -105,6 +105,16 @@ public:
     free_surface_min_run_voxels_ =
         declare_parameter<int>("free_surface_min_run_voxels", 1);
 
+    // Legacy 2D-projection gate. When false (default), publish_traversability
+    // is skipped entirely so an external pipeline (elevation_mapping_cupy +
+    // grid_map_filters + grid_map_to_occupancy_grid adapter) can own
+    // /<ns>/traversability_grid without competing publishers. voxels_3d and
+    // voxel_cloud stay on unconditionally — CFPA2 3D frontier extraction
+    // depends on them. Set true at launch for A/B comparison or fallback.
+    // See docs/claude/plans/2026-05-14-trav-grid-rewrite.md Phase 0.
+    enable_legacy_2d_proj_ = declare_parameter<bool>(
+        "enable_legacy_2d_proj", false);
+
     voxel_xy_extent_m_ = declare_parameter<double>("voxel_xy_extent_m", 20.0);
     voxel_z_extent_m_  = declare_parameter<double>("voxel_z_extent_m",   3.0);
     voxel_z_origin_m_  = declare_parameter<double>("voxel_z_origin_m", -0.5);
@@ -251,11 +261,16 @@ private:
       stamp        = now();
       cloud_world  = latest_cloud_world_;  // ~5000 × 12 bytes, fast copy
     }
-    publish_traversability(robot_xyz, stamp, cloud_world, sensor_world);
+    if (enable_legacy_2d_proj_) {
+      publish_traversability(robot_xyz, stamp, cloud_world, sensor_world);
+    }
     publish_voxels_3d(robot_xyz, stamp);
 
     if ((++publish_count_) % 20 == 1)
-      RCLCPP_INFO(get_logger(), "published traversability+voxels_3d #%u", publish_count_);
+      RCLCPP_INFO(get_logger(),
+                  "published %svoxels_3d #%u",
+                  enable_legacy_2d_proj_ ? "traversability+" : "",
+                  publish_count_);
   }
 
   // ============================================================
@@ -869,6 +884,7 @@ private:
   // Origin pinned on first publish from robot pose or from params.
   std::vector<int8_t> cls_persist_;
   bool cls_persist_origin_locked_{false};
+  bool enable_legacy_2d_proj_{false};
   double robot_clearance_m_, slope_max_deg_, step_max_m_;
   double slope_roughness_max_m_;
   double voxel_xy_extent_m_, voxel_z_extent_m_, voxel_z_origin_m_;

@@ -4,6 +4,37 @@ Multi-robot autonomy with Unitree Go2W wheeled-legged quadrupeds + Go2 walking q
 
 Door task (Phase 2 dual-robot VLM coordination) and the legacy A*/default Python nav backends were removed in the 2026-05 cleanup; see [CLAUDE1.md](CLAUDE1.md) for Phase 1 VLM exploration history, Phase 2 FSM archive, archived 2026-04 operational notes, and the deletion log.
 
+## Active state (2026-05-14) — ETH trav pipeline wired (Phases 0–6 complete)
+
+The ad-hoc 6-step 2D traversability projection in `nvblox_frontend/mapper_node.cpp` has been replaced with the full ETH RSL pipeline. All 7 phases of [plans/2026-05-14-trav-grid-rewrite.md](docs/claude/plans/2026-05-14-trav-grid-rewrite.md) are committed. Phase 7 (A/B validation run) is the remaining step.
+
+**Pipeline (activated when `nav_costmap_mode:=3d`, the default):**
+1. `elevation_mapping_cupy` → `/robot/elevation_map_raw` (3 layers: elevation, variance, traversability)
+2. `filter_chain_runner` (trav_cost_filters) → `/robot/elevation_map_filtered` (12 layers: adds normal_vectors_{x,y,z}, slope, slope_cost, roughness, roughness_cost, step_height, step_cost, traversability overwritten)
+3. `grid_map_to_occupancy_grid` (trav_cost_filters) → `/robot/traversability_grid` (OccupancyGrid, Nav2 cost convention: 0=free if trav≥0.7, 100=lethal if trav<0.3)
+
+**Key bugs fixed during integration (all in one session):**
+- `/**:` wildcard required in YAML (not bare `filter_chain_runner:`) so params load under `/robot` namespace
+- `ThresholdFilter` expects `layer:` not `condition_layer:` + `output_layer:`
+- EigenLab `max(scalar, matrix)` invalid → use multiplicative traversability: `(1-slope_cost)*(1-roughness_cost)*(1-step_cost)`
+- `ament_cmake_python` installed egg-info lacks `entry_points.txt` → Python executable installed via `install(FILES ... RENAME ...)` with execute permissions instead of `console_scripts` stub
+
+**Smoke test verified:** 12 layers in `elevation_map_filtered` at 5 Hz, OccupancyGrid at ~9 Hz, against live demo_ramp sim.
+
+## Active state (2026-05-14) — 3D frontier exploration unstuck: 6 compounding bugs
+
+Day-long debug pass on `nav_test_3d_explore.sh` (demo_ramp + nvblox_frontend + CFPA2 3D IG). Robot kept getting stuck on the same goal forever. Six independent bugs compounded; full details + verification log in [docs/claude/3d_frontier_debugging.md](docs/claude/3d_frontier_debugging.md).
+
+- **Ring-frontier centroid bug (the load-bearing one).** `centroid_world = (xs.mean(), ys.mean(), zs.mean())` of frontier voxels gives a point at the GEOMETRIC CENTRE of the frontier voxel set. For any incremental exploration the frontier voxels form a SHELL surrounding the robot's carved-FREE region → mean lands AT the robot → goal = current pose → no motion, ever. Fix in [`frontier_3d.py:193-225`](src/collaborative_exploration/cfpa2_collaborative_autonomy/cfpa2_collaborative_autonomy/frontier_3d.py#L193-L225): when `robot_xy` is supplied, pick the frontier voxel with max `‖voxel − robot‖²` instead. Always returns a real boundary point in the direction of largest unexplored extent. Without this, the system literally cannot explore regardless of every other fix below — they are all preliminary cleanup.
+- **Why mean-centroid is broken in general.** Mean approximates "where the frontier is" only when the frontier is sharply pointed (e.g. a one-direction hallway). For compact / wraparound FREE regions — the default of every exploration session — it collapses to self-position. Any frontier-based explorer using mean centroid will deadlock the moment the frontier becomes annular.
+- **Octomap-style trav_grid projection** ([`mapper_node.cpp`](src/collaborative_exploration/nvblox_frontend/src/mapper_node.cpp)). Dropped ~200 lines of polar fan-fill + persistent ray_covered + 1-cell dilation. Now: query nvblox's `occupancy_layer` per column directly. nvblox already does proper 3D Bayesian raycasting; behind-wall voxels stay log_odds=0 → projection gives UNK, no leak. Slope/step filter on highest-occupied-z still gates ramp-vs-cliff (Octomap proper doesn't do that — that's the value-add over plain Octomap).
+- **trav_grid is now world-fixed and persistent.** 40 m × 40 m grid, origin locked on first odom, `cls_persist_` member retains FREE/OCC across frames; new-frame UNK does NOT overwrite a prior FREE/OCC. Behind-the-robot map persists, no rolling-window memory loss.
+- **3D cluster z-band filter [-0.2, 1.5] m** ([`frontier_3d.py`](src/collaborative_exploration/cfpa2_collaborative_autonomy/cfpa2_collaborative_autonomy/frontier_3d.py)). Air voxels above ramp / under ceiling are permanently UNKNOWN (no Mid-360 rays go straight up + return) — they inflated the cluster IG forever. Filtering UNK to robot-actionable z makes volume actually shrink as exploration progresses.
+- **Mid-360 geometric blind disk** (3 m). V-FOV starts at -7° → ground first visible at `0.4 / tan(7°) ≈ 3.25 m`. Forced-FREE 3 m disk around robot in `publish_traversability` (preserves OCC verdicts).
+- **Dead-frontier filter skipped in 3D mode.** 2D-mode check (require N live UNK neighbours around goal) is incompatible with 3D-mode goals which land in FREE by construction.
+- **ClusterTracker** ([`cluster_tracker.py`](src/collaborative_exploration/cfpa2_collaborative_autonomy/cfpa2_collaborative_autonomy/cluster_tracker.py)). Cross-frame cluster identity via world-coord AABB overlap (voxel-index AABBs drift as robot-centric voxels_3d grid origin moves — must convert to world). Tracks per-cluster volume trajectory + attempt count from blacklist events; `non_actionable` flag after N attempts with no shrink → CFPA2 stops chasing dead-end clusters.
+- **MuJoCo Mid-360 sim was undersampled.** Hardcoded default `1000 × 20` rays = 2.95° vertical resolution → walls show 1-3 voxels tall in nvblox at 1 m. Bumped via env vars `MUJOCO_LIDAR_HZ/VT_SAMPLES = 1024/96` in [`nav_test_3d_explore.sh`](scripts/launch/nav_test_3d_explore.sh) → cloud points 4880 → 23000 per scan, walls fill all 10 z-layers correctly. The yaml `mujoco_sensor_bridge.yaml::vt_samples` is for a *different* Python node that isn't used by the current C++ plugin; editing it has no effect.
+
 ## Active state (2026-05-13) — Point-LIO + gbplanner3 onboard, full stack up
 
 - **Point-LIO replacing FAST-LIO2 as production SLAM** ([docs/claude/gbplanner3_noetic_onboard.md](docs/claude/gbplanner3_noetic_onboard.md)).
@@ -101,6 +132,8 @@ Door task (Phase 2 dual-robot VLM coordination) and the legacy A*/default Python
 | **Point-LIO + gbplanner3 onboard (2026-05-13): switched SLAM from FAST-LIO2 → Point-LIO (iVox vs ikd-tree fixes 36% rate decay), full gbplanner3 stack built on Jetson, 8 build pitfalls (src/src/, COLCON_IGNORE, gflags ExternalProject, BT XML path depth, v2→v3 config schema, ...).** | [docs/claude/gbplanner3_noetic_onboard.md](docs/claude/gbplanner3_noetic_onboard.md) |
 | **nvblox 3D frontier exploration on demo_ramp (2026-05-13): 8 bug fixes wiring nvblox_frontend mapper → Nav2 StaticLayer → CFPA2 3D IG. Includes ground-clutter filter, ramp-vs-stairs discretization fix, RewrittenYaml topic-rewrite gotcha. Open analysis: current "3D" only changes IG, not frontier search; proposes voxel→ground projection.** | [docs/claude/nvblox_3d_frontier.md](docs/claude/nvblox_3d_frontier.md) |
 | **GBPlanner3 / OmniPlanner sim-side integration (2026-05-13): ros1_bridge gotchas (latched /tf_static drop), voxblox + elevation_mapping config alignment with NTNU UAS UGV ref, host-pipe spam filter, the unsolved voxblox-doesn't-populate wall, sim-only vs. Jetson-portable artifact split.** | [docs/claude/gbplanner3_integration.md](docs/claude/gbplanner3_integration.md) |
+| **3D frontier exploration unstuck (2026-05-14): 6 compounding bugs in `nav_test_3d_explore.sh`. The load-bearing one: mean-of-frontier-voxels centroid for a SHELL-shaped frontier lands at the ROBOT, so the goal = current pose → no motion ever. Plus octomap-style projection (drop fan-fill, query nvblox 3D state direct), world-fixed 40m trav_grid with persistent cls, z-band UNK filter, geometric blind disk, ClusterTracker non-actionable, MuJoCo lidar sim density.** | [docs/claude/3d_frontier_debugging.md](docs/claude/3d_frontier_debugging.md) |
+| **ETH trav pipeline (2026-05-14): elevation_mapping_cupy + grid_map_filters + OccupancyGrid adapter replacing the broken 6-step 2D projection. 7-phase rewrite plan, 4 YAML/param gotchas discovered during integration, smoke-tested at 12 layers + 9 Hz.** | [docs/claude/plans/2026-05-14-trav-grid-rewrite.md](docs/claude/plans/2026-05-14-trav-grid-rewrite.md) + [docs/claude/eth_elevation_mapping_design.md](docs/claude/eth_elevation_mapping_design.md) |
 | **Go2W real Nav2 profile split (2026-05-02): `off` / `omni_2d` / `se2_holonomic`, SmacPlanner2D XY-only finding, no-crab final SE2 tuning.** | This file's "Active state (2026-05-02)" entry |
 
 ## Scripts layout

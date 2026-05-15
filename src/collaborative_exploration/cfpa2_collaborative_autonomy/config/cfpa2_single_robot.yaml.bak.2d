@@ -18,9 +18,10 @@
     cfpa2_challenger_improvement_factor: 1.2
     cfpa2_challenger_min_lock_age_sec: 2.0
     switch_hysteresis: 0.5
-    switch_min_dist: 0.45
+    # Dead-band ordering (see cfpa2_single_robot.yaml for full comment).
+    switch_min_dist: 0.65
     min_assign_distance: 0.3
-    reached_blacklist_dist: 0.45
+    reached_blacklist_dist: 0.65
     overlap_weight: 1.0
     cfpa2_w_ig: 1.0
     cfpa2_w_c: 0.3

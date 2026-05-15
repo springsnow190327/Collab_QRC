@@ -158,8 +158,18 @@ controller_server:
       movement_time_allowance: 12.0
     goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.40
-      yaw_goal_tolerance: 0.50
+      # Tolerances reflect "frontier-goal" semantics: the goal is a
+      # frontier centroid, not a precise pose. The strict yaw check
+      # (0.50 rad ≈ 28°) was the real blocker — cfpa2_to_nav2_bridge
+      # synthesizes goal yaw via atan2(goal-robot); near the goal that
+      # vector swings wildly under tiny robot motions, so MPPI
+      # (no-strafe diff-drive primitives) can't latch success → robot
+      # parks ~0.3 m short and stuck_watchdog eventually backs it up.
+      # 3.14 rad ≈ disabled = correct for frontier reaching. xy bumped
+      # to 0.50 for a small extra slack against trav_grid sparsity
+      # (cells right at the frontier centroid can be UNKNOWN).
+      xy_goal_tolerance: 0.50
+      yaw_goal_tolerance: 3.14
       stateful: true
     FollowPath:
       plugin: "nav2_mppi_controller::MPPIController"
