@@ -34,6 +34,7 @@
 #include <string>
 #include <utility>
 #include "mujoco_ros2_sensors/mujoco_ros2_sensors.hpp"
+#include "ament_index_cpp/get_package_share_directory.hpp"
 
 namespace {
     // SIM-ONLY env-var override. Controls how many rays mj_multiRay() casts
@@ -51,6 +52,17 @@ namespace {
         if (!v || !*v) return fallback;
         try { return std::max(1, std::stoi(v)); }
         catch (...) { return fallback; }
+    }
+    double env_double(const char *name, double fallback) {
+        const char *v = std::getenv(name);
+        if (!v || !*v) return fallback;
+        try { return std::stod(v); }
+        catch (...) { return fallback; }
+    }
+    std::string env_str(const char *name, const std::string &fallback) {
+        const char *v = std::getenv(name);
+        if (!v || !*v) return fallback;
+        return std::string(v);
     }
 }
 
@@ -175,11 +187,37 @@ namespace mujoco_ros2_sensors {
         // real sensor is not affected.
         const int mid360_hz = env_int("MUJOCO_LIDAR_HZ_SAMPLES", 1000);
         const int mid360_vt = env_int("MUJOCO_LIDAR_VT_SAMPLES", 20);
+
+        // CSV scan-pattern replay defaults to the vendored Livox Mid-360 file.
+        //   Path:        share/mujoco_ros2_control/scan_patterns/mid360.csv
+        //   Rays/frame:  20000 (= real 200k pts/s ÷ 10 Hz)
+        //   Noise σ:     0.02 m (≤ 2 cm @ 10 m datasheet precision)
+        // Overrides:
+        //   MUJOCO_LIDAR_SCAN_PATTERN_CSV  absolute path; empty => disable CSV
+        //                                  mode and fall back to uniform grid
+        //   MUJOCO_LIDAR_RAYS_PER_FRAME    integer
+        //   MUJOCO_LIDAR_NOISE_STDDEV_M    double; 0 disables noise
+        std::string default_csv;
+        try {
+            default_csv = ament_index_cpp::get_package_share_directory("mujoco_ros2_control")
+                          + "/scan_patterns/mid360.csv";
+        } catch (...) {
+            default_csv = "";  // share dir not found at runtime; keep uniform-grid fallback
+        }
+        const std::string mid360_csv = env_str("MUJOCO_LIDAR_SCAN_PATTERN_CSV", default_csv);
+        const int    mid360_rays_per_frame = env_int("MUJOCO_LIDAR_RAYS_PER_FRAME", 20000);
+        const double mid360_noise_stddev   = env_double("MUJOCO_LIDAR_NOISE_STDDEV_M", 0.02);
+
+        LidarSensorConfig mid360_cfg{
+            "livox_mid360", "base_link", "livox_mid360",
+            mid360_hz, mid360_vt, 360.0, -7.0, 52.0, 0.1, 40.0, 10.0,
+            mid360_csv, mid360_rays_per_frame, mid360_noise_stddev,
+        };
         const std::vector<std::pair<std::string, LidarSensorConfig>> known_lidars = {
             {"unitree_l1", {"unitree_l1", "base_link", "livox_mid360",
-                            360, 60, 360.0, 0.0, 90.0, 0.1, 20.0, 11.0}},
-            {"livox_mid360", {"livox_mid360", "base_link", "livox_mid360",
-                              mid360_hz, mid360_vt, 360.0, -7.0, 52.0, 0.1, 40.0, 10.0}},
+                            360, 60, 360.0, 0.0, 90.0, 0.1, 20.0, 11.0,
+                            "", 0, 0.0}},
+            {"livox_mid360", mid360_cfg},
         };
 
         // Prefixes to try: "" for Robot A, "b_" for Robot B.

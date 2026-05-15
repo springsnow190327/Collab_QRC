@@ -20,6 +20,37 @@ trap '' SIGHUP SIGTERM
 
 source "$(dirname "${BASH_SOURCE[0]}")/_preflight_kill.sh"
 
+# --- 3D-only preflight: nuke stale elevation_mapping_cupy state ---
+# Sim/nav preflight above doesn't know about ETH elevation_mapping_cupy or its
+# trav_cost_filters companions. Survivors leave stale publishers on
+# /robot/elevation_map_raw, /robot/elevation_map_filtered, /robot/traversability_grid
+# (TRANSIENT_LOCAL on the last one → Nav2 StaticLayer latches the old grid).
+# Also wipe CuPy NVRTC cache — a previously-failed JIT compile (e.g. the
+# carray/float16 incomplete-type bug fixed 2026-05-15) leaves a poisoned
+# .cubin under ~/.cupy/kernel_cache that CuPy will happily reuse on next start.
+if [[ "${PREFLIGHT_KILL:-1}" != "0" ]]; then
+  _3D_PATTERNS=(
+    "elevation_mapping_node"
+    "elevation_mapping_cupy"
+    "filter_chain_runner"
+    "grid_map_to_occupancy_grid"
+    "ramp_ascent_goal_node"
+    "ramp_cmd_vel_assist_node"
+  )
+  for _pat in "${_3D_PATTERNS[@]}"; do
+    pkill -TERM -f "${_pat}" 2>/dev/null || true
+  done
+  sleep 1
+  for _pat in "${_3D_PATTERNS[@]}"; do
+    pkill -KILL -f "${_pat}" 2>/dev/null || true
+  done
+  unset _3D_PATTERNS _pat
+
+  # CuPy JIT cache — force fresh NVRTC compile so any kernel-source edit takes effect.
+  rm -rf "${HOME}/.cupy/kernel_cache" 2>/dev/null || true
+  echo "[preflight-3d] cleared elevation_mapping processes + CuPy kernel cache."
+fi
+
 trap - SIGTERM   # restore SIGTERM so Ctrl+C-based kills work on ros2 launch
 
 WS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -72,12 +103,14 @@ fi
 
 export FASTRTPS_DEFAULT_PROFILES_FILE="${WS_DIR}/config/fastdds_no_shm.xml"
 
-# Dense Mid-360 sim: default 1000×20 rays = 2.95° vertical spacing → walls
-# show only 1-3 voxels tall in nvblox at 1 m range. Override to 1024×96 →
-# ~0.61° spacing → walls fill in vertically (every 0.6 cm at 1 m, ~16 voxels
-# per 1 m wall). mj_multiRay handles ~1M rays/sec, this needs only 1M/sec.
-export MUJOCO_LIDAR_HZ_SAMPLES="${MUJOCO_LIDAR_HZ_SAMPLES:-1024}"
-export MUJOCO_LIDAR_VT_SAMPLES="${MUJOCO_LIDAR_VT_SAMPLES:-96}"
+# Mid-360 sim now defaults to Livox-Risley CSV replay (~20k pts/frame at 10 Hz
+# from share/mujoco_ros2_control/scan_patterns/mid360.csv) + Gaussian σ=0.02 m
+# range noise, matching real sensor density and the per-frame non-repetitive
+# pattern that elevation_mapping_cupy's visibility-cleanup + drift-compensation
+# rely on. Uniform-grid HZ×VT is dead-code in this path; we no longer override.
+# To force back to legacy uniform grid: export MUJOCO_LIDAR_SCAN_PATTERN_CSV=""
+# To change density:                     export MUJOCO_LIDAR_RAYS_PER_FRAME=N
+# To disable noise:                      export MUJOCO_LIDAR_NOISE_STDDEV_M=0
 export STUCK_RAMP_SUPPRESS_ENABLED="${STUCK_RAMP_SUPPRESS_ENABLED:-true}"
 export STUCK_RAMP_MIN_X="${STUCK_RAMP_MIN_X:-5.3}"
 export STUCK_RAMP_MAX_X="${STUCK_RAMP_MAX_X:-9.8}"
@@ -145,7 +178,7 @@ def merge(a, b):
 merge(base, overlay)
 params = base["/**"]["ros__parameters"]
 params["cfpa2_max_goal_distance_m"] = max_goal_distance_m
-params["ramp_ascent_enabled"] = True
+params["ramp_ascent_enabled"] = (os.environ.get("RAMP_ASCENT_ENABLED", "1") == "1")
 params["ramp_ascent_goal_topic_suffix"] = "/ramp_ascent_goal"
 params["ramp_ascent_max_goal_distance_m"] = float(os.environ.get("RAMP_ASCENT_MAX_GOAL_DISTANCE_M", "5.0"))
 params["ramp_ascent_goal_stale_sec"] = 8.0
@@ -179,7 +212,7 @@ params["planning_map_topic_suffix"] = (
 )
 params["ig_dimension"] = "2d"
 params["cfpa2_max_goal_distance_m"] = max_goal_distance_m
-params["ramp_ascent_enabled"] = (nav_costmap_mode == "3d")
+params["ramp_ascent_enabled"] = (nav_costmap_mode == "3d" and os.environ.get("RAMP_ASCENT_ENABLED", "1") == "1")
 params["ramp_ascent_goal_topic_suffix"] = "/ramp_ascent_goal"
 params["ramp_ascent_max_goal_distance_m"] = float(os.environ.get("RAMP_ASCENT_MAX_GOAL_DISTANCE_M", "5.0"))
 params["ramp_ascent_goal_stale_sec"] = 8.0

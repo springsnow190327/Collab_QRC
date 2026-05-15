@@ -29,6 +29,7 @@
   <depend>pcl_conversions</depend>
   <depend>cv_bridge</depend>
   <depend>eigen</depend>
+  <depend>ament_index_cpp</depend>
 
   <test_depend>ament_cmake_ros</test_depend>
   <test_depend>launch</test_depend>

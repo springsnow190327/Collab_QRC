@@ -214,6 +214,11 @@ def generate_launch_description() -> LaunchDescription:
             "use_sim_time":    LaunchConfiguration("use_sim_time"),
             "input_topic":     "elevation_map_filtered",
             "output_topic":    "traversability_grid",
+            # CNN ↔ analytical fusion: trav_fused = max(CNN_traversability,
+            # ramp_safe). CNN catches walls the analytical chain misses;
+            # ramp_safe rescues sloped surfaces the CNN over-rejects. See the
+            # bottom of grid_map_filters.yaml for the construction.
+            "traversability_layer": "trav_fused",
             "free_threshold":  0.30,
             "lethal_threshold": 0.15,
             "seed_robot_footprint": True,
@@ -241,16 +246,11 @@ def generate_launch_description() -> LaunchDescription:
             "occupied_confirm_hits": 2,
             "occupied_clear_hits": 0,
             "max_hit_count": 8,
-            # Deterministic room bounds for demo_ramp: x∈[-0.2,16.2],
-            # y∈[-8.2,8.2]. This keeps the four outer walls stable and leaves
-            # outside-room cells unknown instead of letting rolling-map holes
-            # carve the rectangular world into changing blobs.
-            "workspace_mask_enabled": True,
-            "workspace_min_x": -0.2,
-            "workspace_max_x": 16.2,
-            "workspace_min_y": -8.2,
-            "workspace_max_y": 8.2,
-            "workspace_wall_thickness_m": 0.30,
+            # Walls must come from sensor data (elevation_mapping + slope/step
+            # filters), not from a scene-specific hardcoded rectangle. The
+            # workspace_mask_* knobs remain in the node for ad-hoc scene-bound
+            # debugging but are OFF by default for exploration correctness.
+            "workspace_mask_enabled": False,
         }],
         remappings=[
             ("/tf",        ["/", LaunchConfiguration("robot_namespace"), "/tf"]),

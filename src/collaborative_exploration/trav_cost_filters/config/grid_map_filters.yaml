@@ -111,8 +111,11 @@
           lower_threshold: 0.0
           set_to: 0.0
 
-      # 8. step_cost: linear 0 -> 1 over 0 -> 0.20 m residual height diff.
-      #    Above 20 cm is a wall / cliff, hard-veto territory.
+      # 8. step_cost: slope-compensated residual cost. Linear 0 -> 1 over
+      #    0 -> 0.20 m residual height diff. On a smooth 14° ramp:
+      #      step_height ≈ tan(14°)·0.20 ≈ 0.05 m
+      #      step_residual ≈ 0.05 - tan(14°)·0.30 ≈ -0.02 m  -> clamped to 0
+      #    -> step_cost = 0. Ramp stays traversable.
       filter9:
         name: step_cost
         type: gridMapFilters/MathExpressionFilter
@@ -120,9 +123,65 @@
           output_layer: step_cost
           expression: step_residual / 0.20
 
-      # 9. trav_eth: multiplicative model — product of (1 - cost_i) for
-      #    the three soft costs. Any cost=1 → trav_eth=0. ThresholdFilters
-      #    below clamp to [0,1] for costs that exceed 1.0.
+      # 10. wall_seed: raw step_height in excess of 0.25 m. This is the
+      #     "unambiguous vertical structure" detector. On any slope at our
+      #     0.10 m resolution + σ=0.02 m noise, step_height is bounded by
+      #     ~0.10 m, so wall_seed ≤ 0 -> clamped to 0. Only true walls /
+      #     cliffs (step_height ≈ wall_full_height ≈ 1 m at the rim) survive.
+      #     Decoupling this from step_residual prevents ramp noise from
+      #     producing false-positive lethal cells after dilation below.
+      #
+      #     NOTE: filters::FilterChain (filter_chain.hpp:117) ONLY loads keys
+      #     literally named "filter1", "filter2", ... and breaks at the first
+      #     gap. Keys like "filter9b" are silently dropped. We must renumber
+      #     to keep filterN contiguous.
+      filter10:
+        name: wall_seed_raw
+        type: gridMapFilters/MathExpressionFilter
+        params:
+          output_layer: wall_seed
+          expression: step_height - 0.25
+
+      filter11:
+        name: wall_seed_clamp_lo
+        type: gridMapFilters/ThresholdFilter
+        params:
+          layer: wall_seed
+          lower_threshold: 0.0
+          set_to: 0.0
+
+      # 11. wall_cost dilation. The wall_seed is non-zero only on the 1-cell
+      #     rim where the step_height window straddles wall-and-ground. Take
+      #     max(wall_seed) in a 7-cell window (~±0.30 m radius) so the lethal
+      #     rim grows inward and covers wall tops up to ~60 cm thick. Because
+      #     wall_seed is already gated to "step_height > 25 cm", dilating it
+      #     does NOT poison ramps (their wall_seed is identically 0).
+      filter12:
+        name: wall_cost_dilated
+        type: gridMapFilters/SlidingWindowMathExpressionFilter
+        params:
+          input_layer: wall_seed
+          output_layer: wall_seed_dilated
+          expression: maxOfFinites(wall_seed)
+          compute_empty_cells: false
+          edge_handling: crop
+          window_size: 7
+
+      # 12. wall_cost normalization: 0.50 m above-threshold wall height
+      #     saturates the cost to 1.0 (hard veto). Smaller values map linearly.
+      #     Output to a new layer (not the dilation source) to avoid the
+      #     MathExpressionFilter setShared() aliasing pitfall.
+      filter13:
+        name: wall_cost_norm
+        type: gridMapFilters/MathExpressionFilter
+        params:
+          output_layer: wall_cost
+          expression: wall_seed_dilated / 0.50
+
+      # 13. trav_eth: multiplicative model — product of (1 - cost_i) over
+      #    slope, roughness, residual-step (cliff veto), and wall (vertical
+      #    structure veto). Any cost=1 → trav_eth=0. ThresholdFilters below
+      #    clamp to [0,1] for costs that exceed 1.0.
       #    NOTE: named trav_eth (not traversability) to avoid aliasing with the
       #    pre-existing all-NaN "traversability" layer from elevation_mapping_cupy.
       #    MathExpressionFilter::update() setShared()s all existing layers;
@@ -130,15 +189,15 @@
       #    CRITICAL: use .* (MATLAB element-wise product) not * (matrix multiply).
       #    EigenLab follows MATLAB semantics: A*B = matrix mul → all-NaN for
       #    sparse grids; A.*B = element-wise → correct per-cell traversability.
-      filter10:
+      filter14:
         name: trav_eth
         type: gridMapFilters/MathExpressionFilter
         params:
           output_layer: trav_eth
-          expression: (1.0 - slope_cost) .* (1.0 - roughness_cost) .* (1.0 - step_cost)
+          expression: (1.0 - slope_cost) .* (1.0 - roughness_cost) .* (1.0 - step_cost) .* (1.0 - wall_cost)
 
-      # 10. Final clamp safety net.
-      filter11:
+      # 14. Final clamp safety net.
+      filter15:
         name: trav_eth_clamp_lo
         type: gridMapFilters/ThresholdFilter
         params:
@@ -146,10 +205,116 @@
           lower_threshold: 0.0
           set_to: 0.0
 
-      filter12:
+      filter16:
         name: trav_eth_clamp_hi
         type: gridMapFilters/ThresholdFilter
         params:
           layer: trav_eth
+          upper_threshold: 1.0
+          set_to: 1.0
+
+      # ---- CNN ↔ analytical fusion ----------------------------------------
+      # The ETH CNN (layer `traversability`, populated by elevation_mapping_cupy
+      # get_filter_cupy on Blackwell) is excellent at walls but trained on
+      # mostly flat ground, so it mis-flags sustained-slope ramps as lethal.
+      # The analytical chain detects ramps cleanly via (slope < 30°,
+      # step_residual < 6cm). Fuse: take max(CNN, ramp_safe).
+      #
+      # ramp_safe is a continuous [0, 1] eligibility derived from slope and
+      # step_residual via clamped subtraction (EigenLab has no `>` operator).
+      # Hard zero outside the ramp envelope, soft inside.
+
+      # slope_margin = max(0, 0.5236 - slope)   --- normalised to [0, 1].
+      filter17:
+        name: slope_margin
+        type: gridMapFilters/MathExpressionFilter
+        params:
+          output_layer: slope_margin
+          expression: (0.5236 - slope) / 0.5236
+
+      filter18:
+        name: slope_margin_clamp_lo
+        type: gridMapFilters/ThresholdFilter
+        params:
+          layer: slope_margin
+          lower_threshold: 0.0
+          set_to: 0.0
+
+      filter19:
+        name: slope_margin_clamp_hi
+        type: gridMapFilters/ThresholdFilter
+        params:
+          layer: slope_margin
+          upper_threshold: 1.0
+          set_to: 1.0
+
+      # step_margin = max(0, 0.06 - step_residual) / 0.06 --- normalised.
+      filter20:
+        name: step_margin
+        type: gridMapFilters/MathExpressionFilter
+        params:
+          output_layer: step_margin
+          expression: (0.06 - step_residual) / 0.06
+
+      filter21:
+        name: step_margin_clamp_lo
+        type: gridMapFilters/ThresholdFilter
+        params:
+          layer: step_margin
+          lower_threshold: 0.0
+          set_to: 0.0
+
+      filter22:
+        name: step_margin_clamp_hi
+        type: gridMapFilters/ThresholdFilter
+        params:
+          layer: step_margin
+          upper_threshold: 1.0
+          set_to: 1.0
+
+      # ramp_safe = saturate(slope_margin * step_margin * gain).
+      # Without the gain, on a 14° ramp slope_margin ≈ 0.53 so ramp_safe was
+      # only ≈ 0.5 → trav_fused renders yellow-ish in RViz. We don't care
+      # about magnitude inside the safe envelope, only "is the cell safe?".
+      # gain = 100 turns any non-zero margin into 1.0 after clamp; the
+      # transition band at the slope/step boundary stays narrow (~1°) which
+      # is fine because boundary cells were already ambiguous.
+      filter23:
+        name: ramp_safe_raw
+        type: gridMapFilters/MathExpressionFilter
+        params:
+          output_layer: ramp_safe
+          expression: slope_margin .* step_margin .* 100.0
+
+      filter24:
+        name: ramp_safe_clamp_hi
+        type: gridMapFilters/ThresholdFilter
+        params:
+          layer: ramp_safe
+          upper_threshold: 1.0
+          set_to: 1.0
+
+      # trav_fused = max(CNN, ramp_safe).
+      # EigenLab has no element-wise max — use max(a,b) = 0.5*(a + b + |a-b|).
+      filter25:
+        name: trav_fused
+        type: gridMapFilters/MathExpressionFilter
+        params:
+          output_layer: trav_fused
+          expression: 0.5 .* (traversability + ramp_safe + abs(traversability - ramp_safe))
+
+      filter26:
+        name: trav_fused_clamp_lo
+        type: gridMapFilters/ThresholdFilter
+        params:
+          layer: trav_fused
+          lower_threshold: 0.0
+          set_to: 0.0
+
+      filter27:
+        name: trav_fused_clamp_hi
+        type: gridMapFilters/ThresholdFilter
+        params:
+          layer: trav_fused
           upper_threshold: 1.0
           set_to: 1.0

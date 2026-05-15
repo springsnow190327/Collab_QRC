@@ -22,8 +22,13 @@ Values pulled from Humble Fast-LIO snapshot on 2026-05-13:
   map → odom (identity)
   base_link → imu  (-0.026, 0, 0.042)         no rotation
   imu → body       (identity)                 Fast-LIO body alias
-  base_link → lidar          (0.161, 0, 0.123)  pitch +0.2269 rad (Mid-360 mount)
-  base_link → livox_mid360   (0.161, 0, 0.123)  pitch +0.2269 rad
+  base_link → lidar          (0.161, 0, 0.123)  Mid-360 calibrated tilt
+  base_link → livox_mid360   (0.161, 0, 0.123)  Mid-360 calibrated tilt
+
+Mid-360 calibrated tilt = roll -0.036809 rad (-2.11°), pitch +0.263591 rad
+(+15.10°), yaw 0.  Matches scripts/real/onboard_fastlio_noetic.sh:262
+(real-robot static_transform_publisher measured 2026-04-17).  Prior value
+(pitch=0.2269, no roll) was a documentation guess that left sim ~2° off real.
 """
 import math
 import rospy
@@ -31,7 +36,10 @@ from geometry_msgs.msg import TransformStamped
 from tf2_msgs.msg import TFMessage
 
 
-def make_tf(parent, child, x=0.0, y=0.0, z=0.0, pitch=0.0):
+def make_tf(parent, child, x=0.0, y=0.0, z=0.0, roll=0.0, pitch=0.0):
+    """Static TF with ROS RPY (yaw=0). Quaternion from Rz(0)·Ry(pitch)·Rx(roll)."""
+    cr, sr = math.cos(roll * 0.5), math.sin(roll * 0.5)
+    cp, sp = math.cos(pitch * 0.5), math.sin(pitch * 0.5)
     t = TransformStamped()
     t.header.stamp = rospy.Time.now()
     t.header.frame_id = parent
@@ -39,12 +47,16 @@ def make_tf(parent, child, x=0.0, y=0.0, z=0.0, pitch=0.0):
     t.transform.translation.x = x
     t.transform.translation.y = y
     t.transform.translation.z = z
-    # Only pitch rotation (rotation about Y axis) is used here.
-    t.transform.rotation.x = 0.0
-    t.transform.rotation.y = math.sin(pitch * 0.5)
-    t.transform.rotation.z = 0.0
-    t.transform.rotation.w = math.cos(pitch * 0.5)
+    t.transform.rotation.x = sr * cp
+    t.transform.rotation.y = cr * sp
+    t.transform.rotation.z = -sr * sp
+    t.transform.rotation.w = cr * cp
     return t
+
+
+# Real-robot calibrated Mid-360 mount (see file docstring).
+MID360_ROLL  = -0.036809
+MID360_PITCH = 0.263591
 
 
 def main():
@@ -55,8 +67,12 @@ def main():
     msg.transforms.append(make_tf("map",       "odom"))
     msg.transforms.append(make_tf("base_link", "imu",  x=-0.026, y=0.0, z=0.042))
     msg.transforms.append(make_tf("imu",       "body"))
-    msg.transforms.append(make_tf("base_link", "lidar",         x=0.161, y=0.0, z=0.123, pitch=0.2269))
-    msg.transforms.append(make_tf("base_link", "livox_mid360",  x=0.161, y=0.0, z=0.123, pitch=0.2269))
+    msg.transforms.append(make_tf("base_link", "lidar",
+                                  x=0.161, y=0.0, z=0.123,
+                                  roll=MID360_ROLL, pitch=MID360_PITCH))
+    msg.transforms.append(make_tf("base_link", "livox_mid360",
+                                  x=0.161, y=0.0, z=0.123,
+                                  roll=MID360_ROLL, pitch=MID360_PITCH))
 
     # Give roscore + subscribers a moment to discover us before the latched send.
     rospy.sleep(0.5)

@@ -75,7 +75,7 @@ def test_3d_explore_publishes_fixed_world_traversability_grid():
     assert '"fixed_height_cells": 300' in occ_block
     assert '"unknown_clears_history": False' in occ_block
     assert '"occupied_confirm_hits": 2' in occ_block
-    assert '"workspace_mask_enabled": True' in occ_block
+    assert '"workspace_mask_enabled": False' in occ_block
 
 
 def test_3d_explore_keeps_ramp_assist_active_until_platform_entry():

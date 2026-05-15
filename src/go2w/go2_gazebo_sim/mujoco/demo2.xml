@@ -89,7 +89,8 @@
       <geom name="head_lower_collision" size="0.047" pos="0.293 0 -0.06" class="collision" />
       <site name="base_link_site" pos="0 0 0" size="0.01" />
       <site name="imu" pos="-0.02557 0 0.04232" size="0.01" />
-      <site name="livox_mid360" pos="0.16143 0 0.12262" euler="0 0.2269 0" size="0.01" />
+      <!-- Mid-360 mount tilt: pitch 0.263591 rad (15.10°) + roll -0.036809 rad. Matches real-robot calibration (scripts/real/onboard_fastlio_noetic.sh:258, 2026-04-17). quat = ROS RPY (Rz*Ry*Rx). -->
+      <site name="livox_mid360" pos="0.16143 0 0.12262" quat="0.991160 -0.018244 0.131392 0.002418" size="0.01" />
       <camera name="front_camera" pos="0.30 0 -0.01" xyaxes="0 -1 0 0.0872 0 0.9962" fovy="80" resolution="1280 720" mode="fixed" />
       <body name="FL_hip" pos="0.1934 0.0465 0">
         <inertial pos="-0.0054 0.00194 -0.000105" quat="0.497014 0.499245 0.505462 0.498237" mass="0.678" diaginertia="0.00088403 0.000596003 0.000479967" />

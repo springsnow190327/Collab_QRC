@@ -13,6 +13,7 @@
 #include <string>
 #include <cmath>
 #include <mutex>
+#include <random>
 
 #include "mujoco/mujoco.h"
 #include "rclcpp/rclcpp.hpp"
@@ -34,6 +35,16 @@ struct LidarSensorConfig {
     double range_min       = 0.05;            ///< Minimum range (m)
     double range_max       = 20.0;            ///< Maximum range (m)
     double publish_rate    = 10.0;            ///< Publish rate (Hz)
+
+    /// Optional path to Livox-style scan-pattern CSV (Time, Azimuth deg, Zenith deg).
+    /// When non-empty, the sensor switches from uniform hz*vt grid to per-frame
+    /// non-repetitive replay of `n_rays_per_frame` directions sliced from the CSV.
+    /// This reproduces the real Risley-prism behaviour (coverage fills in over
+    /// multiple frames), which is required for ETH elevation_mapping_cupy's
+    /// visibility cleanup + drift compensation to behave the same in sim and real.
+    std::string scan_pattern_csv = "";
+    int    n_rays_per_frame      = 20000;     ///< Rays per published frame (CSV mode). Real Mid-360 = 200k pts/s / 10 Hz.
+    double range_noise_stddev    = 0.0;       ///< Gaussian noise σ added to each range (m). Real Mid-360 ≈ 0.02.
 };
 
 class LidarSensor {
@@ -69,12 +80,26 @@ private:
     double range_max_;
     std::string frame_id_;
 
-    // Pre-computed ray directions in LiDAR-local frame  (n_rays_ x 3, row-major)
+    // Ray directions in LiDAR-local frame for the CURRENT frame  (n_rays_ x 3, row-major).
+    // In uniform-grid mode this is precomputed once in the ctor.
+    // In CSV mode it is refilled per-frame from `csv_dirs_local_`.
     std::vector<double> ray_dirs_local_;
 
     // Reusable buffers for mj_multiRay output
     std::vector<double> ray_dist_;
     std::vector<int>    ray_geomid_;
+
+    // CSV scan-pattern replay state (empty / 0 when uniform-grid mode is in use).
+    std::vector<double> csv_dirs_local_;       ///< All CSV unit-vectors, row-major (total_samples x 3).
+    int                 csv_total_samples_ = 0;
+    int                 csv_offset_        = 0; ///< Wrap-around cursor over csv_dirs_local_.
+    bool                csv_mode_          = false;
+
+    // Range-noise Gaussian (σ from cfg.range_noise_stddev). When σ=0 we leave the
+    // distribution constructed but skip the noise add to save the RNG call.
+    double                                 range_noise_stddev_ = 0.0;
+    std::mt19937                           rng_;
+    std::normal_distribution<double>       noise_dist_;
 
     // Mutex shared with physics loop to prevent concurrent mjData access
     std::mutex *sim_step_mtx_ = nullptr;
