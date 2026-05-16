@@ -915,13 +915,15 @@ class PeerCoordinatorNode(Node):
                     f"this_robot={self.robot_id}"
                 )
                 return
+        
+        response.responder_last_interaction_attempt_stamp = self._ns_to_time_msg(self._last_interaction_attempt_ns)
+        response.protocol_version = PROTOCOL_VERSION
 
+        # Send accept before committing locally.
+        # This preserves the intended ordering for the temporary Chunk B responder: requester sees the response before responder mutates committed state.
         self.peer_response_pubs[msg.requester_id].publish(response)
         self.own_claims = list(msg.responder_claims)
         self._last_successful_interaction_ns = self.get_clock().now().nanoseconds
-
-        response.responder_last_interaction_attempt_stamp = self._ns_to_time_msg(self._last_interaction_attempt_ns)
-        response.protocol_version = PROTOCOL_VERSION
 
         self.get_logger().info(
             f"NegotiationRequest received | "
