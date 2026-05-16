@@ -1,0 +1,26 @@
+<!-- FAST_LIO front-end + SC-A-LOAM back-end (loop closure on Mid-360)
+     IMPORTANT: alaserPGO reads its params from GLOBAL namespace (its source uses
+     ros::NodeHandle nh; with no tilde). So we must set params at launch-root,
+     NOT under <node>.  Earlier version had this wrong and alaserPGO died with
+     SIGABRT (writing scans to /Scans/ which it has no permission for). -->
+<launch>
+  <!-- Global params for alaserPGO -->
+  <param name="save_directory"        type="string" value="/out/sc_pgo/"/>
+  <param name="keyframe_meter_gap"    type="double" value="0.5"/>
+  <param name="keyframe_deg_gap"      type="double" value="10.0"/>
+  <param name="sc_max_radius"         type="double" value="20.0"/>   <!-- 20m for indoor -->
+  <param name="sc_dist_thres"         type="double" value="0.2"/>
+  <param name="mapviz_filter_size"    type="double" value="0.2"/>
+
+  <!-- FAST_LIO (Mid-360) — publishes /Odometry, /cloud_registered{,_body} -->
+  <include file="$(find fast_lio)/launch/mapping_mid360.launch"/>
+
+  <!-- SC-A-LOAM alaserPGO — pose-graph optimization with scan-context loop detection.
+       Subscribes to /aft_mapped_to_init + /velodyne_cloud_registered_local, so we
+       remap those to FAST_LIO's output topics. -->
+  <node pkg="aloam_velodyne" type="alaserPGO" name="alaserPGO" output="screen"
+        required="true">
+    <remap from="/aft_mapped_to_init"              to="/Odometry"/>
+    <remap from="/velodyne_cloud_registered_local" to="/cloud_registered"/>
+  </node>
+</launch>

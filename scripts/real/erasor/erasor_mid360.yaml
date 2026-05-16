@@ -1,0 +1,27 @@
+# ERASOR config tuned for Livox Mid-360
+# Override defaults from ERASOR/config/seq_xx.yaml which are Velodyne-tuned.
+#
+# Mid-360 differs from Velodyne 64-line:
+#  - non-repetitive scan pattern (Risley prism), not ring-organized
+#  - shorter range (typically 30m vs 100m+ for Velodyne)
+#  - much denser at short range, sparser at far range
+#  - vertical FOV asymmetric: -7° to +52° (vs ±15° for Velodyne)
+
+erasor:
+  query_voxel_size:    0.4   # smaller than KITTI (0.6) — Mid-360 sparser at distance
+  map_voxel_size:      0.2   # finer ground resolution
+  removal_interval:    2     # consider 2 query scans per map check (vs 5 for KITTI)
+  max_range:          25.0   # Mid-360 reliable range
+  min_h:              -2.0   # below sensor (Mid-360 mounted ~0.5m above ground)
+  max_h:               2.0   # above sensor (catch ceilings, lights)
+  th_bin_max_h:        1.0   # height threshold for "bin is dynamic"
+  th_seeds_heights:    0.5   # ground seed search height
+  num_rings:          16     # polar grid azimuthal resolution
+  num_sectors:        64     # polar grid radial resolution
+  num_lowest_pts:     5      # min points per polar bin to consider as ground
+  scan_ratio_threshold: 0.2  # bin classified dynamic if scan-ratio diff > this
+
+  # IMU-Z alignment — our SLAM output is in `camera_init` which is roughly
+  # gravity-aligned (Fast-LIO estimates gravity vector). Set to false if you
+  # see ground-plane tilt artifacts in static_map output.
+  imu_align: false

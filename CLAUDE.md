@@ -4,6 +4,30 @@ Multi-robot autonomy with Unitree Go2W wheeled-legged quadrupeds + Go2 walking q
 
 Door task (Phase 2 dual-robot VLM coordination) and the legacy A*/default Python nav backends were removed in the 2026-05 cleanup; see [CLAUDE1.md](CLAUDE1.md) for Phase 1 VLM exploration history, Phase 2 FSM archive, archived 2026-04 operational notes, and the deletion log.
 
+## Active state (2026-05-16) — real-world walk → MuJoCo collidable scene (Go2 explores SLAM mesh autonomously)
+
+End-to-end: offline replay of a real-robot bag → static-only mesh → Go2 spawned and trotting inside it under CFPA2 + Nav2, with only foot-floor contacts.
+
+**Pipeline** (all scripts in [`scripts/real/erasor/`](scripts/real/erasor/)):
+1. **`offline_slam.sh tag=ops2`** — Fast-LIO 2 on raw `/livox/lidar` + `/livox/imu` from a Noetic bag. No loop closure: SC-A-LOAM's ScanContext gets fooled by glass-window reflections into false LC, which warped the map worse than drift. Verified by building the full SC-A-LOAM + ERASOR Docker stack ([`scripts/real/erasor/Dockerfile`](scripts/real/erasor/Dockerfile)) and seeing LC-corrected output corrupted. Output: 25.8M points → [`bags/meshes/ops2_final/scans.obj`](bags/meshes/ops2_final/scans.obj).
+2. **`density_filter.py --min-pts 8`** — temporal-consistency filter via points-per-voxel count. Static surfaces accumulate 60-700+ points/voxel across all keyframe contributions; pedestrian trails + glass-reflection outliers only 1-5 points/voxel. Threshold at 8 keeps 70.3%, removes the rest. Decoupled from mesh reconstruction (the user's key insight) — Poisson on already-clean cloud doesn't hallucinate over trail-shaped gaps.
+3. **`pcd_to_mesh.py --method poisson --voxel 0.02 --depth 11 --density-pct 10`** + quadric decimation to 500K triangles + `cluster_connected_triangles` cull (keep ≥ 2000 tri components) → 240k v / 473k f.
+4. **RANSAC ground alignment** in bottom-5%-z subset (initial bottom-30% picked up walls and gave 2.5° residual tilt; tight bottom-5% gives **0.19°**). Mesh ground forced to z=0 ±0.04m.
+
+**5 MuJoCo integration fixes** (each was a blocker for autonomy):
+1. **Whole-mesh convex hull pushed robot through floor.** MuJoCo collides `<geom type="mesh">` via its **convex hull** by default. An 80×32×10 m scene-wide hull pushed the body box to z=-0.078 (8cm below floor) regardless of spawn z. Fix: [`tile_mesh.py`](scripts/real/erasor/tile_mesh.py) splits mesh into 8×4 XY grid (22 non-empty tiles, max 42K tri/tile). Each tile's hull approximates only its local geometry → robot stands at proper z=0.236 m.
+2. **CHAMP can't stand a robot whose initial joints are at 0** (legs straight down). With nominal joints `(hip=0, thigh=0, calf=0)` and body spawned at z=0.60, legs hit floor extended; CHAMP commands the fold-to-standing pose but motors can't lift body weight against tucked-leg geometry. Fix: `<keyframe>` block with `qpos` initialized to `(thigh=0.9, calf=-1.8)` per leg — robot spawns already in trotting-ready pose at z=0.32. nq=**19** for Go2 (no foot joints in MuJoCo despite ROS-side `*_foot_joint` names from URDF parsing).
+3. **`initial_pose_guard.py` re-pins robot to (0, 0, 0.38) for 14 s after spawn** via `/gazebo/set_entity_state` calls. In MuJoCo mode that service doesn't exist so the calls no-op, BUT the script still consumes the `spawn_x/spawn_y/spawn_z` launch args; passing them via the wrapper overrides the (0, 0, 0.38) default at the param-store level (no functional override needed for MuJoCo, but matters for future Gazebo runs).
+4. **Wrong launcher** — `nav_test_mujoco_fastlio.launch.py` doesn't include the elevation_mapping + filter_chain + grid_map_to_occupancy_grid trio, so CFPA2 spins for hours warning `Waiting for map topic from: robot`. Only [`nav_test_3d_explore.launch.py`](src/go2w/go2_gazebo_sim/launch/nav_test_3d_explore.launch.py) has them. New wrapper [`scripts/launch/nav_test_slam_ops2_go2.sh`](scripts/launch/nav_test_slam_ops2_go2.sh) calls 3d_explore.
+5. **Spawn point selection** — the bag's first Fast-LIO odom is at (0, 0, 0) in `camera_init`, after alignment that's a poor xy spot (mesh has walls/clutter within 2 m). Sweep over the mesh bbox finds (5.12, -8.76) as best: 148 ground verts in 1 m radius, **0 mesh verts inside robot body volume** within 0.8 m. Encoded as the `<keyframe>` qpos x/y.
+
+**Verified end state** ([`slam_ops2_go2.xml`](src/go2w/go2_gazebo_sim/mujoco/slam_ops2_go2.xml) + [`scripts/launch/nav_test_slam_ops2_go2.sh`](scripts/launch/nav_test_slam_ops2_go2.sh)):
+- Standing: base_link z = **0.236-0.241 m**.
+- Contacts: only `floor|*_foot_collision` pairs (no body collision).
+- Trotting: foot contact state `[F, F, F, T]` cycling — 1-2 feet on ground at a time.
+- Motion: position trace **(4.68, -9.02) → (3.07, -9.70) → (4.02, -10.02)** in 12 s — actively exploring.
+- Stack: trav_grid 1.7 Hz, cmd_vel 20 Hz, way_point_coord driving to (17.55, -13.45).
+
 ## Active state (2026-05-15) — ETH elevation mapping + CNN traversability + ramp_safe fusion live; Go2W still tips at ramp edges (open)
 
 Single-session end-to-end stand-up of the ETH RSL elevation_mapping_cupy stack with the CNN traversability filter actually running, fused with the analytical chain, and consumed by Nav2 in 2D. Robot autonomously explores demo_ramp via CFPA2 → Nav2 with no scripted ramp helper. One remaining open issue: Go2W tips when the planner routes it near the ramp foot transition / platform cliff edge — see [docs/claude/ramp_tipover_open_problem.md](docs/claude/ramp_tipover_open_problem.md).

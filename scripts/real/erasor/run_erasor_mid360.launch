@@ -1,0 +1,59 @@
+<!-- ERASOR your_own_env mode for Mid-360.
+     IMPORTANT: ERASOR has TWO param namespaces:
+       /erasor/*       - filter algorithm params
+       /MapUpdater/*   - I/O paths + behavior of OfflineMapUpdater
+       /<top-level>/*  - main_in_your_env reads data_dir, voxel_size, init_idx, interval -->
+<launch>
+  <!-- ERASOR algorithm (R-GPF + scan-ratio) — tuned for Mid-360 indoor -->
+  <rosparam>
+    erasor:
+      max_range: 25.0
+      num_rings: 12
+      num_sectors: 60
+      min_h: -1.5
+      max_h: 1.5
+      th_bin_max_h: -0.5
+      scan_ratio_threshold: 0.2
+      minimum_num_pts: 5
+      rejection_ratio: 0
+      gf_dist_thr: 0.10
+      gf_iter: 3
+      gf_num_lpr: 12
+      gf_th_seeds_height: 0.5
+      version: 3
+  </rosparam>
+
+  <!-- MapUpdater I/O — load the dense map, save static map here -->
+  <rosparam>
+    MapUpdater:
+      initial_map_path: "/erasor_data/dense_global_map.pcd"
+      save_path: "/out/erasor/"
+      data_name: "ops2"
+      env: "outdoor"   # "indoor" mode throws std::invalid_argument in OfflineMapUpdater
+      query_voxel_size: 0.10
+      map_voxel_size: 0.10
+      voxelization_interval: 10
+      removal_interval: 2
+  </rosparam>
+
+  <!-- main_in_your_env_ros inputs -->
+  <param name="data_dir"            type="string" value="/erasor_data"/>
+  <param name="voxel_size"          type="double" value="0.075"/>
+  <param name="init_idx"            type="int"    value="0"/>
+  <param name="interval"            type="int"    value="2"/>
+  <param name="stop_for_each_frame" type="bool"   value="false"/>
+  <param name="verbose"             type="bool"   value="true"/>
+
+  <!-- Small indoor scene → submap mode off -->
+  <rosparam param="/large_scale/is_large_scale">false</rosparam>
+  <rosparam param="/large_scale/submap_size">160.0</rosparam>
+
+  <!-- lidar→body (identity: poses already in body frame from SC-A-LOAM) -->
+  <rosparam>
+    tf:
+      lidar2body: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+  </rosparam>
+
+  <node name="main_in_your_env_ros" pkg="erasor" type="main_in_your_env_ros"
+        output="screen" required="true"/>
+</launch>
