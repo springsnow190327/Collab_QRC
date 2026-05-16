@@ -6,8 +6,6 @@ from __future__ import annotations
 import math
 from typing import Optional
 
-import math
-
 import numpy as np
 from geometry_msgs.msg import PointStamped
 from nav_msgs.msg import OccupancyGrid
@@ -224,6 +222,25 @@ class CFPA2SingleRobotNode(CFPA2Coordinator):
         # when a goal is finally published downstream.
         self._goal_to_tracker_id: dict[tuple[float, float], int] = {}
 
+        # Peer-claim filter input from cfpa2_peer_coordination
+        # Fail-open: if no message arrives, normal single-robot CFPA2 runs unchanged
+        self._peer_blocked_frontiers: list[tuple[float, float]] = []
+        self._peer_blocked_received_ns: int = 0
+
+        self._peer_blocked_frontiers_topic = (
+            f"/{ns}/cfpa2_peer_coordination/blocked_frontiers"
+        )
+        self.create_subscription(
+            PoseArray,
+            self._peer_blocked_frontiers_topic,
+            self._blocked_frontiers_received,
+            10,
+        )
+        self.get_logger().info(
+            f"Subscribed to peer blocked frontiers on "
+            f"{self._peer_blocked_frontiers_topic}"
+        )
+
     def _ramp_ascent_goal_cb(self, msg: PointStamped, ns: str) -> None:
         goal = (float(msg.point.x), float(msg.point.y))
         if not (math.isfinite(goal[0]) and math.isfinite(goal[1])):
@@ -356,25 +373,6 @@ class CFPA2SingleRobotNode(CFPA2Coordinator):
             self._startup_start_ns = now_ns
             start_ns = now_ns
         return now_ns - start_ns < int(delay_sec * 1e9)
-
-        # Peer-claim filter input from cfpa2_peer_coordination
-        # Fail-open: if no message arrives, normal single-robot CFPA2 runs unchanged
-        self._peer_blocked_frontiers: list[tuple[float, float]] = []
-        self._peer_blocked_received_ns: int = 0
-
-        self._peer_blocked_frontiers_topic = (
-            f"/{ns}/cfpa2_peer_coordination/blocked_frontiers"
-        )
-        self.create_subscription(
-            PoseArray,
-            self._peer_blocked_frontiers_topic,
-            self._blocked_frontiers_received,
-            10,
-        )
-        self.get_logger().info(
-            f"Subscribed to peer blocked frontiers on "
-            f"{self._peer_blocked_frontiers_topic}"
-        )
 
     def _publish_status(self, status: str) -> None:
         """Publish a state change. No-op when status unchanged (avoids spam)."""
@@ -753,12 +751,12 @@ class CFPA2SingleRobotNode(CFPA2Coordinator):
                 continue
             if is_ramp_goal:
                 score = self.ramp_ascent_utility
-            else:
+            else:   # decide later whether ramp goals should ignore peer claims
                 if self._peer_has_claimed(goal):
-                peer_blocked_count += 1
-                continue  # skip frontiers claimed by peers
+                    peer_blocked_count += 1
+                    continue  # skip frontiers claimed by peers
 
-            info_gain_override = goal_scores.get(goal)
+                info_gain_override = goal_scores.get(goal)
                 if info_gain_override is None:
                     score = self._cfpa2_single_utility(
                         ns=ns,
@@ -924,8 +922,8 @@ class CFPA2SingleRobotNode(CFPA2Coordinator):
                 continue
             if self._is_blacklisted(ns, frontier, now_ns):
                 continue
-            if self._peer_has_claimed(frontier):
-                continue  # skip frontiers claimed by peers
+            if self._peer_has_claimed(frontier) and not frontier_is_ramp_goal:
+                continue  # skip normal frontiers claimed by peers
             if self._goal_reachable(planning_map, dist_map, frontier):
                 reachable += 1
 
