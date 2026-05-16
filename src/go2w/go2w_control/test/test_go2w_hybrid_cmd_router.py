@@ -125,7 +125,7 @@ def test_ramp_wheel_limiter_brakes_when_cmd_is_idle_or_stale():
     assert (vx, vy, wz) == (0.0, 0.0, 0.0)
 
 
-def test_hybrid_motion_config_locks_ramp_corridor_to_wheel_mode():
+def test_hybrid_motion_config_keeps_ramp_force_disabled_without_verified_overlay():
     repo = Path(__file__).resolve().parents[4]
     text = (
         repo
@@ -137,9 +137,9 @@ def test_hybrid_motion_config_locks_ramp_corridor_to_wheel_mode():
         / "go2w_hybrid_motion.yaml"
     ).read_text()
 
-    assert "ramp_force_wheel_enabled: true" in text
-    assert "ramp_goal_stale_sec: 9999.0" in text
-    assert "ramp_force_max_yaw_rate_rps: 0.20" in text
+    assert "ramp_force_wheel_enabled: false" in text
+    assert "ramp_goal_stale_sec: 1.5" in text
+    assert "ramp_force_max_goal_x: 1000000000.0" in text
 
 
 def test_ramp_force_wheel_requests_wheel_even_when_cmd_is_idle_or_stale():
@@ -175,3 +175,63 @@ def test_ramp_force_wheel_requests_wheel_even_when_cmd_is_idle_or_stale():
     mode, _ = router.Go2WHybridCmdRouter._requested_mode(node, idle_cmd, 20.0)
 
     assert mode == "wheel"
+
+
+def test_ramp_force_wheel_does_not_override_approach_mode():
+    router = _load_router()
+    node = object.__new__(router.Go2WHybridCmdRouter)
+    node.cmd_timeout_sec = 0.5
+    node.thresholds = router.MotionThresholds(
+        idle_linear=0.02,
+        idle_lateral=0.02,
+        idle_angular=0.05,
+        wheel_linear=0.18,
+        wheel_lateral=0.05,
+        wheel_angular=0.30,
+        wheel_curvature=0.45,
+    )
+    node._wheel_eligible_since_sec = None
+    node.wheel_engage_sustain_sec = 0.5
+    node.ramp_force_legged_enabled = False
+    node.ramp_force_wheel_enabled = True
+    node._ramp_goal_xy = (6.40, 0.0)
+    node._ramp_goal_rx_sec = 10.0
+    node._ramp_goal_mode = "approach"
+    node._ramp_goal_mode_rx_sec = 10.0
+    node.ramp_goal_stale_sec = 9999.0
+    node.ramp_force_min_goal_x = 5.3
+    node.ramp_force_max_goal_x = 9.8
+    node.ramp_force_max_abs_goal_y = 0.9
+    node._last_cmd_time_sec = 20.0
+
+    turn_cmd = SimpleNamespace(
+        linear=SimpleNamespace(x=0.0, y=0.0),
+        angular=SimpleNamespace(z=0.25),
+    )
+
+    mode, _ = router.Go2WHybridCmdRouter._requested_mode(node, turn_cmd, 20.0)
+
+    assert mode == "legged"
+
+
+def test_ramp_force_legged_bypasses_wheel_hold_when_verified_goal_is_fresh():
+    router = _load_router()
+    node = object.__new__(router.Go2WHybridCmdRouter)
+    node.mode_hold_sec = {"wheel": 0.5, "legged": 0.8}
+    node._active_mode = "wheel"
+    node._last_mode_change_sec = 10.0
+    node.legged_override_curvature = 1.0
+    node.ramp_force_legged_enabled = True
+    node.ramp_force_wheel_enabled = False
+    node._ramp_goal_xy = (42.0, -3.0)
+    node._ramp_goal_rx_sec = 10.0
+    node.ramp_goal_stale_sec = 1.5
+    node.ramp_force_min_goal_x = -1.0e9
+    node.ramp_force_max_goal_x = 1.0e9
+    node.ramp_force_max_abs_goal_y = 1.0e9
+
+    selected = router.Go2WHybridCmdRouter._select_mode(
+        node, "legged", 0.1, now_sec=10.1
+    )
+
+    assert selected == "legged"

@@ -99,6 +99,16 @@ def generate_launch_description() -> LaunchDescription:
             "rviz": LaunchConfiguration("rviz"),
             "gui":  LaunchConfiguration("gui"),
             "nav_costmap_mode": LaunchConfiguration("nav_costmap_mode"),
+            # A verified ramp viewpoint means the Go2W should climb with
+            # controlled wheel drive instead of treating the segment as open
+            # flat-ground cruise. The trigger remains sensor-derived; no
+            # scene-coordinate corridor is configured.
+            "ramp_force_legged_enabled": "false",
+            "ramp_force_wheel_enabled": "true",
+            "ramp_goal_mode_topic": "ramp_ascent_goal_mode",
+            "ramp_goal_stale_sec": "3.0",
+            "ramp_force_max_vx_mps": "0.17",
+            "ramp_force_max_yaw_rate_rps": "0.20",
             # demo_ramp has 2 m corridors flanked by lethal walls; base CFPA2
             # frontier filters (0.35 m clearance + 20 live unknowns) reject
             # every corridor frontier and report no_frontiers. Overlay
@@ -215,16 +225,16 @@ def generate_launch_description() -> LaunchDescription:
             "output_topic":    "traversability_grid",
             # CNN ↔ analytical fusion: trav_fused = max(CNN_traversability,
             # ramp_safe). CNN catches walls the analytical chain misses;
-            # ramp_safe rescues sloped surfaces the CNN over-rejects. See the
-            # bottom of grid_map_filters.yaml for the construction.
+            # ramp_safe rescues clear ramp-body slopes the CNN over-rejects,
+            # while shallow ramp-foot transitions fall back to CNN/mid-band
+            # cost. See grid_map_filters.yaml for the trapezoidal envelope.
             "traversability_layer": "trav_fused",
-            # Conservative thresholds: only cells with trav ≥ 0.55 are
-            # treated as cost-0 free; cells in [0.25, 0.55] get the costly
+            # Conservative thresholds: only cells with trav ≥ 0.60 are
+            # treated as cost-0 free; cells in [0.30, 0.60] get the costly
             # mid-band 1-99 interpolation so MPPI/planner steers AROUND
-            # them when an obviously-free route exists; trav < 0.25 is
+            # them when an obviously-free route exists; trav < 0.30 is
             # outright lethal. This stops the planner from grazing
-            # ramp-foot / wall-edge cells whose ramp_safe rescue gives
-            # them confident "free" verdicts while CNN says otherwise.
+            # ramp-foot / wall-edge cells whose local geometry is ambiguous.
             "free_threshold":  0.60,
             "lethal_threshold": 0.30,
             # Height-based extra cost — discourages planning over elevated
@@ -237,6 +247,15 @@ def generate_launch_description() -> LaunchDescription:
             "elevation_cost_min_h":   0.05,
             "elevation_cost_max_h":   1.00,
             "elevation_cost_max_value": 90,
+            # Dynamic stability margin around platform/cliff edges. This uses
+            # the measured step_height layer and a robot-scale proximity
+            # radius; it is not a scene-coordinate keep-out zone.
+            "cliff_proximity_cost_enabled": True,
+            "cliff_step_layer": "step_height",
+            "cliff_proximity_radius_m": 0.25,
+            "cliff_step_threshold_m": 0.30,
+            "cliff_step_saturation_m": 0.45,
+            "cliff_proximity_cost_max_value": 90,
             "seed_robot_footprint": True,
             "robot_frame": "base_link",
             "robot_seed_radius_m": 0.65,
@@ -244,7 +263,7 @@ def generate_launch_description() -> LaunchDescription:
             "ramp_override_enabled": True,
             "slope_layer": "slope",
             "step_residual_layer": "step_residual",
-            "ramp_min_slope_rad": 0.13962634015954636,
+            "ramp_min_slope_rad": 0.20943951023931956,
             "ramp_max_slope_rad": 0.5235987755982988,
             "ramp_max_step_residual_m": 0.06,
             # elevation_mapping_cupy is a robot-centered rolling map. Project
@@ -257,7 +276,10 @@ def generate_launch_description() -> LaunchDescription:
             "fixed_width_cells": 300,
             "fixed_height_cells": 300,
             "unknown_clears_history": False,
-            "occupied_cost_threshold": 80,
+            # Preserve high-but-traversable costs (e.g. elevation/cliff
+            # stability cost 90). Only true OccupancyGrid lethal cells are
+            # temporally confirmed into persistent obstacles.
+            "occupied_cost_threshold": 100,
             "free_cost_threshold": 30,
             "occupied_confirm_hits": 2,
             "occupied_clear_hits": 0,
@@ -275,12 +297,70 @@ def generate_launch_description() -> LaunchDescription:
         condition=is_3d,
     )
 
-    # NOTE: ramp_ascent_goal_node + ramp_cmd_vel_assist_node were removed so
-    # the CFPA2 frontier-driven autonomy can run unassisted. The CNN + ramp_safe
-    # fusion in the filter chain already keeps the ramp traversable in the
-    # OccupancyGrid, so Nav2 should plan onto it naturally without the
-    # scripted ascent helper. Re-add the two nodes if scene-bound ascent
-    # behaviour is needed for a benchmark.
+    # 4. Slope-verified ramp viewpoint goals.
+    #
+    # A 2D frontier planner cannot see the upper platform until the robot
+    # physically steps onto the ramp. The slope/traversability/step layers can
+    # already prove that a local ramp patch is traversable, so publish a normal
+    # PointStamped goal on that patch and let CFPA2/Nav2 treat it like a bridge
+    # viewpoint. For this demo the detector is intentionally driven by the
+    # filtered GridMap layers only: raw pointcloud plane fitting can fire before
+    # the map/filter chain has stabilized and create pre-map false ramp goals.
+    # This remains sensor-derived: no scene-coordinate corridor, no scripted
+    # cmd_vel assist.
+    ramp_goal = Node(
+        package="trav_cost_filters",
+        executable="ramp_ascent_goal_node",
+        name="ramp_ascent_goal",
+        namespace=LaunchConfiguration("robot_namespace"),
+        output="screen",
+        parameters=[{
+            "use_sim_time": LaunchConfiguration("use_sim_time"),
+            "input_topic": "elevation_map_filtered",
+            "output_topic": "ramp_ascent_goal",
+            "mode_topic": "ramp_ascent_goal_mode",
+            "robot_frame": "base_link",
+            "map_frame": "map",
+            "pointcloud_topic": "registered_scan_reliable",
+            "use_pointcloud_ramp_detection": False,
+            "pointcloud_stride": 4,
+            # Use fused traversability so the analytical ramp_safe rescue can
+            # recover continuous slopes that the CNN over-rejects, then apply
+            # explicit wall/step veto layers before a slope component can
+            # become a ramp goal.
+            "traversability_layer": "trav_fused",
+            "slope_layer": "slope",
+            "step_residual_layer": "step_residual",
+            "wall_cost_layer": "wall_cost",
+            "step_height_layer": "step_height",
+            "min_traversability": 0.30,
+            "min_slope_deg": 8.0,
+            "max_slope_deg": 30.0,
+            "max_step_residual_m": 0.06,
+            "max_wall_cost": 0.30,
+            "max_step_height_m": 0.25,
+            # Require a robot-scale patch of slope evidence. Tiny wall-rim
+            # fragments can satisfy the local plane equation, but they are not
+            # enough continuous terrain to carry the Go2W footprint.
+            "min_candidate_cells": 30,
+            "min_elevation_span_m": 0.12,
+            # Physical support gate: reject compact sloped artifacts from
+            # early elevation-map transients. A ramp goal must expose enough
+            # continuous terrain to carry the Go2W footprint before it can
+            # force wheel mode.
+            "min_support_length_m": 0.75,
+            "min_support_width_m": 0.45,
+            "min_goal_distance_m": 0.45,
+            "max_goal_distance_m": 2.0,
+            "goal_lookahead_m": 1.0,
+            "verified_hold_sec": 4.0,
+        }],
+        remappings=[
+            ("/tf",        ["/", LaunchConfiguration("robot_namespace"), "/tf"]),
+            ("/tf_static", ["/", LaunchConfiguration("robot_namespace"), "/tf_static"]),
+        ],
+        condition=is_3d,
+    )
 
     # Static identity: base_link → body
     # Fast-LIO hardcodes cloud_registered_body.header.frame_id = "body"
@@ -317,7 +397,7 @@ def generate_launch_description() -> LaunchDescription:
     # Trav pipeline nodes start 1 s after the nvblox mapper.
     deferred_trav = TimerAction(
         period=6.0,
-        actions=[elevation_mapping, filter_runner, occ_adapter],
+        actions=[elevation_mapping, filter_runner, occ_adapter, ramp_goal],
     )
 
     return LaunchDescription([*args, base_launch, body_tf, deferred, deferred_trav])

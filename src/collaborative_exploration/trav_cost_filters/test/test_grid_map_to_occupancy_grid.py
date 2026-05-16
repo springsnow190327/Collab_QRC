@@ -1,8 +1,10 @@
 import numpy as np
 
 from trav_cost_filters.occupancy_conversion import (
+    apply_cliff_proximity_cost,
     apply_rectangular_workspace_mask,
     apply_slope_verified_ramp_override,
+    grid_map_layer_to_world_array,
     project_rolling_grid_to_fixed_grid,
     stamp_free_disk,
     traversability_to_occupancy,
@@ -28,6 +30,25 @@ def test_traversability_thresholds_keep_moderate_ramp_scores_free():
         [-1, 100, 100],
         [0, 0, 0],
     ]
+
+
+def test_grid_map_layer_layout_converts_to_world_xy_convention():
+    world = np.array(
+        [
+            [1.0, 2.0, 3.0],
+            [4.0, 5.0, 6.0],
+        ],
+        dtype=np.float32,
+    )
+    flat_grid_map_storage = world[::-1, ::-1].reshape(-1)
+
+    converted = grid_map_layer_to_world_array(
+        flat_grid_map_storage,
+        height=world.shape[0],
+        width=world.shape[1],
+    )
+
+    assert converted.tolist() == world.tolist()
 
 
 def test_robot_footprint_seed_connects_unknown_start_without_clearing_walls():
@@ -160,6 +181,40 @@ def test_temporal_projection_filters_single_frame_obstacle_speckle():
     assert hits[1, 1] == 2
 
 
+def test_temporal_projection_preserves_high_cost_traversable_cells():
+    fixed = np.full((3, 3), -1, dtype=np.int8)
+    hits = np.zeros_like(fixed, dtype=np.int16)
+
+    high_cost = np.full((3, 3), -1, dtype=np.int8)
+    high_cost[1, 1] = 90
+
+    project_rolling_grid_to_fixed_grid(
+        high_cost,
+        fixed,
+        hits,
+        rolling_origin_x=0.0,
+        rolling_origin_y=0.0,
+        fixed_origin_x=0.0,
+        fixed_origin_y=0.0,
+        resolution=0.1,
+        occupied_confirm_hits=2,
+    )
+    project_rolling_grid_to_fixed_grid(
+        high_cost,
+        fixed,
+        hits,
+        rolling_origin_x=0.0,
+        rolling_origin_y=0.0,
+        fixed_origin_x=0.0,
+        fixed_origin_y=0.0,
+        resolution=0.1,
+        occupied_confirm_hits=2,
+    )
+
+    assert fixed[1, 1] == 90
+    assert hits[1, 1] == 0
+
+
 def test_rectangular_workspace_mask_keeps_square_border_stable():
     occ = np.zeros((6, 6), dtype=np.int8)
 
@@ -179,3 +234,33 @@ def test_rectangular_workspace_mask_keeps_square_border_stable():
     assert occ[0, 0] == -1
     assert occ[1, 1] == 100
     assert occ[3, 3] == 0
+
+
+def test_cliff_proximity_cost_inflates_nearby_platform_cells_without_touching_unknowns():
+    occ = np.array(
+        [
+            [-1, 0, 0, 0, -1],
+            [-1, 0, 0, 0, -1],
+            [-1, 0, 0, 0, -1],
+        ],
+        dtype=np.int8,
+    )
+    step_height = np.zeros_like(occ, dtype=np.float32)
+    step_height[:, 1] = 0.45
+
+    changed = apply_cliff_proximity_cost(
+        occ,
+        step_height=step_height,
+        resolution=0.10,
+        proximity_radius_m=0.20,
+        step_threshold_m=0.30,
+        step_saturation_m=0.45,
+        max_cost=90,
+    )
+
+    assert changed == 9
+    assert occ.tolist() == [
+        [-1, 90, 90, 90, -1],
+        [-1, 90, 90, 90, -1],
+        [-1, 90, 90, 90, -1],
+    ]

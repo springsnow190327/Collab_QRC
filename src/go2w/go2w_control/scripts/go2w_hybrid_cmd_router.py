@@ -13,6 +13,9 @@ from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray, String
 
 
+DEFAULT_RAMP_FORCE_WHEEL_MODES = frozenset({"ramp", "platform"})
+
+
 @dataclass
 class MotionThresholds:
     idle_linear: float
@@ -40,6 +43,19 @@ def ramp_force_active(
         return False
     goal_x, goal_y = goal_xy
     return min_x <= goal_x <= max_x and abs(goal_y) <= max_abs_y
+
+
+def normalized_mode_set(values) -> set[str]:
+    if isinstance(values, str):
+        raw_values = values.split(",")
+    else:
+        raw_values = values
+    modes: set[str] = set()
+    for value in raw_values:
+        mode = str(value).strip().lower()
+        if mode:
+            modes.add(mode)
+    return modes
 
 
 def limit_ramp_legged_values(
@@ -161,10 +177,13 @@ class Go2WHybridCmdRouter(Node):
         self.declare_parameter("ramp_force_legged_enabled", False)
         self.declare_parameter("ramp_force_wheel_enabled", False)
         self.declare_parameter("ramp_goal_topic", "ramp_ascent_goal")
+        self.declare_parameter("ramp_goal_mode_topic", "")
         self.declare_parameter("ramp_goal_stale_sec", 1.5)
-        self.declare_parameter("ramp_force_min_goal_x", 5.3)
-        self.declare_parameter("ramp_force_max_goal_x", 9.8)
-        self.declare_parameter("ramp_force_max_abs_goal_y", 0.9)
+        self.declare_parameter("ramp_goal_mode_sync_tolerance_sec", 0.25)
+        self.declare_parameter("ramp_force_wheel_modes", ["ramp", "platform"])
+        self.declare_parameter("ramp_force_min_goal_x", -1.0e9)
+        self.declare_parameter("ramp_force_max_goal_x", 1.0e9)
+        self.declare_parameter("ramp_force_max_abs_goal_y", 1.0e9)
         self.declare_parameter("ramp_force_max_vx_mps", 0.17)
         self.declare_parameter("ramp_force_max_yaw_rate_rps", 0.35)
 
@@ -224,6 +243,17 @@ class Go2WHybridCmdRouter(Node):
         self.ramp_goal_stale_sec = max(
             0.1, float(self.get_parameter("ramp_goal_stale_sec").value)
         )
+        self.ramp_goal_mode_topic = str(
+            self.get_parameter("ramp_goal_mode_topic").value
+        ).strip()
+        self.ramp_goal_mode_sync_tolerance_sec = max(
+            0.0, float(self.get_parameter("ramp_goal_mode_sync_tolerance_sec").value)
+        )
+        self.ramp_force_wheel_modes = normalized_mode_set(
+            self.get_parameter("ramp_force_wheel_modes").value
+        )
+        if not self.ramp_force_wheel_modes:
+            self.ramp_force_wheel_modes = set(DEFAULT_RAMP_FORCE_WHEEL_MODES)
         self.ramp_force_min_goal_x = float(
             self.get_parameter("ramp_force_min_goal_x").value
         )
@@ -241,6 +271,8 @@ class Go2WHybridCmdRouter(Node):
         )
         self._ramp_goal_xy: tuple[float, float] | None = None
         self._ramp_goal_rx_sec: float | None = None
+        self._ramp_goal_mode: str | None = None
+        self._ramp_goal_mode_rx_sec: float | None = None
         # Latest measured ω for [FL,FR,RL,RR]_foot_joint (rad/s). Defaults
         # to zeros so the first few ticks (before joint_states arrives)
         # behave like the legacy "cmd=0 in legged" path.
@@ -252,6 +284,10 @@ class Go2WHybridCmdRouter(Node):
         if self.ramp_force_legged_enabled or self.ramp_force_wheel_enabled:
             ramp_goal_topic = str(self.get_parameter("ramp_goal_topic").value)
             self.create_subscription(PointStamped, ramp_goal_topic, self._ramp_goal_cb, 10)
+            if self.ramp_goal_mode_topic:
+                self.create_subscription(
+                    String, self.ramp_goal_mode_topic, self._ramp_goal_mode_cb, 10
+                )
         self._legged_pub = self.create_publisher(Twist, legged_topic, 10)
         self._wheel_pub = self.create_publisher(Float64MultiArray, wheel_command_topic, 10)
         self._status_pub = self.create_publisher(String, status_topic, 10)
@@ -273,6 +309,8 @@ class Go2WHybridCmdRouter(Node):
             self.get_logger().info(
                 "Ramp force-wheel enabled: "
                 f"goal={self.get_parameter('ramp_goal_topic').value} "
+                f"mode_topic={self.ramp_goal_mode_topic or 'disabled'} "
+                f"wheel_modes={sorted(self.ramp_force_wheel_modes)} "
                 f"x=[{self.ramp_force_min_goal_x:.1f},{self.ramp_force_max_goal_x:.1f}] "
                 f"|y|<={self.ramp_force_max_abs_goal_y:.1f} "
                 f"vx<={self.ramp_force_max_vx_mps:.2f} "
@@ -300,6 +338,13 @@ class Go2WHybridCmdRouter(Node):
             return
         self._ramp_goal_xy = goal
         self._ramp_goal_rx_sec = self._now_sec()
+
+    def _ramp_goal_mode_cb(self, msg: String) -> None:
+        mode = str(msg.data).strip().lower()
+        if not mode:
+            return
+        self._ramp_goal_mode = mode
+        self._ramp_goal_mode_rx_sec = self._now_sec()
 
     def _joint_state_cb(self, msg: JointState) -> None:
         # Cache latest ω for the four wheel joints. Skip Robot B (b_-prefix).
@@ -380,6 +425,8 @@ class Go2WHybridCmdRouter(Node):
     def _ramp_force_wheel_active(self, now_sec: float) -> bool:
         if not self.ramp_force_wheel_enabled:
             return False
+        if not self._ramp_force_wheel_mode_allows(now_sec):
+            return False
         return ramp_force_active(
             goal_xy=self._ramp_goal_xy,
             goal_rx_sec=self._ramp_goal_rx_sec,
@@ -390,12 +437,39 @@ class Go2WHybridCmdRouter(Node):
             max_abs_y=self.ramp_force_max_abs_goal_y,
         )
 
+    def _ramp_force_wheel_mode_allows(self, now_sec: float) -> bool:
+        mode_topic = getattr(self, "ramp_goal_mode_topic", "")
+        mode = getattr(self, "_ramp_goal_mode", None)
+        mode_rx_sec = getattr(self, "_ramp_goal_mode_rx_sec", None)
+        if mode is None or mode_rx_sec is None:
+            return not bool(mode_topic)
+        if now_sec - mode_rx_sec > self.ramp_goal_stale_sec:
+            return not bool(mode_topic)
+
+        goal_rx_sec = getattr(self, "_ramp_goal_rx_sec", None)
+        if mode_topic and goal_rx_sec is not None:
+            if mode_rx_sec + 1.0e-6 < goal_rx_sec:
+                return False
+            sync_tolerance = getattr(
+                self, "ramp_goal_mode_sync_tolerance_sec", 0.25
+            )
+            if mode_rx_sec - goal_rx_sec > sync_tolerance:
+                return False
+
+        allowed_modes = getattr(
+            self, "ramp_force_wheel_modes", DEFAULT_RAMP_FORCE_WHEEL_MODES
+        )
+        return str(mode).strip().lower() in allowed_modes
+
     def _select_mode(self, requested_mode: str, curvature: float,
                      now_sec: float) -> str:
         if requested_mode == self._active_mode:
             return requested_mode
 
         if requested_mode == "wheel" and self._ramp_force_wheel_active(now_sec):
+            return requested_mode
+
+        if requested_mode == "legged" and self._ramp_force_active(now_sec):
             return requested_mode
 
         # Emergency bypass: if astar is demanding legged with high curvature

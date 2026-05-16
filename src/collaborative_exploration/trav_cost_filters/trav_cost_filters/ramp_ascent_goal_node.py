@@ -15,13 +15,17 @@ from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 from rclpy.time import Time
 from sensor_msgs.msg import PointCloud2
 from sensor_msgs_py import point_cloud2
+from std_msgs.msg import String
 from tf2_ros import Buffer, TransformException, TransformListener
 
+from trav_cost_filters.occupancy_conversion import grid_map_layer_to_world_array
 from trav_cost_filters.ramp_goal_selector import (
     GridMapGeometry,
     RampGoal,
     RampSelectorParams,
     advance_centerline_ascent_goal,
+    goal_has_min_forward_progress,
+    hold_recent_verified_goal,
     select_approach_goal,
     select_ramp_ascent_goal,
     select_ramp_ascent_goal_from_points,
@@ -37,6 +41,9 @@ class RampAscentGoalNode(Node):
         )
         self.output_topic = str(
             self.declare_parameter("output_topic", "ramp_ascent_goal").value
+        )
+        self.mode_topic = str(
+            self.declare_parameter("mode_topic", f"{self.output_topic}_mode").value
         )
         self.robot_frame = str(
             self.declare_parameter("robot_frame", "base_link").value
@@ -54,6 +61,9 @@ class RampAscentGoalNode(Node):
         self.verified_hold_sec = max(
             0.1, float(self.declare_parameter("verified_hold_sec", 1.5).value)
         )
+        self.min_goal_forward_m = max(
+            0.0, float(self.declare_parameter("min_goal_forward_m", 0.0).value)
+        )
         self.elevation_layer = str(
             self.declare_parameter("elevation_layer", "elevation").value
         )
@@ -65,6 +75,12 @@ class RampAscentGoalNode(Node):
         )
         self.step_residual_layer = str(
             self.declare_parameter("step_residual_layer", "step_residual").value
+        )
+        self.wall_cost_layer = str(
+            self.declare_parameter("wall_cost_layer", "wall_cost").value
+        )
+        self.step_height_layer = str(
+            self.declare_parameter("step_height_layer", "step_height").value
         )
         self.params = RampSelectorParams(
             min_traversability=float(
@@ -84,6 +100,12 @@ class RampAscentGoalNode(Node):
             ),
             min_elevation_span_m=float(
                 self.declare_parameter("min_elevation_span_m", 0.25).value
+            ),
+            min_support_length_m=max(
+                0.0, float(self.declare_parameter("min_support_length_m", 0.0).value)
+            ),
+            min_support_width_m=max(
+                0.0, float(self.declare_parameter("min_support_width_m", 0.0).value)
             ),
             min_goal_distance_m=float(
                 self.declare_parameter("min_goal_distance_m", 0.70).value
@@ -112,6 +134,8 @@ class RampAscentGoalNode(Node):
             max_x=float(self.declare_parameter("max_x", 1.0e9).value),
             min_y=float(self.declare_parameter("min_y", -1.0e9).value),
             max_y=float(self.declare_parameter("max_y", 1.0e9).value),
+            max_wall_cost=self._optional_max_param("max_wall_cost"),
+            max_step_height_m=self._optional_max_param("max_step_height_m"),
         )
         self.approach_enabled = bool(
             self.declare_parameter("approach_enabled", False).value
@@ -157,6 +181,7 @@ class RampAscentGoalNode(Node):
             depth=1,
         )
         self.pub = self.create_publisher(PointStamped, self.output_topic, 10)
+        self.mode_pub = self.create_publisher(String, self.mode_topic, 10)
         self.sub = self.create_subscription(GridMap, self.input_topic, self._on_map, qos)
         self.cloud_sub = None
         if self.use_pointcloud_ramp_detection:
@@ -166,12 +191,15 @@ class RampAscentGoalNode(Node):
 
         self.get_logger().info(
             f"ramp_ascent_goal: {self.input_topic} -> {self.output_topic} "
+            f"mode={self.mode_topic} "
             f"layers=({self.elevation_layer},{self.traversability_layer},"
             f"{self.slope_layer},{self.step_residual_layer}) "
             f"slope=[{math.degrees(self.params.min_slope_rad):.1f},"
             f"{math.degrees(self.params.max_slope_rad):.1f}]deg "
             f"trav>={self.params.min_traversability:.2f} "
             f"step<={self.params.max_step_residual_m:.2f}m "
+            f"wall_cost<={self.params.max_wall_cost if math.isfinite(self.params.max_wall_cost) else 'inf'} "
+            f"step_height<={self.params.max_step_height_m if math.isfinite(self.params.max_step_height_m) else 'inf'}m "
             f"monotonic={'on' if self.monotonic_ascent_enabled else 'off'}"
         )
 
@@ -191,6 +219,12 @@ class RampAscentGoalNode(Node):
         value = float(self.declare_parameter(name, 1.0e9).value)
         if abs(value) >= 1.0e8:
             return None
+        return value
+
+    def _optional_max_param(self, name: str) -> float:
+        value = float(self.declare_parameter(name, 1.0e9).value)
+        if value >= 1.0e8:
+            return math.inf
         return value
 
     def _layer_array(self, msg: GridMap, layer_name: str) -> np.ndarray | None:
@@ -214,9 +248,9 @@ class RampAscentGoalNode(Node):
                 f"layer '{layer_name}' size mismatch: data={data.size} expected={expected}",
             )
             return None
-        return data.reshape(cols, rows).T
+        return grid_map_layer_to_world_array(data, height=rows, width=cols)
 
-    def _robot_xy(self, frame_id: str) -> tuple[float, float] | None:
+    def _robot_pose(self, frame_id: str) -> tuple[float, float, float] | None:
         try:
             tf = self.tf_buffer.lookup_transform(frame_id, self.robot_frame, Time())
         except TransformException as exc:
@@ -227,7 +261,35 @@ class RampAscentGoalNode(Node):
                 f"{self.robot_frame}: {exc}",
             )
             return None
-        return (float(tf.transform.translation.x), float(tf.transform.translation.y))
+        q = tf.transform.rotation
+        yaw = math.atan2(
+            2.0 * (float(q.w) * float(q.z) + float(q.x) * float(q.y)),
+            1.0 - 2.0 * (float(q.y) * float(q.y) + float(q.z) * float(q.z)),
+        )
+        return (
+            float(tf.transform.translation.x),
+            float(tf.transform.translation.y),
+            float(yaw),
+        )
+
+    def _goal_is_forward(
+        self,
+        goal: RampGoal | None,
+        robot_pose: tuple[float, float, float],
+    ) -> bool:
+        ok = goal_has_min_forward_progress(
+            goal,
+            robot_xy=(robot_pose[0], robot_pose[1]),
+            robot_yaw_rad=robot_pose[2],
+            min_forward_m=self.min_goal_forward_m,
+        )
+        if not ok and goal is not None:
+            self.get_logger().debug(
+                "ramp goal rejected behind robot heading: "
+                f"goal=({goal.x:.2f},{goal.y:.2f}) "
+                f"robot=({robot_pose[0]:.2f},{robot_pose[1]:.2f})"
+            )
+        return ok
 
     def _transform_cloud_to_map(self, msg: PointCloud2) -> np.ndarray | None:
         try:
@@ -273,6 +335,10 @@ class RampAscentGoalNode(Node):
         msg_out.point.y = goal.y
         msg_out.point.z = goal.elevation_m
         self.pub.publish(msg_out)
+
+        mode_msg = String()
+        mode_msg.data = str(goal.mode)
+        self.mode_pub.publish(mode_msg)
 
         changed = (
             self.last_goal_xy is None
@@ -353,9 +419,10 @@ class RampAscentGoalNode(Node):
     def _on_cloud(self, msg: PointCloud2) -> None:
         if not self.use_pointcloud_ramp_detection:
             return
-        robot_xy = self._robot_xy(self.map_frame)
-        if robot_xy is None:
+        robot_pose = self._robot_pose(self.map_frame)
+        if robot_pose is None:
             return
+        robot_xy = (robot_pose[0], robot_pose[1])
         points_map = self._transform_cloud_to_map(msg)
         if points_map is None:
             return
@@ -366,13 +433,26 @@ class RampAscentGoalNode(Node):
         )
         if goal is None:
             goal = self._monotonic_progress_goal(None, robot_xy)
+            if goal is None:
+                goal = hold_recent_verified_goal(
+                    current_goal=None,
+                    previous_goal=self.last_verified_goal,
+                    last_verified_ns=self.last_verified_ramp_ns,
+                    now_ns=self.get_clock().now().nanoseconds,
+                    hold_sec=self.verified_hold_sec,
+            )
             if goal is not None:
-                self._publish_goal(goal, msg.header.stamp, self.map_frame)
+                if self._goal_is_forward(goal, robot_pose):
+                    self._publish_goal(goal, msg.header.stamp, self.map_frame)
+            return
+        if not self._goal_is_forward(goal, robot_pose):
             return
         self.last_verified_ramp_ns = self.get_clock().now().nanoseconds
         self.last_verified_goal = goal
         goal = self._monotonic_progress_goal(goal, robot_xy)
         if goal is None:
+            return
+        if not self._goal_is_forward(goal, robot_pose):
             return
         self._publish_goal(goal, msg.header.stamp, self.map_frame)
 
@@ -383,11 +463,22 @@ class RampAscentGoalNode(Node):
         step_residual = self._layer_array(msg, self.step_residual_layer)
         if any(layer is None for layer in (elevation, traversability, slope, step_residual)):
             return
+        wall_cost = None
+        if math.isfinite(float(self.params.max_wall_cost)):
+            wall_cost = self._layer_array(msg, self.wall_cost_layer)
+            if wall_cost is None:
+                return
+        step_height = None
+        if math.isfinite(float(self.params.max_step_height_m)):
+            step_height = self._layer_array(msg, self.step_height_layer)
+            if step_height is None:
+                return
 
         rows, cols = elevation.shape
-        robot_xy = self._robot_xy(msg.header.frame_id)
-        if robot_xy is None:
+        robot_pose = self._robot_pose(msg.header.frame_id)
+        if robot_pose is None:
             return
+        robot_xy = (robot_pose[0], robot_pose[1])
 
         geometry = GridMapGeometry(
             origin_x=float(msg.info.pose.position.x - msg.info.length_x / 2.0),
@@ -401,14 +492,25 @@ class RampAscentGoalNode(Node):
             traversability=traversability,
             slope=slope,
             step_residual=step_residual,
+            wall_cost=wall_cost,
+            step_height=step_height,
             geometry=geometry,
             robot_xy=robot_xy,
             params=self.params,
         )
         if goal is None:
             goal = self._monotonic_progress_goal(None, robot_xy)
+            if goal is None:
+                goal = hold_recent_verified_goal(
+                    current_goal=None,
+                    previous_goal=self.last_verified_goal,
+                    last_verified_ns=self.last_verified_ramp_ns,
+                    now_ns=self.get_clock().now().nanoseconds,
+                    hold_sec=self.verified_hold_sec,
+            )
             if goal is not None:
-                self._publish_goal(goal, msg.header.stamp, msg.header.frame_id)
+                if self._goal_is_forward(goal, robot_pose):
+                    self._publish_goal(goal, msg.header.stamp, msg.header.frame_id)
                 return
             now_ns = self.get_clock().now().nanoseconds
             if now_ns - self.last_verified_ramp_ns < int(self.verified_hold_sec * 1e9):
@@ -427,11 +529,17 @@ class RampAscentGoalNode(Node):
             if goal is None:
                 self.get_logger().debug("ramp approach complete; waiting for slope-verified ramp cells")
                 return
+            if not self._goal_is_forward(goal, robot_pose):
+                return
         else:
+            if not self._goal_is_forward(goal, robot_pose):
+                return
             self.last_verified_ramp_ns = self.get_clock().now().nanoseconds
             self.last_verified_goal = goal
             goal = self._monotonic_progress_goal(goal, robot_xy)
             if goal is None:
+                return
+            if not self._goal_is_forward(goal, robot_pose):
                 return
 
         self._publish_goal(goal, msg.header.stamp, msg.header.frame_id)

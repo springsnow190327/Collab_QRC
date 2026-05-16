@@ -222,41 +222,71 @@
       #
       # ramp_safe is a continuous [0, 1] eligibility derived from slope and
       # step_residual via clamped subtraction (EigenLab has no `>` operator).
-      # Hard zero outside the ramp envelope, soft inside.
+      # It uses a trapezoidal slope envelope, not a high-gain "any slope below
+      # 30 deg is safe" shortcut:
+      #   - zero below 8 deg so ramp-foot transition cells fall back to CNN
+      #   - one from 12..24 deg for clear ramp body cells
+      #   - zero again by 30 deg
+      # This keeps smooth ramps traversable without marking shallow transition
+      # zones or platform tops as confidently free.
 
-      # slope_margin = max(0, 0.5236 - slope)   --- normalised to [0, 1].
+      # slope_floor_margin = clamp((slope - 8deg) / (12deg - 8deg), 0, 1).
       filter17:
-        name: slope_margin
+        name: slope_floor_margin
         type: gridMapFilters/MathExpressionFilter
         params:
-          output_layer: slope_margin
-          expression: (0.5236 - slope) / 0.5236
+          output_layer: slope_floor_margin
+          expression: (slope - 0.13962634015954636) / 0.06981317007977318
 
       filter18:
-        name: slope_margin_clamp_lo
+        name: slope_floor_margin_clamp_lo
         type: gridMapFilters/ThresholdFilter
         params:
-          layer: slope_margin
+          layer: slope_floor_margin
           lower_threshold: 0.0
           set_to: 0.0
 
       filter19:
-        name: slope_margin_clamp_hi
+        name: slope_floor_margin_clamp_hi
         type: gridMapFilters/ThresholdFilter
         params:
-          layer: slope_margin
+          layer: slope_floor_margin
+          upper_threshold: 1.0
+          set_to: 1.0
+
+      # slope_ceiling_margin = clamp((30deg - slope) / (30deg - 24deg), 0, 1).
+      filter20:
+        name: slope_ceiling_margin
+        type: gridMapFilters/MathExpressionFilter
+        params:
+          output_layer: slope_ceiling_margin
+          expression: (0.5235987755982988 - slope) / 0.10471975511965977
+
+      filter21:
+        name: slope_ceiling_margin_clamp_lo
+        type: gridMapFilters/ThresholdFilter
+        params:
+          layer: slope_ceiling_margin
+          lower_threshold: 0.0
+          set_to: 0.0
+
+      filter22:
+        name: slope_ceiling_margin_clamp_hi
+        type: gridMapFilters/ThresholdFilter
+        params:
+          layer: slope_ceiling_margin
           upper_threshold: 1.0
           set_to: 1.0
 
       # step_margin = max(0, 0.06 - step_residual) / 0.06 --- normalised.
-      filter20:
+      filter23:
         name: step_margin
         type: gridMapFilters/MathExpressionFilter
         params:
           output_layer: step_margin
           expression: (0.06 - step_residual) / 0.06
 
-      filter21:
+      filter24:
         name: step_margin_clamp_lo
         type: gridMapFilters/ThresholdFilter
         params:
@@ -264,7 +294,7 @@
           lower_threshold: 0.0
           set_to: 0.0
 
-      filter22:
+      filter25:
         name: step_margin_clamp_hi
         type: gridMapFilters/ThresholdFilter
         params:
@@ -272,21 +302,15 @@
           upper_threshold: 1.0
           set_to: 1.0
 
-      # ramp_safe = saturate(slope_margin * step_margin * gain).
-      # Without the gain, on a 14° ramp slope_margin ≈ 0.53 so ramp_safe was
-      # only ≈ 0.5 → trav_fused renders yellow-ish in RViz. We don't care
-      # about magnitude inside the safe envelope, only "is the cell safe?".
-      # gain = 100 turns any non-zero margin into 1.0 after clamp; the
-      # transition band at the slope/step boundary stays narrow (~1°) which
-      # is fine because boundary cells were already ambiguous.
-      filter23:
+      # ramp_safe = trapezoidal_slope_membership * step_margin.
+      filter26:
         name: ramp_safe_raw
         type: gridMapFilters/MathExpressionFilter
         params:
           output_layer: ramp_safe
-          expression: slope_margin .* step_margin .* 100.0
+          expression: slope_floor_margin .* slope_ceiling_margin .* step_margin
 
-      filter24:
+      filter27:
         name: ramp_safe_clamp_hi
         type: gridMapFilters/ThresholdFilter
         params:
@@ -296,14 +320,14 @@
 
       # trav_fused = max(CNN, ramp_safe).
       # EigenLab has no element-wise max — use max(a,b) = 0.5*(a + b + |a-b|).
-      filter25:
+      filter28:
         name: trav_fused
         type: gridMapFilters/MathExpressionFilter
         params:
           output_layer: trav_fused
           expression: 0.5 .* (traversability + ramp_safe + abs(traversability - ramp_safe))
 
-      filter26:
+      filter29:
         name: trav_fused_clamp_lo
         type: gridMapFilters/ThresholdFilter
         params:
@@ -311,7 +335,7 @@
           lower_threshold: 0.0
           set_to: 0.0
 
-      filter27:
+      filter30:
         name: trav_fused_clamp_hi
         type: gridMapFilters/ThresholdFilter
         params:

@@ -24,10 +24,20 @@
 
 /**:
   ros__parameters:
+    planning_map_topic_suffix: /traversability_grid
+    ig_dimension: 2d
     cfpa2_frontier_min_cluster_area_m2: 0.04
     cfpa2_frontier_obstacle_clearance_m: 0.20
     cfpa2_frontier_unknown_check_radius_m: 0.30
     cfpa2_frontier_min_unknown_cells: 5
+    # /traversability_grid is a Nav2-style costmap: 50-99 is expensive but
+    # traversable, 100 is lethal. Keep frontier wall clearance conservative,
+    # but let CFPA2 reachability traverse nonlethal graded costs.
+    cfpa2_reachability_occ_threshold: 100
+    # SmacPlanner is launched with allow_unknown=true for exploration. Match
+    # that reachability model so CFPA2 can hand Nav2 boundary frontiers instead
+    # of stalling when the elevation map has sparse unknown gaps.
+    cfpa2_reachability_allow_unknown: true
     # The "stay-local" goal-distance cap (2.5 m default) is too tight for
     # this 24 m arena: the robot maps everything within 2.5 m to free, then
     # the next frontier ring is 3–6 m out → _goal_too_far drops them all
@@ -36,3 +46,17 @@
     # chase distant rings; CFPA2's utility (info_gain − α·distance) still
     # prefers near goals when they exist.
     cfpa2_max_goal_distance_m: 15.0
+    # Sensor-derived bridge goal for ramps: when slope/traversability/step
+    # layers prove a local ramp patch is traversable, CFPA2 may temporarily
+    # target that viewpoint so the robot climbs high enough to observe the
+    # upper platform. No scene-coordinate corridor is used here.
+    ramp_ascent_enabled: true
+    ramp_ascent_goal_topic_suffix: /ramp_ascent_goal
+    ramp_ascent_goal_stale_sec: 3.0
+    ramp_ascent_max_goal_distance_m: 3.0
+    ramp_ascent_require_grid_reachable: true
+    ramp_ascent_reachability_occ_threshold: 100
+    ramp_ascent_exclusive: true
+    ramp_ascent_ignore_blacklist: false
+    ramp_ascent_switch_min_dist_m: 0.25
+    startup_delay_sec: 24.0

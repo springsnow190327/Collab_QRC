@@ -90,6 +90,31 @@ def test_ramp_ascent_goal_can_bypass_lagging_grid_reachability():
     assert goal == (4.0, 0.0)
 
 
+def test_ramp_ascent_goal_uses_nonlethal_cost_threshold_for_reachability_and_clearance():
+    node = _node()
+    node.ramp_ascent_reachability_occ_threshold = 100
+    node.cfpa2_frontier_obstacle_clearance_m = 0.1
+    grid = _free_map()
+
+    width = int(grid.info.width)
+    origin_x = float(grid.info.origin.position.x)
+    origin_y = float(grid.info.origin.position.y)
+    resolution = float(grid.info.resolution)
+    y_cell = int((0.0 - origin_y) / resolution)
+    for x_m in (0.5, 1.5, 2.5, 3.5, 4.0):
+        x_cell = int((x_m - origin_x) / resolution)
+        grid.data[y_cell * width + x_cell] = 80
+
+    goal = node._ramp_ascent_goal_if_valid(
+        ns="robot",
+        map_msg=grid,
+        dist_map={},
+        now_ns=int(2e9),
+    )
+
+    assert goal == (4.0, 0.0)
+
+
 def test_ramp_ascent_goal_can_ignore_frontier_blacklist_disk():
     node = _node()
     node.ramp_ascent_ignore_blacklist = True
