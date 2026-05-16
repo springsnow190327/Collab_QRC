@@ -25,6 +25,8 @@ class RampSelectorParams:
     max_step_residual_m: float = 0.06
     min_candidate_cells: int = 8
     min_elevation_span_m: float = 0.25
+    min_support_length_m: float = 0.0
+    min_support_width_m: float = 0.0
     min_goal_distance_m: float = 0.70
     max_goal_distance_m: float = 4.5
     platform_min_elevation_gain_m: float = 0.45
@@ -38,6 +40,8 @@ class RampSelectorParams:
     max_x: float = math.inf
     min_y: float = -math.inf
     max_y: float = math.inf
+    max_wall_cost: float = math.inf
+    max_step_height_m: float = math.inf
 
 
 @dataclass(frozen=True)
@@ -99,6 +103,8 @@ def ramp_candidate_mask(
     traversability: np.ndarray,
     slope: np.ndarray,
     step_residual: np.ndarray,
+    wall_cost: np.ndarray | None = None,
+    step_height: np.ndarray | None = None,
     params: RampSelectorParams = RampSelectorParams(),
 ) -> np.ndarray:
     """Cells satisfying the ramp equation, excluding walls and discontinuities."""
@@ -111,13 +117,28 @@ def ramp_candidate_mask(
         raise ValueError("elevation, traversability, slope, and step_residual must share shape")
 
     finite = np.isfinite(elev) & np.isfinite(trav) & np.isfinite(slp) & np.isfinite(step)
-    return (
+    mask = (
         finite
         & (trav >= float(params.min_traversability))
         & (slp >= float(params.min_slope_rad))
         & (slp <= float(params.max_slope_rad))
         & (step <= float(params.max_step_residual_m))
     )
+    if math.isfinite(float(params.max_wall_cost)):
+        if wall_cost is None:
+            raise ValueError("wall_cost is required when max_wall_cost is finite")
+        wall = np.asarray(wall_cost, dtype=np.float32)
+        if wall.shape != elev.shape:
+            raise ValueError("wall_cost must share shape with elevation")
+        mask &= np.isfinite(wall) & (wall <= float(params.max_wall_cost))
+    if math.isfinite(float(params.max_step_height_m)):
+        if step_height is None:
+            raise ValueError("step_height is required when max_step_height_m is finite")
+        step_h = np.asarray(step_height, dtype=np.float32)
+        if step_h.shape != elev.shape:
+            raise ValueError("step_height must share shape with elevation")
+        mask &= np.isfinite(step_h) & (step_h <= float(params.max_step_height_m))
+    return mask
 
 
 def _cell_centres(geometry: GridMapGeometry) -> tuple[np.ndarray, np.ndarray]:
@@ -246,6 +267,52 @@ def advance_centerline_ascent_goal(
     )
 
 
+def hold_recent_verified_goal(
+    *,
+    current_goal: RampGoal | None,
+    previous_goal: RampGoal | None,
+    last_verified_ns: int,
+    now_ns: int,
+    hold_sec: float,
+) -> RampGoal | None:
+    """Keep publishing a verified ramp goal through short sensor dropouts."""
+
+    if current_goal is not None:
+        return current_goal
+    if previous_goal is None:
+        return None
+    if float(hold_sec) <= 0.0:
+        return None
+    if int(now_ns) - int(last_verified_ns) > int(float(hold_sec) * 1e9):
+        return None
+    return previous_goal
+
+
+def goal_has_min_forward_progress(
+    goal: RampGoal | None,
+    *,
+    robot_xy: tuple[float, float],
+    robot_yaw_rad: float,
+    min_forward_m: float,
+) -> bool:
+    """Return true when a goal lies at least `min_forward_m` ahead of robot."""
+
+    if goal is None:
+        return False
+    min_forward = float(min_forward_m)
+    if min_forward <= 0.0:
+        return True
+    forward = np.array(
+        [math.cos(float(robot_yaw_rad)), math.sin(float(robot_yaw_rad))],
+        dtype=np.float64,
+    )
+    delta = np.array(
+        [float(goal.x) - float(robot_xy[0]), float(goal.y) - float(robot_xy[1])],
+        dtype=np.float64,
+    )
+    return float(delta @ forward) >= min_forward
+
+
 def _pointcloud_terrain_samples(
     points: np.ndarray,
     *,
@@ -319,48 +386,174 @@ def _score_goal(
     return (1.8 * forward) + (2.2 * elevation_gain) - (0.25 * distance) - (0.35 * lateral)
 
 
-def select_ramp_ascent_goal(
+def _support_entry_goal(
+    *,
+    xy: np.ndarray,
+    robot: np.ndarray,
+    uphill: np.ndarray,
+    intercept: float,
+    slope_rad: float,
+    target_forward_m: float,
+    min_goal_distance_m: float,
+    max_goal_distance_m: float,
+    min_x: float,
+    max_x: float,
+    min_y: float,
+    max_y: float,
+    candidate_cells: int,
+    step_residual_m: float,
+) -> RampGoal | None:
+    """Return a lower-ramp acquisition goal when robot is beside the support.
+
+    A lookahead goal is only appropriate once the robot is laterally aligned
+    with the observed ramp support.  If the robot is outside that support,
+    first command the low end of the same fitted component so Nav2 approaches
+    the ramp through its traversable entry rather than cutting across the side.
+    """
+
+    if xy.size == 0:
+        return None
+
+    lateral_axis = np.array([-uphill[1], uphill[0]], dtype=np.float64)
+    longitudinal = xy @ uphill
+    lateral = xy @ lateral_axis
+    robot_long = float(robot @ uphill)
+    robot_lat = float(robot @ lateral_axis)
+
+    lat_min = float(np.percentile(lateral, 5.0))
+    lat_max = float(np.percentile(lateral, 95.0))
+    entry_base_long = float(np.percentile(longitudinal, 2.0))
+    long_min = float(np.percentile(longitudinal, 5.0))
+    long_max = float(np.percentile(longitudinal, 95.0))
+    support_width = max(0.0, lat_max - lat_min)
+    support_length = max(0.0, long_max - long_min)
+    if support_width <= 1e-6 or support_length <= 1e-6:
+        return None
+
+    support_center_lat = 0.5 * (lat_min + lat_max)
+    center_tolerance = max(0.20, min(0.45, 0.25 * support_width))
+    outside_support_margin = max(0.20, min(0.45, 0.25 * support_width))
+    outside_support = not (
+        lat_min - outside_support_margin <= robot_lat <= lat_max + outside_support_margin
+    )
+    outside_center_band = abs(robot_lat - support_center_lat) > center_tolerance
+    if not (outside_support or outside_center_band):
+        return None
+
+    entry_forward = min(
+        max(float(min_goal_distance_m), 0.15 * support_length),
+        max(float(min_goal_distance_m), 0.50 * float(target_forward_m)),
+        support_length,
+    )
+    entry_long = entry_base_long + entry_forward
+    min_forward = max(0.0, float(min_goal_distance_m))
+    if entry_long < robot_long + min_forward:
+        entry_long = min(long_max, robot_long + min_forward)
+
+    target_xy = uphill * entry_long + lateral_axis * support_center_lat
+    target_xy[0] = _clamp_finite(float(target_xy[0]), min_x, max_x)
+    target_xy[1] = _clamp_finite(float(target_xy[1]), min_y, max_y)
+
+    target_delta = target_xy - robot
+    target_distance = float(np.linalg.norm(target_delta))
+    if target_distance < float(min_goal_distance_m):
+        return None
+
+    nearest_dist = float(np.min(np.linalg.norm(xy - target_xy, axis=1)))
+    evidence_radius_m = max(0.35, 0.5 * float(target_forward_m))
+    if nearest_dist > evidence_radius_m:
+        return None
+    if target_distance > float(max_goal_distance_m):
+        if target_distance <= 1e-6:
+            return None
+        bounded_distance = max(float(min_goal_distance_m), float(max_goal_distance_m))
+        target_xy = robot + target_delta / target_distance * bounded_distance
+        target_xy[0] = _clamp_finite(float(target_xy[0]), min_x, max_x)
+        target_xy[1] = _clamp_finite(float(target_xy[1]), min_y, max_y)
+
+    target_z = float(target_xy @ (uphill * math.tan(float(slope_rad))) + float(intercept))
+    return RampGoal(
+        x=float(target_xy[0]),
+        y=float(target_xy[1]),
+        elevation_m=target_z,
+        score=float(target_forward_m - 0.5 * nearest_dist),
+        mode="approach",
+        candidate_cells=int(candidate_cells),
+        slope_rad=float(slope_rad),
+        step_residual_m=float(step_residual_m),
+    )
+
+
+def _support_spans(xy: np.ndarray, uphill: np.ndarray) -> tuple[float, float]:
+    if xy.shape[0] < 2:
+        return 0.0, 0.0
+    lateral_axis = np.array([-uphill[1], uphill[0]], dtype=np.float64)
+    longitudinal = xy @ uphill
+    lateral = xy @ lateral_axis
+    length = float(np.percentile(longitudinal, 95.0) - np.percentile(longitudinal, 5.0))
+    width = float(np.percentile(lateral, 95.0) - np.percentile(lateral, 5.0))
+    return max(0.0, length), max(0.0, width)
+
+
+def _connected_component_masks(mask: np.ndarray) -> list[np.ndarray]:
+    """Split a binary terrain mask into 8-connected components."""
+
+    binary = np.asarray(mask, dtype=bool)
+    if binary.ndim != 2 or not np.any(binary):
+        return []
+
+    height, width = binary.shape
+    seen = np.zeros_like(binary, dtype=bool)
+    components: list[np.ndarray] = []
+    for row, col in np.argwhere(binary):
+        r0 = int(row)
+        c0 = int(col)
+        if seen[r0, c0]:
+            continue
+        seen[r0, c0] = True
+        stack = [(r0, c0)]
+        rows: list[int] = []
+        cols: list[int] = []
+        while stack:
+            r, c = stack.pop()
+            rows.append(r)
+            cols.append(c)
+            for dr in (-1, 0, 1):
+                for dc in (-1, 0, 1):
+                    if dr == 0 and dc == 0:
+                        continue
+                    nr = r + dr
+                    nc = c + dc
+                    if nr < 0 or nr >= height or nc < 0 or nc >= width:
+                        continue
+                    if not binary[nr, nc] or seen[nr, nc]:
+                        continue
+                    seen[nr, nc] = True
+                    stack.append((nr, nc))
+        component = np.zeros_like(binary, dtype=bool)
+        component[np.asarray(rows, dtype=np.intp), np.asarray(cols, dtype=np.intp)] = True
+        components.append(component)
+    return components
+
+
+def _select_ramp_ascent_goal_from_mask(
     *,
     elevation: np.ndarray,
     traversability: np.ndarray,
     slope: np.ndarray,
     step_residual: np.ndarray,
-    geometry: GridMapGeometry,
+    x_grid: np.ndarray,
+    y_grid: np.ndarray,
+    mask: np.ndarray,
     robot_xy: tuple[float, float],
     params: RampSelectorParams = RampSelectorParams(),
 ) -> RampGoal | None:
-    """Select a local uphill target from traversable ramp evidence.
-
-    A candidate must satisfy the ETH-style traversability equation:
-
-    trav_eth >= threshold, slope_min <= slope <= slope_max,
-    step_residual <= threshold.
-
-    This keeps continuous ramps actionable while rejecting vertical walls and
-    box edges that have high height change but discontinuous step residual.
-    """
-
     elev = np.asarray(elevation, dtype=np.float32)
     trav = np.asarray(traversability, dtype=np.float32)
     slp = np.asarray(slope, dtype=np.float32)
     step = np.asarray(step_residual, dtype=np.float32)
-    if elev.shape != (geometry.height, geometry.width):
-        raise ValueError("layer shape does not match GridMapGeometry")
+    robot = np.array([float(robot_xy[0]), float(robot_xy[1])], dtype=np.float64)
 
-    mask = ramp_candidate_mask(
-        elevation=elev,
-        traversability=trav,
-        slope=slp,
-        step_residual=step,
-        params=params,
-    )
-    x_grid, y_grid = _cell_centres(geometry)
-    mask &= (
-        (x_grid >= float(params.min_x))
-        & (x_grid <= float(params.max_x))
-        & (y_grid >= float(params.min_y))
-        & (y_grid <= float(params.max_y))
-    )
     n_candidates = int(np.count_nonzero(mask))
     if n_candidates < int(params.min_candidate_cells):
         return None
@@ -376,7 +569,7 @@ def select_ramp_ascent_goal(
     if fit is None:
         return None
     uphill, intercept, fit_slope, residuals = fit
-    if fit_slope < float(params.min_slope_rad) * 0.5:
+    if fit_slope < float(params.min_slope_rad):
         return None
     if params.preferred_uphill_yaw_rad is not None:
         preferred = np.array(
@@ -391,8 +584,13 @@ def select_ramp_ascent_goal(
         if heading_error > float(params.preferred_uphill_tolerance_rad):
             return None
 
-    robot = np.array([float(robot_xy[0]), float(robot_xy[1])], dtype=np.float64)
     cand_xy = np.column_stack([xs, ys])
+    support_length, support_width = _support_spans(cand_xy, uphill)
+    if support_length < float(params.min_support_length_m):
+        return None
+    if support_width < float(params.min_support_width_m):
+        return None
+
     rel = cand_xy - robot
     distance = np.linalg.norm(rel, axis=1)
     forward = rel @ uphill
@@ -411,6 +609,25 @@ def select_ramp_ascent_goal(
             float(params.min_goal_distance_m),
             float(params.max_goal_distance_m),
         )
+        entry_goal = _support_entry_goal(
+            xy=cand_xy,
+            robot=robot,
+            uphill=uphill,
+            intercept=intercept,
+            slope_rad=fit_slope,
+            target_forward_m=target_forward,
+            min_goal_distance_m=float(params.min_goal_distance_m),
+            max_goal_distance_m=float(params.max_goal_distance_m),
+            min_x=float(params.min_x),
+            max_x=float(params.max_x),
+            min_y=float(params.min_y),
+            max_y=float(params.max_y),
+            candidate_cells=n_candidates,
+            step_residual_m=float(np.median(step[mask])),
+        )
+        if entry_goal is not None:
+            return entry_goal
+
         lateral_axis = np.array([-uphill[1], uphill[0]], dtype=np.float64)
         if params.goal_center_y is not None and math.isfinite(float(params.goal_center_y)):
             target_xy = robot + uphill * target_forward
@@ -522,6 +739,86 @@ def select_ramp_ascent_goal(
     )
 
 
+def select_ramp_ascent_goal(
+    *,
+    elevation: np.ndarray,
+    traversability: np.ndarray,
+    slope: np.ndarray,
+    step_residual: np.ndarray,
+    wall_cost: np.ndarray | None = None,
+    step_height: np.ndarray | None = None,
+    geometry: GridMapGeometry,
+    robot_xy: tuple[float, float],
+    params: RampSelectorParams = RampSelectorParams(),
+) -> RampGoal | None:
+    """Select a local uphill target from coherent traversable ramp evidence.
+
+    A candidate must satisfy the ETH-style traversability equation:
+
+    trav_eth >= threshold, slope_min <= slope <= slope_max,
+    step_residual <= threshold.
+
+    The candidate mask is split into connected terrain components before plane
+    fitting.  A real ramp is one coherent support surface; disconnected wall
+    rims or platform edges in the same sensor horizon must not pollute the
+    fitted slope model for that ramp.
+    """
+
+    elev = np.asarray(elevation, dtype=np.float32)
+    trav = np.asarray(traversability, dtype=np.float32)
+    slp = np.asarray(slope, dtype=np.float32)
+    step = np.asarray(step_residual, dtype=np.float32)
+    if elev.shape != (geometry.height, geometry.width):
+        raise ValueError("layer shape does not match GridMapGeometry")
+
+    mask = ramp_candidate_mask(
+        elevation=elev,
+        traversability=trav,
+        slope=slp,
+        step_residual=step,
+        wall_cost=wall_cost,
+        step_height=step_height,
+        params=params,
+    )
+    x_grid, y_grid = _cell_centres(geometry)
+    mask &= (
+        (x_grid >= float(params.min_x))
+        & (x_grid <= float(params.max_x))
+        & (y_grid >= float(params.min_y))
+        & (y_grid <= float(params.max_y))
+    )
+
+    robot = np.array([float(robot_xy[0]), float(robot_xy[1])], dtype=np.float64)
+    lookahead = float(params.goal_lookahead_m or 0.0)
+    horizon = max(1.0, float(params.max_goal_distance_m) + lookahead + 0.35)
+    local_distance = np.linalg.norm(
+        np.stack([x_grid - robot[0], y_grid - robot[1]], axis=-1),
+        axis=2,
+    )
+    local_mask = mask & (local_distance <= horizon)
+    if np.count_nonzero(local_mask) >= int(params.min_candidate_cells):
+        mask = local_mask
+
+    best_goal: RampGoal | None = None
+    for component_mask in _connected_component_masks(mask):
+        goal = _select_ramp_ascent_goal_from_mask(
+            elevation=elev,
+            traversability=trav,
+            slope=slp,
+            step_residual=step,
+            x_grid=x_grid,
+            y_grid=y_grid,
+            mask=component_mask,
+            robot_xy=robot_xy,
+            params=params,
+        )
+        if goal is None:
+            continue
+        if best_goal is None or goal.score > best_goal.score:
+            best_goal = goal
+    return best_goal
+
+
 def select_ramp_ascent_goal_from_points(
     points_xyz: np.ndarray,
     *,
@@ -585,6 +882,15 @@ def select_ramp_ascent_goal_from_points(
 
     robot = np.array([float(robot_xy[0]), float(robot_xy[1])], dtype=np.float64)
     xy = pts[:, :2]
+    support_width = 0.0
+    support_length = 0.0
+    if xy.shape[0] >= 2:
+        support_length, support_width = _support_spans(xy, uphill)
+    if support_length < float(params.min_support_length_m):
+        return None
+    if support_width < float(params.min_support_width_m):
+        return None
+
     rel = xy - robot
     distance = np.linalg.norm(rel, axis=1)
     forward = rel @ uphill
@@ -603,6 +909,25 @@ def select_ramp_ascent_goal_from_points(
             float(params.min_goal_distance_m),
             float(params.max_goal_distance_m),
         )
+        entry_goal = _support_entry_goal(
+            xy=xy,
+            robot=robot,
+            uphill=uphill,
+            intercept=intercept,
+            slope_rad=fit_slope,
+            target_forward_m=target_forward,
+            min_goal_distance_m=float(params.min_goal_distance_m),
+            max_goal_distance_m=float(params.max_goal_distance_m),
+            min_x=float(params.min_x),
+            max_x=float(params.max_x),
+            min_y=float(params.min_y),
+            max_y=float(params.max_y),
+            candidate_cells=int(pts.shape[0]),
+            step_residual_m=float(np.median(residuals)),
+        )
+        if entry_goal is not None:
+            return entry_goal
+
         lateral_axis = np.array([-uphill[1], uphill[0]], dtype=np.float64)
         if params.goal_center_y is not None and math.isfinite(float(params.goal_center_y)):
             target_xy = robot + uphill * target_forward

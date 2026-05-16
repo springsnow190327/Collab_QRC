@@ -170,6 +170,12 @@ def _launch_setup(context):
     registered_scan_topic = _get(context, "registered_scan_topic").strip()
     far_max_speed = _get(context, "far_max_speed").strip()
     far_robot_id = _get(context, "far_robot_id").strip()
+    ramp_force_legged_enabled = _as_bool(_get(context, "ramp_force_legged_enabled"))
+    ramp_force_wheel_enabled = _as_bool(_get(context, "ramp_force_wheel_enabled"))
+    ramp_goal_mode_topic = _get(context, "ramp_goal_mode_topic").strip()
+    ramp_goal_stale_sec = float(_get(context, "ramp_goal_stale_sec"))
+    ramp_force_max_vx_mps = float(_get(context, "ramp_force_max_vx_mps"))
+    ramp_force_max_yaw_rate_rps = float(_get(context, "ramp_force_max_yaw_rate_rps"))
 
     # MuJoCo MJCF model path
     mujoco_model_path = _get(context, "mujoco_model_path").strip()
@@ -514,7 +520,15 @@ def _launch_setup(context):
                     name="go2w_hybrid_cmd_router",
                     parameters=[
                         hybrid_motion_config,
-                        {"wheel_command_topic": f"{robot_ns}_wheel_velocity_controller/commands"},
+                        {
+                            "wheel_command_topic": f"{robot_ns}_wheel_velocity_controller/commands",
+                            "ramp_force_legged_enabled": ramp_force_legged_enabled,
+                            "ramp_force_wheel_enabled": ramp_force_wheel_enabled,
+                            "ramp_goal_mode_topic": ramp_goal_mode_topic,
+                            "ramp_goal_stale_sec": ramp_goal_stale_sec,
+                            "ramp_force_max_vx_mps": ramp_force_max_vx_mps,
+                            "ramp_force_max_yaw_rate_rps": ramp_force_max_yaw_rate_rps,
+                        },
                     ],
                     output="screen",
                 )
@@ -810,6 +824,12 @@ def generate_launch_description():
             DeclareLaunchArgument("registered_scan_topic", default_value=""),
             DeclareLaunchArgument("far_max_speed", default_value=""),
             DeclareLaunchArgument("far_robot_id", default_value=""),
+            DeclareLaunchArgument("ramp_force_legged_enabled", default_value="false"),
+            DeclareLaunchArgument("ramp_force_wheel_enabled", default_value="false"),
+            DeclareLaunchArgument("ramp_goal_mode_topic", default_value=""),
+            DeclareLaunchArgument("ramp_goal_stale_sec", default_value="1.5"),
+            DeclareLaunchArgument("ramp_force_max_vx_mps", default_value="0.30"),
+            DeclareLaunchArgument("ramp_force_max_yaw_rate_rps", default_value="0.20"),
             DeclareLaunchArgument(
                 "odom_bridge_publish_tf",
                 default_value="true",

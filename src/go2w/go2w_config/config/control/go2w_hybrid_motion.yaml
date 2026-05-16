@@ -32,15 +32,18 @@
     wheel_max_angular_speed: 8.5
     wheel_joint_signs: [1.0, 1.0, 1.0, 1.0]
 
-    # Ramp override for Go2W. A slope-verified ramp goal should stay in powered
-    # wheel mode; switching into CHAMP legged pivots on the ramp/foot can tip
-    # the wheeled body. The router clamps vx/wz while this override is active.
+    # Optional ramp override for Go2W. Disabled in the base config because it
+    # depends on a slope-verified ramp_goal publisher. Scene-specific launches
+    # can enable it with their own corridor or rely on the verified goal alone.
     ramp_force_legged_enabled: false
-    ramp_force_wheel_enabled: true
+    ramp_force_wheel_enabled: false
     ramp_goal_topic: ramp_ascent_goal
-    ramp_goal_stale_sec: 9999.0
-    ramp_force_min_goal_x: 5.3
-    ramp_force_max_goal_x: 11.2
-    ramp_force_max_abs_goal_y: 0.9
+    ramp_goal_mode_topic: ''
+    ramp_goal_stale_sec: 1.5
+    ramp_goal_mode_sync_tolerance_sec: 0.25
+    ramp_force_wheel_modes: [ramp, platform]
+    ramp_force_min_goal_x: -1000000000.0
+    ramp_force_max_goal_x: 1000000000.0
+    ramp_force_max_abs_goal_y: 1000000000.0
     ramp_force_max_vx_mps: 0.30
     ramp_force_max_yaw_rate_rps: 0.20

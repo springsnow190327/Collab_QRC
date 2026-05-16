@@ -4,12 +4,10 @@
 #
 # Two run modes:
 #   ./scripts/launch/nav_test_3d_explore.sh                       # ETH elevation traversability, 2D IG
-#   ./scripts/launch/nav_test_3d_explore.sh enable_nvblox_mapper:=true  # 3D IG
-#   IG_DIM=3d ./scripts/launch/nav_test_3d_explore.sh enable_nvblox_mapper:=true
+#   ./scripts/launch/nav_test_3d_explore.sh enable_nvblox_mapper:=true  # optional voxel stream
 #
-# The IG_DIM switch swaps which cfpa2_single_robot.yaml gets symlinked into
-# the cfpa2 install share before launch — the base launch hardcodes the
-# yaml path, so we override at the symlink layer instead of touching it.
+# CFPA2 config is passed via launch overlays. This script must not rewrite
+# tracked YAML in src/; repeated launch attempts should leave the worktree clean.
 set -euo pipefail
 # Shield the script from signals that propagate when preflight kills a stale
 # ros2 launch process (which may be the session leader of this terminal).
@@ -111,10 +109,9 @@ export FASTRTPS_DEFAULT_PROFILES_FILE="${WS_DIR}/config/fastdds_no_shm.xml"
 # To force back to legacy uniform grid: export MUJOCO_LIDAR_SCAN_PATTERN_CSV=""
 # To change density:                     export MUJOCO_LIDAR_RAYS_PER_FRAME=N
 # To disable noise:                      export MUJOCO_LIDAR_NOISE_STDDEV_M=0
-export STUCK_RAMP_SUPPRESS_ENABLED="${STUCK_RAMP_SUPPRESS_ENABLED:-true}"
-export STUCK_RAMP_MIN_X="${STUCK_RAMP_MIN_X:-5.3}"
-export STUCK_RAMP_MAX_X="${STUCK_RAMP_MAX_X:-9.8}"
-export STUCK_RAMP_MAX_ABS_Y="${STUCK_RAMP_MAX_ABS_Y:-0.9}"
+# No scene-coordinate stuck suppression by default. The demo now relies on the
+# traversability grid and cliff-proximity cost rather than a ramp corridor gate.
+export STUCK_RAMP_SUPPRESS_ENABLED="${STUCK_RAMP_SUPPRESS_ENABLED:-false}"
 export STUCK_RAMP_MIN_FORWARD_GOAL_M="${STUCK_RAMP_MIN_FORWARD_GOAL_M:-0.15}"
 export STUCK_WATCHDOG_WINDOW_SEC="${STUCK_WATCHDOG_WINDOW_SEC:-9999.0}"
 
@@ -134,113 +131,14 @@ for arg in "$@"; do
   esac
 done
 
-if [[ -z "${IG_DIM:-}" ]]; then
-  if [[ "${ENABLE_NVBLOX_REQUESTED}" == "1" ]]; then
-    IG_DIM="3d"
-  else
-    IG_DIM="2d"
-  fi
-fi
-
-if [[ "${IG_DIM}" == "3d" && "${ENABLE_NVBLOX_REQUESTED}" != "1" ]]; then
-  echo "WARN: IG_DIM=3d requested without enable_nvblox_mapper:=true; CFPA2 needs /robot/voxels_3d for true 3D IG." >&2
-fi
-CFPA2_INSTALL_CONFIG="${WS_DIR}/install/cfpa2_collaborative_autonomy/share/cfpa2_collaborative_autonomy/config"
-CFPA2_SRC_CONFIG="${WS_DIR}/src/collaborative_exploration/cfpa2_collaborative_autonomy/config"
-
-if [[ "${IG_DIM}" == "3d" ]]; then
-  if [[ ! -f "${CFPA2_SRC_CONFIG}/cfpa2_single_robot_3d.yaml" ]]; then
-    echo "ERROR: missing ${CFPA2_SRC_CONFIG}/cfpa2_single_robot_3d.yaml" >&2
-    exit 1
-  fi
-  # The base launch hardcodes cfpa2_single_robot.yaml. We backup the 2D yaml
-  # and overlay the 3D one. (--symlink-install means the install/ tree is just
-  # symlinks back to src/, so editing src/ is sufficient.)
-  # Create the 2D backup only on first run; subsequent runs must not
-  # overwrite it with the already-merged 3D yaml.
-  if [[ ! -f "${CFPA2_SRC_CONFIG}/cfpa2_single_robot.yaml.bak.2d" ]]; then
-    cp "${CFPA2_SRC_CONFIG}/cfpa2_single_robot.yaml" \
-       "${CFPA2_SRC_CONFIG}/cfpa2_single_robot.yaml.bak.2d"
-  fi
-  # Compose: base 2D yaml + 3D overlay → cfpa2_single_robot.yaml (in-place).
-  # Order matters: overlay's keys win.
-python3 - "${CFPA2_SRC_CONFIG}" "${CFPA2_MAX_GOAL_DISTANCE_M:-2.5}" <<'PY'
-import sys, os, yaml
-cfg_dir, max_goal_distance_m = sys.argv[1], float(sys.argv[2])
-base = yaml.safe_load(open(os.path.join(cfg_dir, "cfpa2_single_robot.yaml.bak.2d")))
-overlay = yaml.safe_load(open(os.path.join(cfg_dir, "cfpa2_single_robot_3d.yaml")))
-def merge(a, b):
-    for k, v in b.items():
-        if isinstance(v, dict) and isinstance(a.get(k), dict):
-            merge(a[k], v)
-        else:
-            a[k] = v
-merge(base, overlay)
-params = base["/**"]["ros__parameters"]
-params["cfpa2_max_goal_distance_m"] = max_goal_distance_m
-params["ramp_ascent_enabled"] = (os.environ.get("RAMP_ASCENT_ENABLED", "1") == "1")
-params["ramp_ascent_goal_topic_suffix"] = "/ramp_ascent_goal"
-params["ramp_ascent_max_goal_distance_m"] = float(os.environ.get("RAMP_ASCENT_MAX_GOAL_DISTANCE_M", "5.0"))
-params["ramp_ascent_goal_stale_sec"] = 8.0
-params["ramp_ascent_require_grid_reachable"] = False
-params["ramp_ascent_exclusive"] = True
-params["ramp_ascent_ignore_blacklist"] = True
-params["ramp_ascent_switch_min_dist_m"] = 0.25
-params["ramp_ascent_utility"] = 100000.0
-params["ramp_ascent_corridor_lock_sec"] = 20.0
-params["ramp_ascent_lock_min_x"] = 5.3
-params["ramp_ascent_lock_max_x"] = 13.0
-params["ramp_ascent_lock_max_abs_y"] = 1.2
-params["startup_delay_sec"] = float(os.environ.get("CFPA2_STARTUP_DELAY_SEC", "24.0"))
-with open(os.path.join(cfg_dir, "cfpa2_single_robot.yaml"), "w") as f:
-    yaml.safe_dump(base, f, sort_keys=False)
-print(f"[nav_test_3d_explore] composed cfpa2_single_robot.yaml = 2D base + 3D overlay")
-PY
-elif [[ "${IG_DIM}" == "2d" ]]; then
-  # 2D IG does not require /voxels_3d, but in nav_costmap_mode:=3d it must
-  # still use the elevation traversability OccupancyGrid for frontier BFS.
-  python3 - "${CFPA2_SRC_CONFIG}" "${NAV_COSTMAP_MODE}" "${CFPA2_MAX_GOAL_DISTANCE_M:-2.5}" <<'PY'
-import sys, os, yaml
-cfg_dir, nav_costmap_mode, max_goal_distance_m = sys.argv[1], sys.argv[2], float(sys.argv[3])
-base_path = os.path.join(cfg_dir, "cfpa2_single_robot.yaml.bak.2d")
-if not os.path.exists(base_path):
-    base_path = os.path.join(cfg_dir, "cfpa2_single_robot.yaml")
-cfg = yaml.safe_load(open(base_path))
-params = cfg["/**"]["ros__parameters"]
-params["planning_map_topic_suffix"] = (
-    "/traversability_grid" if nav_costmap_mode == "3d" else "/map"
-)
-params["ig_dimension"] = "2d"
-params["cfpa2_max_goal_distance_m"] = max_goal_distance_m
-params["ramp_ascent_enabled"] = (nav_costmap_mode == "3d" and os.environ.get("RAMP_ASCENT_ENABLED", "1") == "1")
-params["ramp_ascent_goal_topic_suffix"] = "/ramp_ascent_goal"
-params["ramp_ascent_max_goal_distance_m"] = float(os.environ.get("RAMP_ASCENT_MAX_GOAL_DISTANCE_M", "5.0"))
-params["ramp_ascent_goal_stale_sec"] = 8.0
-params["ramp_ascent_require_grid_reachable"] = False
-params["ramp_ascent_exclusive"] = True
-params["ramp_ascent_ignore_blacklist"] = True
-params["ramp_ascent_switch_min_dist_m"] = 0.25
-params["ramp_ascent_utility"] = 100000.0
-params["ramp_ascent_corridor_lock_sec"] = 20.0
-params["ramp_ascent_lock_min_x"] = 5.3
-params["ramp_ascent_lock_max_x"] = 13.0
-params["ramp_ascent_lock_max_abs_y"] = 1.2
-params["startup_delay_sec"] = float(os.environ.get("CFPA2_STARTUP_DELAY_SEC", "24.0"))
-with open(os.path.join(cfg_dir, "cfpa2_single_robot.yaml"), "w") as f:
-    yaml.safe_dump(cfg, f, sort_keys=False)
-print(
-    "[nav_test_3d_explore] composed cfpa2_single_robot.yaml = "
-    f"2D IG + planning_map={params['planning_map_topic_suffix']}"
-)
-PY
-else
-  echo "ERROR: IG_DIM='${IG_DIM}' invalid (use '2d' or '3d')" >&2
-  exit 1
+IG_DIM="${IG_DIM:-2d}"
+if [[ "${IG_DIM}" != "2d" ]]; then
+  echo "WARN: IG_DIM=${IG_DIM} is no longer applied by rewriting CFPA2 source YAML; current demo_ramp launch uses the 2D traversability-grid overlay." >&2
 fi
 
 echo "=== 3D Frontier Exploration Sim ==="
 echo "  scene:        src/go2w/go2_gazebo_sim/mujoco/demo_ramp.xml"
-echo "  ig_dimension: ${IG_DIM}"
+echo "  ig_dimension: 2d"
 echo "  trav source:  elevation_mapping_cupy + grid_map ETH-style filters"
 echo "  nvblox vox:   optional 0.10 m stream when enable_nvblox_mapper:=true"
 echo ""

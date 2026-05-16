@@ -47,6 +47,15 @@ try:
         ctypes.c_int8,                    # free_val
         ctypes.POINTER(ctypes.c_int),     # dist_out
     ]
+    if hasattr(_GRID_OPS_LIB, "distance_transform_range"):
+        _GRID_OPS_LIB.distance_transform_range.restype = None
+        _GRID_OPS_LIB.distance_transform_range.argtypes = [
+            ctypes.POINTER(ctypes.c_int8),   # grid
+            ctypes.c_int, ctypes.c_int,       # W, H
+            ctypes.c_int, ctypes.c_int,       # sx, sy
+            ctypes.c_int8, ctypes.c_int8,     # unknown_val, occ_threshold
+            ctypes.POINTER(ctypes.c_int),     # dist_out
+        ]
     _GRID_OPS_LIB.batch_info_gain.restype = None
     _GRID_OPS_LIB.batch_info_gain.argtypes = [
         ctypes.POINTER(ctypes.c_int8),   # grid
@@ -183,6 +192,8 @@ class CFPA2Coordinator(Node):
         self.declare_parameter("free_value", 0)
         self.declare_parameter("unknown_value", -1)
         self.declare_parameter("occupancy_block_threshold", 50)
+        self.declare_parameter("cfpa2_reachability_occ_threshold", 0)
+        self.declare_parameter("cfpa2_reachability_allow_unknown", False)
         # --- 3D information-gain source (nvblox_frontend integration) ---
         # ig_dimension:
         #   "2d" — count unknown cells in a square radius on the 2D map (default,
@@ -392,6 +403,17 @@ class CFPA2Coordinator(Node):
         self.free_value = int(self.get_parameter("free_value").value)
         self.unknown_value = int(self.get_parameter("unknown_value").value)
         self.occ_thresh = int(self.get_parameter("occupancy_block_threshold").value)
+        reachability_occ_threshold = int(
+            self.get_parameter("cfpa2_reachability_occ_threshold").value
+        )
+        self.cfpa2_reachability_occ_threshold = (
+            max(1, min(100, reachability_occ_threshold))
+            if reachability_occ_threshold > 0
+            else self.occ_thresh
+        )
+        self.cfpa2_reachability_allow_unknown = bool(
+            self.get_parameter("cfpa2_reachability_allow_unknown").value
+        )
         # 3D IG params (cached; node restart required to change, per CFPA2 convention).
         _igd = str(self.get_parameter("ig_dimension").value).strip().lower()
         if _igd not in ("2d", "3d"):
@@ -1075,11 +1097,19 @@ class CFPA2Coordinator(Node):
         return data[idx] == self.unknown_value
 
     def _has_frontier_obstacle_clearance(
-        self, data: list[int], gx: int, gy: int, w: int, h: int, radius_cells: int
+        self,
+        data: list[int],
+        gx: int,
+        gy: int,
+        w: int,
+        h: int,
+        radius_cells: int,
+        occ_threshold: Optional[int] = None,
     ) -> bool:
         """Return True iff a circle of radius_cells around (gx,gy) contains no occupied cell."""
         if radius_cells <= 0:
             return True
+        occ_thr = int(self.occ_thresh if occ_threshold is None else occ_threshold)
         r2 = radius_cells * radius_cells
         for dy in range(-radius_cells, radius_cells + 1):
             ny = gy + dy
@@ -1091,7 +1121,7 @@ class CFPA2Coordinator(Node):
                 nx = gx + dx
                 if nx < 0 or nx >= w:
                     return False
-                if data[self._grid_index(nx, ny, w)] >= self.occ_thresh:
+                if data[self._grid_index(nx, ny, w)] >= occ_thr:
                     return False
         return True
 
@@ -1100,6 +1130,7 @@ class CFPA2Coordinator(Node):
         map_msg: OccupancyGrid,
         goal: tuple[float, float],
         clearance_m: Optional[float] = None,
+        occ_threshold: Optional[int] = None,
     ) -> bool:
         """Return True when a goal point has the configured obstacle buffer.
 
@@ -1128,6 +1159,7 @@ class CFPA2Coordinator(Node):
             int(map_msg.info.width),
             int(map_msg.info.height),
             radius_cells,
+            occ_threshold=occ_threshold,
         )
 
     def _build_fallback_map(self) -> Optional[OccupancyGrid]:
@@ -1382,7 +1414,13 @@ class CFPA2Coordinator(Node):
                     return out
         return out
 
-    def _distance_transform(self, msg: OccupancyGrid, start_w: tuple[float, float]) -> dict[int, int]:
+    def _distance_transform(
+        self,
+        msg: OccupancyGrid,
+        start_w: tuple[float, float],
+        occ_threshold: Optional[int] = None,
+        allow_unknown: bool = False,
+    ) -> dict[int, int]:
         start = self._world_to_grid(msg, start_w[0], start_w[1])
         if start is None:
             return {}
@@ -1390,30 +1428,70 @@ class CFPA2Coordinator(Node):
         w = int(msg.info.width)
         h = int(msg.info.height)
         sx, sy = start
+        occ_thr = int(self.occ_thresh if occ_threshold is None else occ_threshold)
 
-        if _GRID_OPS_LIB is not None:
-            return self._distance_transform_cpp(msg, w, h, sx, sy)
-        return self._distance_transform_py(msg, w, h, sx, sy)
+        if _GRID_OPS_LIB is not None and not allow_unknown:
+            return self._distance_transform_cpp(msg, w, h, sx, sy, occ_thr)
+        return self._distance_transform_py(
+            msg,
+            w,
+            h,
+            sx,
+            sy,
+            occ_thr,
+            allow_unknown=allow_unknown,
+        )
 
-    def _distance_transform_cpp(self, msg, w, h, sx, sy):
+    def _distance_transform_cpp(self, msg, w, h, sx, sy, occ_threshold):
         grid_np = np.array(msg.data, dtype=np.int8)
         dist_np = np.full(w * h, -1, dtype=np.int32)
-        _GRID_OPS_LIB.distance_transform(
-            grid_np.ctypes.data_as(ctypes.POINTER(ctypes.c_int8)),
-            w, h, sx, sy,
-            ctypes.c_int8(self.free_value),
-            dist_np.ctypes.data_as(ctypes.POINTER(ctypes.c_int)),
-        )
+        if hasattr(_GRID_OPS_LIB, "distance_transform_range"):
+            _GRID_OPS_LIB.distance_transform_range(
+                grid_np.ctypes.data_as(ctypes.POINTER(ctypes.c_int8)),
+                w,
+                h,
+                sx,
+                sy,
+                ctypes.c_int8(self.unknown_value),
+                ctypes.c_int8(int(occ_threshold)),
+                dist_np.ctypes.data_as(ctypes.POINTER(ctypes.c_int)),
+            )
+        elif int(occ_threshold) == 50:
+            _GRID_OPS_LIB.distance_transform(
+                grid_np.ctypes.data_as(ctypes.POINTER(ctypes.c_int8)),
+                w, h, sx, sy,
+                ctypes.c_int8(self.free_value),
+                dist_np.ctypes.data_as(ctypes.POINTER(ctypes.c_int)),
+            )
+        else:
+            return self._distance_transform_py(msg, w, h, sx, sy, int(occ_threshold))
         # Store flat array for fast lookup; _grid_path_cost_m uses dict[int, int]
         # Convert to dict only for reachable cells
         indices = np.where(dist_np >= 0)[0]
         return dict(zip(indices.tolist(), dist_np[indices].tolist()))
 
-    def _distance_transform_py(self, msg, w, h, sx, sy):
+    def _distance_transform_py(
+        self,
+        msg,
+        w,
+        h,
+        sx,
+        sy,
+        occ_threshold,
+        *,
+        allow_unknown: bool = False,
+    ):
         data = msg.data
         sidx = self._grid_index(sx, sy, w)
+        occ_thr = int(occ_threshold)
 
-        if not self._is_free(data, sidx):
+        def is_free_idx(idx: int) -> bool:
+            v = data[idx]
+            if allow_unknown and v == self.unknown_value:
+                return True
+            return v != self.unknown_value and 0 <= v < occ_thr
+
+        if not is_free_idx(sidx):
             found = None
             for r in range(1, 13):
                 for dy in range(-r, r + 1):
@@ -1425,7 +1503,7 @@ class CFPA2Coordinator(Node):
                         if nx < 0 or nx >= w:
                             continue
                         nidx = self._grid_index(nx, ny, w)
-                        if self._is_free(data, nidx):
+                        if is_free_idx(nidx):
                             found = (nx, ny, nidx)
                             break
                     if found is not None:
@@ -1449,7 +1527,7 @@ class CFPA2Coordinator(Node):
                 nidx = self._grid_index(nx, ny, w)
                 if nidx in dist:
                     continue
-                if not self._is_free(data, nidx):
+                if not is_free_idx(nidx):
                     continue
                 dist[nidx] = dist[cidx] + 1
                 q.append((nx, ny))
@@ -2877,6 +2955,12 @@ class CFPA2Coordinator(Node):
         map_msg: OccupancyGrid,
         dist_map: dict[int, int],
     ) -> float:
+        if getattr(self, "goal_satisfied_dist", 0.0) > 0.0 and self._goal_satisfied(
+            ns,
+            goal,
+            map_msg,
+        ):
+            return -1e18
         if not self._goal_has_obstacle_clearance(map_msg, goal):
             return -1e18
         dist_m = self._grid_path_cost_m(map_msg, dist_map, goal)
@@ -3523,7 +3607,18 @@ class CFPA2Coordinator(Node):
             if cost_map is None:
                 dist_maps[ns] = {}
                 continue
-            dist_maps[ns] = self._distance_transform(cost_map, (od.pose.pose.position.x, od.pose.pose.position.y))
+            dist_maps[ns] = self._distance_transform(
+                cost_map,
+                (od.pose.pose.position.x, od.pose.pose.position.y),
+                occ_threshold=getattr(
+                    self,
+                    "cfpa2_reachability_occ_threshold",
+                    getattr(self, "occ_thresh", 50),
+                ),
+                allow_unknown=bool(
+                    getattr(self, "cfpa2_reachability_allow_unknown", False)
+                ),
+            )
 
         local_nav_forced_switch_namespaces = self._consume_local_nav_stall_blacklists(now_ns)
 

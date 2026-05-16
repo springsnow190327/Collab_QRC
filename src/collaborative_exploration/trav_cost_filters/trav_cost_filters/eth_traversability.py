@@ -25,6 +25,15 @@ class TraversabilityThresholds:
 
 
 @dataclass(frozen=True)
+class RampRescueThresholds:
+    min_slope_rad: float = math.radians(8.0)
+    full_min_slope_rad: float = math.radians(12.0)
+    full_max_slope_rad: float = math.radians(24.0)
+    max_slope_rad: float = math.radians(30.0)
+    max_step_residual_m: float = 0.06
+
+
+@dataclass(frozen=True)
 class SurfaceMetrics:
     slope_rad: float
     roughness_m: float
@@ -110,3 +119,46 @@ def classify_surface(
         roughness_cost=roughness_cost,
         step_cost=step_cost,
     )
+
+
+def ramp_rescue_score(
+    slope_rad: float,
+    *,
+    step_residual_m: float,
+    thresholds: RampRescueThresholds = RampRescueThresholds(),
+) -> float:
+    """Return a trapezoidal ramp-rescue score in [0, 1].
+
+    The CNN traversability layer tends to reject sustained slopes.  The rescue
+    should only override that rejection for cells that are clearly on a
+    continuous ramp, not for shallow ramp-foot transition cells or near-cliff
+    flat platform cells.  The slope term is therefore a trapezoid:
+
+    - zero below ``min_slope_rad``
+    - one between ``full_min_slope_rad`` and ``full_max_slope_rad``
+    - zero again at ``max_slope_rad``
+    """
+
+    if not math.isfinite(slope_rad) or not math.isfinite(step_residual_m):
+        return 0.0
+    if thresholds.full_min_slope_rad <= thresholds.min_slope_rad:
+        raise ValueError("full_min_slope_rad must be greater than min_slope_rad")
+    if thresholds.max_slope_rad <= thresholds.full_max_slope_rad:
+        raise ValueError("max_slope_rad must be greater than full_max_slope_rad")
+    if thresholds.max_step_residual_m <= 0.0:
+        raise ValueError("max_step_residual_m must be positive")
+
+    slope_floor = _clamp01(
+        (slope_rad - thresholds.min_slope_rad)
+        / (thresholds.full_min_slope_rad - thresholds.min_slope_rad)
+    )
+    slope_ceiling = _clamp01(
+        (thresholds.max_slope_rad - slope_rad)
+        / (thresholds.max_slope_rad - thresholds.full_max_slope_rad)
+    )
+    step_margin = _clamp01(
+        (thresholds.max_step_residual_m - step_residual_m)
+        / thresholds.max_step_residual_m
+    )
+
+    return _clamp01(slope_floor * slope_ceiling * step_margin)
