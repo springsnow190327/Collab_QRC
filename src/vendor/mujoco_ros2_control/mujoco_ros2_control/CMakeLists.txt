@@ -39,6 +39,7 @@ set(THIS_PACKAGE_INCLUDE_DEPENDS
     generate_parameter_library
     Eigen3
     tf2_ros
+    ament_index_cpp
 )
 
 foreach(Dependency IN ITEMS ${THIS_PACKAGE_INCLUDE_DEPENDS})
@@ -201,6 +202,10 @@ install(TARGETS
 
 # Install MJCF models
 install(DIRECTORY mjcf DESTINATION share/${PROJECT_NAME}/)
+
+# Install Livox scan-pattern CSVs (e.g. mid360.csv, ~16 MB) used by LiDAR sensor
+# CSV-replay mode to reproduce real Risley non-repetitive scan in MuJoCo sim.
+install(DIRECTORY scan_patterns DESTINATION share/${PROJECT_NAME}/)
 
 # Install Python scripts
 ament_python_install_package(scripts)

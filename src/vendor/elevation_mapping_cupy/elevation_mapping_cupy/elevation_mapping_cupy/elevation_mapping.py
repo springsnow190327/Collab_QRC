@@ -12,6 +12,7 @@ from typing import Dict, List, Any, Tuple, Union, Optional
 import numpy as np
 
 from elevation_mapping_cupy.traversability_filter import (
+    get_filter_cupy,
     get_filter_chainer,
     get_filter_torch,
 )
@@ -145,7 +146,23 @@ class ElevationMap:
         if param.use_chainer:
             self.traversability_filter = get_filter_chainer(param.w1, param.w2, param.w3, param.w_out)
         else:
-            self.traversability_filter = get_filter_torch(param.w1, param.w2, param.w3, param.w_out)
+            # Pick torch backend by default, but fall back to the pure-cupy
+            # backend on Blackwell sm_120 — torch 2.7.1 ships sm_50..sm_90
+            # cubins only, so torch.cat fails with no kernel image. cupy
+            # works fine on sm_120 (per cmu_env w/ nvrtc-cu12==12.9.86).
+            try:
+                cc = cp.cuda.runtime.getDeviceProperties(0)
+                cc_major = int(cc.get("major", 0))
+            except Exception:
+                cc_major = 0
+            if cc_major >= 10:
+                self.traversability_filter = get_filter_cupy(
+                    param.w1, param.w2, param.w3, param.w_out
+                )
+            else:
+                self.traversability_filter = get_filter_torch(
+                    param.w1, param.w2, param.w3, param.w_out
+                )
         self.untraversable_polygon = xp.zeros((1, 2))
 
         # Plugins
@@ -405,15 +422,16 @@ class ElevationMap:
                 size=(self.cell_n * self.cell_n),
             )
 
-            # Internal torch traversability_filter SKIPPED on Blackwell sm_120:
-            # torch 2.7.1 only ships sm_50-90 cubins and torch.cat has no PTX
-            # JIT fallback. The output `traversability` layer is consumed
-            # downstream by grid_map_filters chain in trav_cost_filters, which
-            # computes slope/roughness/step/cost from the elevation layer
-            # directly. Leave layer 3 at its initialized 0.0 so callers see
-            # "default = traversable" (consistent with the upstream behaviour
-            # when traversability_filter hasn't converged).
-            # See docs/claude/eth_elevation_mapping_design.md "Stage B".
+            # ETH CNN traversability filter. On Blackwell sm_120 this is a
+            # pure-cupy backend (see get_filter_cupy in traversability_filter.py)
+            # because torch 2.7.1 has no sm_120 kernels. The CNN sees a 9x9
+            # patch (dilated 3x3 stack) and produces a [0,1] traversability
+            # value per cell; it is what catches walls that the analytical
+            # slope/step filter chain misses on flat wall tops.
+            traversability = self.traversability_filter(self.traversability_input)
+            self.elevation_map[3][3:-3, 3:-3] = traversability.reshape(
+                (traversability.shape[2], traversability.shape[3])
+            )
             self.plugin_manager.reset_layers()
 
         self.update_normal(self.traversability_input)

@@ -120,19 +120,22 @@
           size="0.1 8.1 0.5" material="wall_mat" class="world"/>
 
     <!-- === Ramp ===
-         4m-long, 2m-wide, ~14° slope. Box half-sizes (2.0, 1.0, 0.05).
-         Pivot at (8.0, 0, 0.5); euler pitch about +y of -0.2450 rad rotates
-         the +x edge UP (right-hand rule: -y rotation tips +x toward +z).
-         After rotation: x=10 face at z≈1.0, x=6 face at z≈0. -->
-    <geom name="ramp" type="box" pos="8.0 0 0.5"
-          size="2.0 1.0 0.05" euler="0 -0.2450 0"
-          material="obstacle_mat" class="world"/>
+         Continuous contact equation for the top surface:
+           z_top(x) = z_c - sin(theta) * x_local + cos(theta) * z_half
+         with theta=-0.2450 rad, x_half=2.061, z_half=0.04, z_c=0.461.
+         That gives west top edge z≈0.00 and east top edge z≈1.00, removing
+         the previous ~6 cm vertical lip that trapped Go2W at the ramp foot. -->
+    <geom name="ramp" type="box" pos="8.011 0 0.461"
+          size="2.061 1.0 0.04" euler="0 -0.2450 0"
+          material="obstacle_mat" class="world"
+          condim="6" friction="1.2 0.02 0.01" priority="2"/>
 
     <!-- === Elevated platform ===
          Solid box, x∈[10,16], y∈[-3,3], z∈[0,1.0]. Top surface at z=1.0
          aligns with ramp top edge. -->
     <geom name="platform" type="box" pos="13.0 0 0.5"
-          size="3.0 3.0 0.5" material="obstacle_mat" class="world"/>
+          size="3.0 3.0 0.5" material="obstacle_mat" class="world"
+          condim="6" friction="1.2 0.02 0.01"/>
 
     <!-- === Walls ON TOP of the platform ===
          Heights are absolute z. Platform top is at z=1.0, so a wall centred
@@ -181,7 +184,8 @@
 
       <!-- Livox MID-360 LiDAR site (matches URDF: base→imu→livox_mid360_base) -->
       <!-- pos = imu_pos + livox_offset = (-0.02557+0.1870, 0, 0.04232+0.0803) -->
-      <site name="livox_mid360" pos="0.16143 0 0.12262" euler="0 0.2269 0" size="0.01"/>
+      <!-- Mid-360 mount tilt: pitch 0.263591 rad (15.10°) + roll -0.036809 rad. Matches real-robot calibration (scripts/real/onboard_fastlio_noetic.sh:258, 2026-04-17). quat = ROS RPY (Rz*Ry*Rx). -->
+      <site name="livox_mid360" pos="0.16143 0 0.12262" quat="0.991160 -0.018244 0.131392 0.002418" size="0.01"/>
       <!-- Unitree 4D LiDAR-L1: real mounting is at the CHIN of Go2/Go2W.
            Hemispherical (0°–90° vert), 360 h-rays, 11 Hz.
            To use L1: uncomment this site (plugin prefers it over MID-360).

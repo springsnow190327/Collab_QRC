@@ -84,6 +84,7 @@ _NAV_DEBUG_KEEP_EXECUTABLES = (
     # Controller / cmd_vel pipeline
     "twist_bridge",
     "go2w_hybrid_cmd_router",
+    "cmd_vel_safety_shield",
     # Goal source — without this, an agent reading the terminal can't see
     # WHERE the planner was told to drive, so wall hits / stuck events are
     # un-attributable to a goal selection.
@@ -832,10 +833,10 @@ def _build_fastlio_nav_stack(
 
         # Per-platform Nav2 yaml. Go2W (has_wheels=True) uses the wheeled
         # config (0.70 × 0.40 m footprint, vx_max=0.50, MPPI tuned for
-        # skid-steer wheel mode). Go2 (legged-only) uses the slimmer
-        # 0.65 × 0.30 m footprint, vx_max=0.30, minimum_turning_radius=
-        # 0.05 (CHAMP can pivot in place). Same plugins (SmacHybrid +
-        # MPPI), different geometry/velocity caps.
+        # skid-steer wheel mode). Go2 (legged-only) uses leg-swing clearance
+        # (0.70 × 0.40 m), vx_max=0.30, and a no-spin recovery BT. Same
+        # planner/controller plugins (SmacHybrid + MPPI), different
+        # geometry/velocity/recovery caps.
         _nav2_yaml_filename = (
             "nav2_go2w_full_stack.yaml" if has_wheels
             else "nav2_go2_full_stack.yaml"
@@ -843,10 +844,26 @@ def _build_fastlio_nav_stack(
         nav2_yaml = os.path.join(
             go2w_config_pkg, "config", "nav", _nav2_yaml_filename
         )
+        nav2_param_rewrites = {"use_sim_time": str(use_sim_time).lower()}
+        if not has_wheels:
+            nav2_param_rewrites["default_nav_to_pose_bt_xml"] = os.path.join(
+                go2w_config_pkg,
+                "config",
+                "nav",
+                "behavior_trees",
+                "navigate_to_pose_no_spin_recovery.xml",
+            )
+            nav2_param_rewrites["default_nav_through_poses_bt_xml"] = os.path.join(
+                go2w_config_pkg,
+                "config",
+                "nav",
+                "behavior_trees",
+                "navigate_through_poses_no_spin_recovery.xml",
+            )
         rewritten_nav2 = RewrittenYaml(
             source_file=nav2_yaml,
             root_key=ns,
-            param_rewrites={"use_sim_time": str(use_sim_time).lower()},
+            param_rewrites=nav2_param_rewrites,
             convert_types=True,
         )
 
@@ -869,13 +886,54 @@ def _build_fastlio_nav_stack(
             )
             nav2_params.append(overlay_rewritten)
 
+        nav2_controller_remaps = list(tf_remaps)
+        nav2_cmd_guard_node = None
+        if not has_wheels:
+            # Go2/CHAMP consumes /<ns>/cmd_vel directly. Put a predictive
+            # footprint guard between Nav2 controller_server and CHAMP so
+            # MPPI cannot keep driving a legged footprint into wall ends or
+            # brown-box corners. Nav2 behavior_server keeps publishing
+            # recovery Backup commands to /cmd_vel directly so it can still
+            # escape if the guard stops controller motion.
+            nav2_controller_remaps.append(("cmd_vel", "cmd_vel_raw"))
+            nav2_cmd_guard_node = Node(
+                package="go2w_nav",
+                executable="cmd_vel_safety_shield.py",
+                namespace=ns,
+                name="cmd_vel_safety_shield",
+                remappings=tf_remaps,
+                parameters=[{
+                    "use_sim_time": use_sim_time,
+                    "message_type": "twist",
+                    "linear_stop_enabled": True,
+                    "linear_kill_threshold_mps": 0.03,
+                    "reverse_escape_enabled": True,
+                    "reverse_escape_speed_mps": 0.10,
+                    "clearance_radius_m": 0.50,
+                    "occ_threshold": 50,
+                    "angular_kill_threshold_rad_s": 0.10,
+                    "predict_horizon_sec": 0.6,
+                    "footprint_length_m": 0.70,
+                    "footprint_width_m": 0.40,
+                    "input_topic": f"/{ns}/cmd_vel_raw",
+                    "output_topic": f"/{ns}/cmd_vel",
+                    "map_topic": f"/{ns}/map",
+                    "odom_topic": f"/{ns}/odom/nav",
+                    "status_topic": f"/{ns}/cmd_vel_shield_status",
+                    "base_frame": base_frame,
+                    "map_frame": "map",
+                    "use_tf": True,
+                }],
+                output="screen",
+            )
+
         nav2_inner_nodes = [
             PushRosNamespace(ns),
             Node(
                 package="nav2_controller", executable="controller_server",
                 name="controller_server",
                 parameters=nav2_params,
-                remappings=tf_remaps, output="screen",
+                remappings=nav2_controller_remaps, output="screen",
             ),
             Node(
                 package="nav2_planner", executable="planner_server",
@@ -954,6 +1012,7 @@ def _build_fastlio_nav_stack(
                 "--ros-args",
                 "-p", f"namespace:={ns}",
                 "-p", f"use_sim_time:={'true' if use_sim_time else 'false'}",
+                "-p", "goal_reached_radius_m:=0.5",
             ],
             name=f"stuck_watchdog_{ns}",
             output="screen",
@@ -1007,6 +1066,10 @@ def _build_fastlio_nav_stack(
             f"/mujoco_sim/{ns}_wheel_velocity_controller/commands "
             f"/{ns}/mobility_mode "
         ) if has_wheels else ""
+        _nav2_guard_bag_topics = (
+            f"/{ns}/cmd_vel_raw "
+            f"/{ns}/cmd_vel_shield_status "
+        ) if not has_wheels else ""
         bag_record = ExecuteProcess(
             cmd=[
                 "bash", "-lc",
@@ -1015,6 +1078,7 @@ def _build_fastlio_nav_stack(
                 f"-o {bag_dir} "
                 f"/{ns}/cmd_vel "
                 f"{_wheel_bag_topics}"
+                f"{_nav2_guard_bag_topics}"
                 # CHAMP-side joint cmd: trajectory_msgs/JointTrajectory
                 # carrying hip/thigh/calf positions. If CHAMP commands
                 # large positions while cmd_vel=0, that explains body
@@ -1052,6 +1116,8 @@ def _build_fastlio_nav_stack(
         ]
         if router_node is not None:
             _nav2_actions.insert(3, router_node)  # before bag_record
+        if nav2_cmd_guard_node is not None:
+            _nav2_actions.insert(3, nav2_cmd_guard_node)  # before bag_record
         actions.append(
             TimerAction(period=nav_delay, actions=_nav2_actions)
         )
@@ -1456,9 +1522,9 @@ def _build_fastlio_nav_stack(
                 # to catch corner sweeps but small enough to allow
                 # genuine away-from-wall rotation.
                 "predict_horizon_sec": 0.4,
-                # Footprint per-robot (Go2W wider than Go2)
-                "footprint_length_m": 0.85 if has_wheels else 0.65,
-                "footprint_width_m":  0.45 if has_wheels else 0.30,
+                # Footprint per-robot, including Go2 leg-swing clearance.
+                "footprint_length_m": 0.85 if has_wheels else 0.70,
+                "footprint_width_m":  0.45 if has_wheels else 0.40,
                 "input_topic": f"/{ns}/cmd_vel_stamped_raw",
                 "output_topic": f"/{ns}/cmd_vel_stamped",
                 "map_topic": f"/{ns}/map",
@@ -1881,6 +1947,10 @@ def _launch_setup(context):
         # Same denominator the benchmark / session_reporter uses, so the
         # debug-mode coverage column matches the trial-summary 90% PASS bar.
         "--scene-area-m2", str(scene_area_m2),
+        # Monitor has no map line-of-sight check, so keep this Euclidean
+        # threshold body-scale. CFPA2 owns the relaxed 1.0 m LOS-aware
+        # sensing-waypoint contract.
+        "--goal-satisfied-radius-m", "0.5",
     ]
     if collision_output:
         collision_args += ["--output", collision_output]
@@ -2099,8 +2169,8 @@ def generate_launch_description():
             "nav_backend_b", default_value="nav2_mppi",
             description=(
                 "Nav backend for robot_b (Go2). Default 'nav2_mppi' "
-                "(uses nav2_go2_full_stack.yaml: 0.65×0.30 m footprint, "
-                "vx_max 0.30, in-place pivot via min_turning_radius=0.05). "
+                "(uses nav2_go2_full_stack.yaml: 0.70×0.40 m footprint, "
+                "vx_max 0.30, no-spin recovery BT). "
                 "Other options: 'far' | 'astar' | 'none'."
             ),
         ),

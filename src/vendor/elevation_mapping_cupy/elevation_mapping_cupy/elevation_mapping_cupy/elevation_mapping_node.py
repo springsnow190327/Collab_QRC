@@ -11,11 +11,24 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSPresetProfiles
 from ament_index_python.packages import get_package_share_directory
-from cv_bridge import CvBridge
+try:
+    from cv_bridge import CvBridge
+except Exception:
+    CvBridge = None  # cv_bridge compiled against numpy 1.x; not needed for lidar-only use
 from elevation_map_msgs.msg import ChannelInfo
 import ros2_numpy as rnp
 from sensor_msgs.msg import CameraInfo, Image, PointCloud2, PointField
-from tf_transformations import quaternion_matrix
+try:
+    from tf_transformations import quaternion_matrix
+except ImportError:
+    from transforms3d.quaternions import quat2mat
+
+    def quaternion_matrix(quaternion):
+        """Return a homogeneous rotation matrix for tf-style (x, y, z, w)."""
+        x, y, z, w = quaternion
+        mat = np.eye(4, dtype=np.float64)
+        mat[:3, :3] = quat2mat([w, x, y, z])
+        return mat
 import tf2_ros
 import tf2_py as tf2
 from rclpy.duration import Duration
@@ -304,7 +317,10 @@ class ElevationMappingNode(Node):
         self._image_channels = {}
 
         if any(config.get("data_type") == "image" for config in self.my_subscribers.values()):
-            self.cv_bridge = CvBridge()
+            if CvBridge is None:
+                self.get_logger().warn("cv_bridge unavailable (numpy ABI mismatch); image subscribers disabled")
+            else:
+                self.cv_bridge = CvBridge()
 
         for key, config in self.my_subscribers.items():
             data_type = config.get("data_type")

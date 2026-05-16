@@ -5,6 +5,60 @@
 import cupy as cp
 
 
+def get_filter_cupy(w1, w2, w3, w_out):
+    """Pure-cupy implementation of the ETH 3-branch dilated 3x3 CNN.
+
+    Identical math to get_filter_torch / get_filter_chainer (4 conv2d, then
+    a 1x1 12->1 conv, then exp(-|.|)) but built only from cupy element-wise
+    ops + cp.concatenate. Used on Blackwell sm_120 where torch 2.7.1 has no
+    sm_120 cubin and torch.cat fails with CUDA_ERROR_NO_BINARY_FOR_GPU.
+
+    Args:
+      w1, w2, w3: (4, 1, 3, 3) np.ndarray — conv weights for dilation 1/2/3
+      w_out:      (1, 12, 1, 1) np.ndarray — 1x1 conv output layer
+    """
+
+    w1g = cp.asarray(w1, dtype=cp.float32)
+    w2g = cp.asarray(w2, dtype=cp.float32)
+    w3g = cp.asarray(w3, dtype=cp.float32)
+    # Flatten 1x1 output conv to (12,) for a single dot-product.
+    w_out_g = cp.asarray(w_out, dtype=cp.float32).reshape(12)
+
+    def _conv3x3_dilated(x_HW, w_OIHW, d):
+        # Valid (no padding) 3x3 conv with given dilation.
+        # x_HW: (H, W) float32 cupy
+        # w_OIHW: (OC, 1, 3, 3) cupy float32
+        # returns: (OC, H-2d, W-2d) float32
+        H, W = x_HW.shape
+        oH, oW = H - 2 * d, W - 2 * d
+        OC = w_OIHW.shape[0]
+        out = cp.zeros((OC, oH, oW), dtype=cp.float32)
+        for i in range(3):
+            for j in range(3):
+                patch = x_HW[i * d : i * d + oH, j * d : j * d + oW]
+                wij = w_OIHW[:, 0, i, j].reshape(OC, 1, 1)
+                out = out + wij * patch
+        return out
+
+    class TraversabilityFilterCupy:
+        def __call__(self, elevation_cupy):
+            x = elevation_cupy.astype(cp.float32, copy=False)
+            out1 = _conv3x3_dilated(x, w1g, 1)  # (4, H-2, W-2)
+            out2 = _conv3x3_dilated(x, w2g, 2)  # (4, H-4, W-4)
+            out3 = _conv3x3_dilated(x, w3g, 3)  # (4, H-6, W-6)
+            # Crop to a common (H-6, W-6).
+            out1c = out1[:, 2:-2, 2:-2]
+            out2c = out2[:, 1:-1, 1:-1]
+            cat = cp.concatenate([out1c, out2c, out3], axis=0)  # (12, H-6, W-6)
+            # 1x1 conv on absolute values, then exp(-.) bounded to (0, 1].
+            conv_final = (w_out_g[:, None, None] * cp.abs(cat)).sum(axis=0)
+            result = cp.exp(-conv_final)  # (H-6, W-6)
+            # Match torch backend's (1, 1, H-6, W-6) output shape.
+            return result.reshape(1, 1, result.shape[0], result.shape[1])
+
+    return TraversabilityFilterCupy()
+
+
 def get_filter_torch(*args, **kwargs):
     import torch
     import torch.nn as nn

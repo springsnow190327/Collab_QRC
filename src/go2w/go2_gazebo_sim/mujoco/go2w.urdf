@@ -31,7 +31,11 @@
     <parent link="imu" />
     <child link="livox_mid360_base" />
     
-    <origin rpy="0 0.2269 0" xyz="0.1870 0 0.0803" />
+    <!-- Mid-360 mount: pitch=0.263591 rad (15.10°), roll=-0.036809 rad (-2.11°).
+         Matches real-robot static_transform_publisher calibration measured
+         2026-04-17 (see scripts/real/onboard_fastlio_noetic.sh:258). Sim
+         used to be 0.2269 (13°) — corrected so sim cloud / TF match real. -->
+    <origin rpy="-0.036809 0.263591 0" xyz="0.1870 0 0.0803" />
   </joint>
   
   <link name="livox_mid360">

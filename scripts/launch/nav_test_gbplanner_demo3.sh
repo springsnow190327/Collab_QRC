@@ -129,11 +129,11 @@ if [[ -n "${CONDA_PREFIX:-}" ]] && [[ -d "${CONDA_PREFIX}/lib/python3.10/site-pa
 fi
 
 # base_link → lidar (gbplanner expects "lidar" sensor frame; our MJCF has "mid360_link")
-# Quat from euler (0, 0.2269, 0) for the Mid-360 pitch: w=cos(0.11345), y=sin(0.11345)
-#   approximately (w=0.99357, y=0.11321) → xyzw=[0, 0.113, 0, 0.994]
+# Real-robot calibrated Mid-360 mount (matches onboard_fastlio_noetic.sh:262):
+#   roll=-0.036809, pitch=0.263591, yaw=0  →  quat (x,y,z,w)
 nohup ros2 run tf2_ros static_transform_publisher \
   --x 0.16143 --y 0.0 --z 0.12262 \
-  --qx 0.0 --qy 0.11321 --qz 0.0 --qw 0.99357 \
+  --qx -0.01824 --qy 0.13139 --qz 0.00242 --qw 0.99116 \
   --frame-id base_link --child-frame-id lidar \
   --ros-args -r __node:=base_to_lidar_alias_gbplanner \
   -r /tf:=/robot/tf -r /tf_static:=/robot/tf_static \

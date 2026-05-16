@@ -265,7 +265,8 @@
 
       <!-- Livox MID-360 LiDAR site (matches URDF: base→imu→livox_mid360_base) -->
       <!-- pos = imu_pos + livox_offset = (-0.02557+0.1870, 0, 0.04232+0.0803) -->
-      <site name="livox_mid360" pos="0.16143 0 0.12262" euler="0 0.2269 0" size="0.01"/>
+      <!-- Mid-360 mount tilt: pitch 0.263591 rad (15.10°) + roll -0.036809 rad. Matches real-robot calibration (scripts/real/onboard_fastlio_noetic.sh:258, 2026-04-17). quat = ROS RPY (Rz*Ry*Rx). -->
+      <site name="livox_mid360" pos="0.16143 0 0.12262" quat="0.991160 -0.018244 0.131392 0.002418" size="0.01"/>
       <!-- Unitree 4D LiDAR-L1: real mounting is at the CHIN of Go2/Go2W.
            Hemispherical (0°–90° vert), 360 h-rays, 11 Hz.
            To use L1: uncomment this site (plugin prefers it over MID-360).
@@ -481,7 +482,7 @@
 
       <site name="b_base_link_site" pos="0 0 0" size="0.01"/>
       <site name="b_imu" pos="-0.02557 0 0.04232" size="0.01"/>
-      <site name="b_livox_mid360" pos="0.16143 0 0.12262" euler="0 0.2269 0" size="0.01"/>
+      <site name="b_livox_mid360" pos="0.16143 0 0.12262" quat="0.991160 -0.018244 0.131392 0.002418" size="0.01"/>
 
       <camera name="b_front_camera" pos="0.30 0 -0.01"
               xyaxes="0 -1 0 0.0872 0 0.9962"

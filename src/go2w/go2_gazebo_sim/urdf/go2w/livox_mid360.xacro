@@ -5,9 +5,10 @@
   <!-- 
     Livox MID-360 LiDAR Macro for go2w_description
     
-    Based on official Unitree Go2 MID-360 mounting specifications:
+    Mounting on the Go2W (real-robot calibrated 2026-04-17, see
+    scripts/real/onboard_fastlio_noetic.sh:262):
     - Position in IMU frame: (0.1870, 0, 0.0803) meters
-    - Rotation: 13° around Y-axis (0.2269 radians)
+    - Rotation: pitch +0.263591 rad (+15.10°), roll -0.036809 rad (-2.11°), yaw 0
     
     NOTE: This macro uses the accurate MID-360 mesh (mid-360.dae).
     
@@ -51,13 +52,15 @@
     <joint name="${name}_base_joint" type="fixed">
       <parent link="${parent}"/>
       <child link="${name}_base"/>
-      <!-- 
-        Official Unitree Go2 MID-360 transform from IMU frame:
-        - Translation: (0.1870, 0, 0.0803) meters
-        - Rotation: 13° around Y-axis (pitch)
-        - This matches the transformation matrix from documentation
+      <!--
+        Real-robot calibrated Mid-360 mount on the Go2W (measured 2026-04-17).
+        Translation: (0.1870, 0, 0.0803) m from the IMU frame.
+        Rotation: roll=-0.036809 rad (-2.11°), pitch=+0.263591 rad (+15.10°), yaw=0.
+        Mirrors scripts/real/onboard_fastlio_noetic.sh:262. The prior 13°
+        pitch-only value was a documentation guess that drifted ~2° from
+        real measurement; sim and real now share the same TF tilt.
       -->
-      <origin xyz="0.1870 0 0.0803" rpy="0 0.2269 0"/>
+      <origin xyz="0.1870 0 0.0803" rpy="-0.036809 0.263591 0"/>
     </joint>
 
     <!-- LiDAR Optical Frame (sensor frame for point cloud) -->

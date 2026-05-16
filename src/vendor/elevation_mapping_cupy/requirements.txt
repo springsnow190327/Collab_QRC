@@ -3,5 +3,12 @@
 #
 # For CUDA torch wheels, follow the official PyTorch instructions (varies by CUDA/driver).
 simple-parsing
+numpy<2
 cupy-cuda12x
+nvidia-cuda-nvrtc-cu12
+nvidia-cuda-runtime-cu12
 torch
+transforms3d
+ros2-numpy
+ruamel.yaml
+shapely

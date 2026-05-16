@@ -37,14 +37,16 @@
             fov_degree: 360.0                 # full 360 horizontal scan
             det_range: 20.0                   # match URDF max range
             extrinsic_est_en: false           # fixed extrinsics (known from URDF)
-            # Extrinsic: LiDAR frame → IMU frame (from Go2W URDF)
+            # Extrinsic: LiDAR frame → IMU frame (from Go2W URDF, real-robot calibrated).
             # imu_joint:  base → imu at xyz=(-0.02557, 0, 0.04232)
-            # livox_joint: imu → livox_mid360 at xyz=(0.187, 0, 0.0803) rpy=(0, 0.2269, 0)
-            # R = Ry(0.2269): cos=0.9744, sin=0.2249
+            # livox_joint: imu → livox_mid360 at xyz=(0.187, 0, 0.0803),
+            #              rpy=(-0.036809, 0.263591, 0) — pitch 15.10°, roll -2.11°,
+            #              matches scripts/real/onboard_fastlio_noetic.sh:262.
+            # R = Rz(0)·Ry(0.263591)·Rx(-0.036809), recomputed below (row-major).
             extrinsic_T: [0.187, 0.0, 0.0803]
-            extrinsic_R: [0.9744,  0.0, 0.2249,
-                          0.0,     1.0, 0.0,
-                         -0.2249,  0.0, 0.9744]
+            extrinsic_R: [ 0.9655, -0.0096,  0.2604,
+                           0.0000,  0.9993,  0.0368,
+                          -0.2605, -0.0355,  0.9648]
 
         publish:
             path_en: true

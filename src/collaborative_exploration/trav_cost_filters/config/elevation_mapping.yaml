@@ -32,8 +32,11 @@
     # max_height_range (above sensor) suppresses ceiling-like points; ramped
     # bounds reject far-field points that come back at sharp incidence.
     max_height_range: 5.0
-    ramped_height_range_a: 0.3
-    ramped_height_range_b: 1.0
+    # Ramped height gate: |Δz_base| ≤ a·r + b − c. Old (0.3/1.0/0.2) capped
+    # at 1.4 m at 2 m range → 2 m demo_ramp wall tops were rejected → no
+    # LETHAL in trav grid. Widened so 2 m walls survive close-up.
+    ramped_height_range_a: 0.5
+    ramped_height_range_b: 2.5
     ramped_height_range_c: 0.2
     min_valid_distance: 0.30                # match nvblox geometric blind zone
 
@@ -53,9 +56,11 @@
     max_variance: 100.0
     time_variance: 0.0001
 
-    # Drift compensation: Point-LIO is reliable enough to leave the default on;
-    # disable later if we see oscillations after long traverses.
-    enable_drift_compensation: true
+    # Drift compensation: OFF while debugging "no walls". With it on +
+    # narrow ramped_height_range, the Kalman mean for wall-top cells was
+    # being pulled toward ground elevation and subsequent wall returns
+    # rejected as outliers. Re-enable once walls show consistently.
+    enable_drift_compensation: false
     max_drift: 0.1
     drift_compensation_alpha: 0.1
     traversability_inlier: 0.9
@@ -65,8 +70,11 @@
     position_lowpass_alpha: 0.2
     orientation_lowpass_alpha: 0.2
 
-    # Visibility cleanup and edge sharpening — keep on for now.
-    enable_visibility_cleanup: true
+    # Visibility cleanup: OFF for now. With Mid-360 sim density (1024×96),
+    # a 2 m wall accumulates < 20 returns per (x,y) cell per scan and ETH's
+    # cleanup erased those columns → trav grid had no LETHAL. Re-enable
+    # after confirming walls appear, with wall_num_thresh dropped to ~3.
+    enable_visibility_cleanup: false
     enable_edge_sharpen: true
     enable_overlap_clearance: true
     overlap_clear_range_xy: 4.0
@@ -75,7 +83,7 @@
     cleanup_step: 0.1
     cleanup_cos_thresh: 0.1
     dilation_size: 3
-    wall_num_thresh: 20
+    wall_num_thresh: 3
 
     # We're not using the internal traversability filter — grid_map_filters
     # chain produces the final cost layer. Keep these defaults so the
@@ -112,9 +120,10 @@
     service_namespace: "/elevation_mapping_cupy"
 
     # ---- Input ----
-    # PointCloud2 from Point-LIO; the subscriber path uses the relative
-    # topic 'cloud_registered_body' which becomes /robot/cloud_registered_body
-    # under our launch namespace.
+    # PointCloud2 from Point-LIO; this remains the stable costmap source.
+    # Ramp ascent target generation independently consumes the raw LiDAR cloud
+    # with TF, because the Kalman height map can smooth the ramp surface in
+    # this demo before the robot reaches the foot.
     subscribers:
       cloud:
         topic_name: "cloud_registered_body"

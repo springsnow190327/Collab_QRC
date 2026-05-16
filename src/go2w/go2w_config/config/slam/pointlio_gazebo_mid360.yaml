@@ -45,11 +45,13 @@
             det_range: 20.0
             extrinsic_est_en: false
             # Extrinsic: LiDAR frame relative to IMU frame from the Go2W/Go2
-            # sim URDF Mid-360 mount.
+            # sim URDF Mid-360 mount, real-robot calibrated:
+            #   xyz=(0.187, 0, 0.0803), rpy=(-0.036809, 0.263591, 0)
+            # matches scripts/real/onboard_fastlio_noetic.sh:262.
             extrinsic_T: [0.187, 0.0, 0.0803]
-            extrinsic_R: [0.9744,  0.0, 0.2249,
-                          0.0,     1.0, 0.0,
-                         -0.2249,  0.0, 0.9744]
+            extrinsic_R: [ 0.9655, -0.0096,  0.2604,
+                           0.0000,  0.9993,  0.0368,
+                          -0.2605, -0.0355,  0.9648]
 
         publish:
             path_en: true
