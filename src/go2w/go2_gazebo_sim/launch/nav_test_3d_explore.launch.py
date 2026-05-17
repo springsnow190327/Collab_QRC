@@ -297,70 +297,23 @@ def generate_launch_description() -> LaunchDescription:
         condition=is_3d,
     )
 
-    # 4. Slope-verified ramp viewpoint goals.
+    # 4. (REMOVED) Slope-verified ramp viewpoint goals.
     #
-    # A 2D frontier planner cannot see the upper platform until the robot
-    # physically steps onto the ramp. The slope/traversability/step layers can
-    # already prove that a local ramp patch is traversable, so publish a normal
-    # PointStamped goal on that patch and let CFPA2/Nav2 treat it like a bridge
-    # viewpoint. For this demo the detector is intentionally driven by the
-    # filtered GridMap layers only: raw pointcloud plane fitting can fire before
-    # the map/filter chain has stabilized and create pre-map false ramp goals.
-    # This remains sensor-derived: no scene-coordinate corridor, no scripted
-    # cmd_vel assist.
-    ramp_goal = Node(
-        package="trav_cost_filters",
-        executable="ramp_ascent_goal_node",
-        name="ramp_ascent_goal",
-        namespace=LaunchConfiguration("robot_namespace"),
-        output="screen",
-        parameters=[{
-            "use_sim_time": LaunchConfiguration("use_sim_time"),
-            "input_topic": "elevation_map_filtered",
-            "output_topic": "ramp_ascent_goal",
-            "mode_topic": "ramp_ascent_goal_mode",
-            "robot_frame": "base_link",
-            "map_frame": "map",
-            "pointcloud_topic": "registered_scan_reliable",
-            "use_pointcloud_ramp_detection": False,
-            "pointcloud_stride": 4,
-            # Use fused traversability so the analytical ramp_safe rescue can
-            # recover continuous slopes that the CNN over-rejects, then apply
-            # explicit wall/step veto layers before a slope component can
-            # become a ramp goal.
-            "traversability_layer": "trav_fused",
-            "slope_layer": "slope",
-            "step_residual_layer": "step_residual",
-            "wall_cost_layer": "wall_cost",
-            "step_height_layer": "step_height",
-            "min_traversability": 0.30,
-            "min_slope_deg": 8.0,
-            "max_slope_deg": 30.0,
-            "max_step_residual_m": 0.06,
-            "max_wall_cost": 0.30,
-            "max_step_height_m": 0.25,
-            # Require a robot-scale patch of slope evidence. Tiny wall-rim
-            # fragments can satisfy the local plane equation, but they are not
-            # enough continuous terrain to carry the Go2W footprint.
-            "min_candidate_cells": 30,
-            "min_elevation_span_m": 0.12,
-            # Physical support gate: reject compact sloped artifacts from
-            # early elevation-map transients. A ramp goal must expose enough
-            # continuous terrain to carry the Go2W footprint before it can
-            # force wheel mode.
-            "min_support_length_m": 0.75,
-            "min_support_width_m": 0.45,
-            "min_goal_distance_m": 0.45,
-            "max_goal_distance_m": 2.0,
-            "goal_lookahead_m": 1.0,
-            "verified_hold_sec": 4.0,
-        }],
-        remappings=[
-            ("/tf",        ["/", LaunchConfiguration("robot_namespace"), "/tf"]),
-            ("/tf_static", ["/", LaunchConfiguration("robot_namespace"), "/tf_static"]),
-        ],
-        condition=is_3d,
-    )
+    # ramp_ascent_goal_node used to publish /<ns>/ramp_ascent_goal here,
+    # producing PointStamped viewpoints whenever the filtered GridMap layers
+    # showed a traversable ramp patch. This was removed because:
+    #   - On flat indoor scenes (slam_ops2) the slope/step layers fire on
+    #     stair-step mesh artifacts → CFPA2 chases phantom ramp goals.
+    #   - Even when disabled via `cfpa2_single_robot.yaml: ramp_ascent_enabled:
+    #     false`, the node kept publishing the topic and stayed alive across
+    #     restarts (no kill pattern matched), so the next launch saw two ramp
+    #     goal publishers racing.
+    #   - On demo_ramp the rest of the autonomy stack (Nav2 SmacPlannerLattice
+    #     + MPPI on the trav_grid) can drive the robot onto the ramp once the
+    #     planner sees the ramp cells as traversable; the explicit viewpoint
+    #     goal was an optimisation, not a hard requirement.
+    # If ramp viewpoint goals are needed again, restore this Node and add
+    # `ramp_ascent_goal_node` to scripts/launch/_preflight_kill.sh.
 
     # Static identity: base_link → body
     # Fast-LIO hardcodes cloud_registered_body.header.frame_id = "body"
@@ -397,7 +350,7 @@ def generate_launch_description() -> LaunchDescription:
     # Trav pipeline nodes start 1 s after the nvblox mapper.
     deferred_trav = TimerAction(
         period=6.0,
-        actions=[elevation_mapping, filter_runner, occ_adapter, ramp_goal],
+        actions=[elevation_mapping, filter_runner, occ_adapter],
     )
 
     return LaunchDescription([*args, base_launch, body_tf, deferred, deferred_trav])
