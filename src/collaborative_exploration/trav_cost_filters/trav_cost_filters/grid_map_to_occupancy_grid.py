@@ -133,6 +133,27 @@ class GridMapToOccupancyGrid(Node):
         self.cliff_proximity_cost_max_value = int(
             self.declare_parameter("cliff_proximity_cost_max_value", 90).value
         )
+        # Upper-bound clearance (Miki et al. 2022, Sec. II-H). When the
+        # ray-cast-derived upper_bound is well below the cell's elevation
+        # reading, the elevation point came from an overhang above an
+        # observed-clear floor (bridge underside, ceiling) — reclassify
+        # such cells as free instead of letting them remain lethal.
+        self.upper_bound_clearance_enabled = bool(
+            self.declare_parameter("upper_bound_clearance_enabled", False).value
+        )
+        self.upper_bound_layer = str(
+            self.declare_parameter("upper_bound_layer", "upper_bound").value
+        )
+        # If elevation - upper_bound exceeds this, the elevation reading is
+        # treated as an overhang and the cell is cleared. 0.30m chosen so a
+        # small Kalman fusion artefact (~0.1m) doesn't trip it.
+        self.upper_bound_overhang_threshold_m = float(
+            self.declare_parameter("upper_bound_overhang_threshold_m", 0.30).value
+        )
+        # Cost to assign to cells flagged as overhang-over-floor. 0 = free.
+        self.upper_bound_clear_cost = int(
+            self.declare_parameter("upper_bound_clear_cost", 0).value
+        )
         self.fixed_grid_enabled = bool(
             self.declare_parameter("fixed_grid_enabled", False).value
         )
@@ -328,6 +349,32 @@ class GridMapToOccupancyGrid(Node):
                 valid = (cost >= 0)
                 merged = np.where(valid, np.maximum(cost.astype(np.int16), h_cost), -1)
                 cost = merged.astype(np.int8)
+
+        # Overhang clearance via upper_bound (paper Sec. II-H). Applied
+        # BEFORE cliff/proximity costs so a cell rescued as walk-under-bridge
+        # isn't subsequently re-penalised by an apparent step at its edge
+        # (the overhang itself produces a fake step gradient).
+        if self.upper_bound_clearance_enabled:
+            elev = self._layer_array(msg, self.elevation_layer)
+            ubnd = self._layer_array(msg, self.upper_bound_layer)
+            if (elev is not None and ubnd is not None
+                    and elev.shape == cost.shape and ubnd.shape == cost.shape):
+                with np.errstate(invalid="ignore"):
+                    gap = elev - ubnd
+                    overhang_mask = (
+                        np.isfinite(elev) & np.isfinite(ubnd)
+                        & (gap > self.upper_bound_overhang_threshold_m)
+                    )
+                if overhang_mask.any():
+                    cost = np.where(
+                        overhang_mask,
+                        np.int8(self.upper_bound_clear_cost),
+                        cost,
+                    )
+                    self.get_logger().debug(
+                        f"upper_bound clearance: cleared "
+                        f"{int(overhang_mask.sum())} overhang cells"
+                    )
 
         if self.cliff_proximity_cost_enabled:
             step_height = self._layer_array(msg, self.cliff_step_layer)

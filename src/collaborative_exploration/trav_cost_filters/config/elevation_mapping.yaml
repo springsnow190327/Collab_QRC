@@ -31,6 +31,9 @@
     # Mid-360 specifics: range up to ~30m but useful traversal info ≤ 15m.
     # max_height_range (above sensor) suppresses ceiling-like points; ramped
     # bounds reject far-field points that come back at sharp incidence.
+    # Permissive value — the structural overhang fix lives downstream in
+    # grid_map_to_occupancy_grid via the upper_bound layer (toggle: param
+    # upper_bound_clearance_enabled).
     max_height_range: 5.0
     # Ramped height gate: |Δz_base| ≤ a·r + b − c. Old (0.3/1.0/0.2) capped
     # at 1.4 m at 2 m range → 2 m demo_ramp wall tops were rejected → no
@@ -135,6 +138,9 @@
     # traversability layer (we'll overwrite it with our own chain output).
     publishers:
       elevation_map_raw:
-        layers: ["elevation", "variance", "traversability"]
+        # upper_bound is Miki et al. 2022 Sec. II-H — per-cell ray-cast cap
+        # on terrain height. Consumed downstream by grid_map_to_occupancy_grid
+        # for the overhang-clearance toggle.
+        layers: ["elevation", "variance", "traversability", "upper_bound"]
         basic_layers: ["elevation"]
         fps: 5.0

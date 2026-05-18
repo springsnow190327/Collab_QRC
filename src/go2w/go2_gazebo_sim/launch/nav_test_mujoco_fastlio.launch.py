@@ -485,8 +485,16 @@ def _launch_setup(context):
                                 "robot_namespace": robot_ns,
                                 "namespaces": [robot_ns],
                                 "goal_topic_suffix": "/way_point_coord",
+                                # In 3d mode, CFPA2 reads Nav2's INFLATED
+                                # global_costmap, not the raw trav grid, so its
+                                # BFS reachability matches Nav2's plannability
+                                # (avoids the 33% ABORTED churn the raw grid
+                                # produced — CFPA2 thought robot could squeeze
+                                # through cells Nav2's footprint-aware
+                                # inflation actually rejected). Overlay yaml
+                                # can re-override per-scene.
                                 "planning_map_topic_suffix": (
-                                    "/traversability_grid"
+                                    "/global_costmap/costmap"
                                     if nav_costmap_mode == "3d" else "/map"
                                 ),
                                 "marker_frame_override": "map",

@@ -77,9 +77,33 @@ echo "  scene: $SCENE"
 echo "  spawn: (5.12, -8.76, 0.60) — verified open"
 echo ""
 
+# Default to the pretrained CNN weights — verified (vs baseline) to:
+#   - lift slope 14° (demo_ramp / mild incline) trav 0.27 → 0.81
+#   - lift 5cm gait-noise trav 0.52 → 0.71 (less false-cliff)
+#   - still rejects walls/cliffs (1m wall: 0.001 → 0.001)
+# Drastically fewer false-lethal cells in the trav grid. Set TRAV_WEIGHTS=
+# to override; set TRAV_WEIGHTS_BASELINE=1 to force original ETH weights.
+DEFAULT_PRETRAIN="${WS_DIR}/training_runs/weights_pretrain.dat"
+if [[ -z "${TRAV_WEIGHTS:-}" ]] && [[ -z "${TRAV_WEIGHTS_BASELINE:-}" ]] \
+   && [[ -f "${DEFAULT_PRETRAIN}" ]]; then
+  TRAV_WEIGHTS="${DEFAULT_PRETRAIN}"
+fi
+TRAV_WEIGHTS_ARG=()
+if [[ -n "${TRAV_WEIGHTS:-}" ]]; then
+  if [[ ! -f "${TRAV_WEIGHTS}" ]]; then
+    echo "ERROR: TRAV_WEIGHTS file not found: ${TRAV_WEIGHTS}" >&2
+    exit 1
+  fi
+  echo "  trav CNN weights: ${TRAV_WEIGHTS}"
+  TRAV_WEIGHTS_ARG=("trav_weight_file:=${TRAV_WEIGHTS}")
+fi
+
 exec ros2 launch go2_gazebo_sim nav_test_3d_explore.launch.py \
   "mujoco_model_path:=${SCENE}" \
   "spawn_x:=5.12" \
   "spawn_y:=-8.76" \
   "spawn_yaw:=0.0" \
+  "has_wheels:=false" \
+  "upper_bound_clearance:=true" \
+  "${TRAV_WEIGHTS_ARG[@]}" \
   "$@"

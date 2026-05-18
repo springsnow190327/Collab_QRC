@@ -31,6 +31,7 @@ from rclpy.qos import (
     QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy,
 )
 
+from action_msgs.msg import GoalStatus, GoalStatusArray
 from geometry_msgs.msg import PointStamped, PoseStamped
 from nav_msgs.msg import Odometry
 from nav2_msgs.msg import BehaviorTreeLog
@@ -73,6 +74,9 @@ class Cfpa2ToNav2Bridge(Node):
             "planner_failure_node_names",
             ["ComputePathToPose", "ComputePathThroughPoses"],
         )
+        # Nav2's NavigateToPose action status topic. The action server is
+        # bt_navigator; status messages go to this topic by ROS 2 convention.
+        self.declare_parameter("action_status_topic", "navigate_to_pose/_action/status")
 
         ns = str(self.get_parameter("namespace").value)
         wp_topic = _ns_topic(ns, self.get_parameter("waypoint_topic").value)
@@ -129,6 +133,31 @@ class Cfpa2ToNav2Bridge(Node):
         self.create_subscription(
             BehaviorTreeLog, bt_log_topic, self._on_behavior_tree_log, 10
         )
+        # Nav2's navigate_to_pose action server publishes its goal state list
+        # here. ABORTED/CANCELED transitions = "Nav2 gave up on this goal".
+        # We translate that into a fast-blacklist nav_status the moment it
+        # happens, instead of waiting for the watchdog's 10 s stall timeout.
+        # QoS: the action status uses TRANSIENT_LOCAL on the server side.
+        action_status_topic = _ns_topic(
+            ns,
+            self.get_parameter("action_status_topic").value,
+        )
+        action_status_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
+        self.create_subscription(
+            GoalStatusArray, action_status_topic,
+            self._on_action_status, action_status_qos,
+        )
+        # State for action-status terminal detection. We don't have Nav2's
+        # internal goal_uuid (bt_navigator generates it when it forwards
+        # /goal_pose into its own navigate_to_pose action). Track the
+        # latest-seen status STAMP and the goal_uuid we've already acted
+        # on, so we fire once per terminal transition per Nav2-side goal.
+        self._action_last_acted_uuid: bytes | None = None
         self._goal_pub = self.create_publisher(
             PoseStamped, goal_topic, nav2_goal_qos
         )
@@ -206,6 +235,77 @@ class Cfpa2ToNav2Bridge(Node):
         self._active_goal = (gx, gy)
         self._planner_failure_count = 0
         self._emit_nav_status("navigating", "goal_forwarded")
+
+    def _on_action_status(self, msg: GoalStatusArray) -> None:
+        """Fire nav_status(unreachable) on the first ABORTED/CANCELED we see
+        for a goal_uuid we haven't yet acted on.
+
+        Nav2 stamps the navigate_to_pose action with its own goal_uuid
+        (we don't see it — bt_navigator forwards /goal_pose → action call
+        internally). The status array lists ALL recent goals; we pick the
+        most-recently-stamped terminal entry. Dedupe by goal_uuid so we
+        only emit once per Nav2-side goal even if the status keeps republishing.
+        """
+        if getattr(self, "_active_goal", None) is None:
+            return
+        terminal = None  # (stamp_ns, goal_uuid, status_code)
+        for st in msg.status_list:
+            code = int(st.status)
+            if code not in (GoalStatus.STATUS_ABORTED, GoalStatus.STATUS_CANCELED):
+                continue
+            stamp_ns = int(st.goal_info.stamp.sec) * 1_000_000_000 \
+                + int(st.goal_info.stamp.nanosec)
+            uuid = bytes(st.goal_info.goal_id.uuid)
+            if terminal is None or stamp_ns > terminal[0]:
+                terminal = (stamp_ns, uuid, code)
+        if terminal is None:
+            return
+        _, uuid, code = terminal
+        if uuid == self._action_last_acted_uuid:
+            return
+        self._action_last_acted_uuid = uuid
+        state = "unreachable" if code == GoalStatus.STATUS_ABORTED else "failed"
+        reason = "nav2_action_aborted" if code == GoalStatus.STATUS_ABORTED \
+            else "nav2_action_canceled"
+        # CFPA2's fast-BL needs N (default 3) consecutive `unreachable` for the
+        # same goal_key. A single action terminal event only fires our callback
+        # once per UUID, so spin a tiny one-shot timer to emit 3 in a row (the
+        # second + third are necessary to satisfy CFPA2's consec_threshold).
+        extra = {"status_code": int(code), "goal_uuid_hex": uuid.hex()}
+        self._emit_nav_status(state, reason, extra=extra)
+        self._action_terminal_burst_remaining = 2
+        self._action_terminal_burst_state = state
+        self._action_terminal_burst_reason = reason
+        self._action_terminal_burst_extra = extra
+        # 100 ms cadence × 2 follow-ups → CFPA2 sees 3 emits within 250 ms.
+        # rclpy has no one-shot timer; we cancel inside the tick.
+        if getattr(self, "_action_terminal_burst_timer", None) is not None:
+            self._action_terminal_burst_timer.cancel()
+        self._action_terminal_burst_timer = self.create_timer(
+            0.10, self._action_terminal_burst_tick)
+        self.get_logger().info(
+            f"Nav2 {state}: goal=({self._active_goal[0]:+.2f},"
+            f"{self._active_goal[1]:+.2f}) code={code} → fast BL burst (3 emits)"
+        )
+
+    def _action_terminal_burst_tick(self) -> None:
+        if getattr(self, "_action_terminal_burst_remaining", 0) <= 0:
+            t = getattr(self, "_action_terminal_burst_timer", None)
+            if t is not None:
+                t.cancel()
+                self._action_terminal_burst_timer = None
+            return
+        self._emit_nav_status(
+            self._action_terminal_burst_state,
+            self._action_terminal_burst_reason,
+            extra=self._action_terminal_burst_extra,
+        )
+        self._action_terminal_burst_remaining -= 1
+        if self._action_terminal_burst_remaining <= 0:
+            t = getattr(self, "_action_terminal_burst_timer", None)
+            if t is not None:
+                t.cancel()
+                self._action_terminal_burst_timer = None
 
     def _on_behavior_tree_log(self, msg: BehaviorTreeLog) -> None:
         if getattr(self, "_active_goal", None) is None:

@@ -4,6 +4,55 @@ Multi-robot autonomy with Unitree Go2W wheeled-legged quadrupeds + Go2 walking q
 
 Door task (Phase 2 dual-robot VLM coordination) and the legacy A*/default Python nav backends were removed in the 2026-05 cleanup; see [CLAUDE1.md](CLAUDE1.md) for Phase 1 VLM exploration history, Phase 2 FSM archive, archived 2026-04 operational notes, and the deletion log.
 
+## Active state (2026-05-18) — ops2 trav-CNN fine-tune end-to-end + spawn bug + Nav2 tightening
+
+End-to-end: built the offline label-generation → 7×7 patch extraction → CNN fine-tune → sim-test pipeline for elevation_mapping_cupy's 120-param traversability filter. The sim now spawns at (0,0), uses fine-tuned weights by default, drives autonomous exploration across the ops2 scene, and goes ~15m down the main corridor in 90s.
+
+### The shipped pieces
+
+1. **Heightmap → labels → patches → CNN fine-tune pipeline** in [`scripts/training/`](scripts/training/):
+   - [`build_float_heightmap.py`](scripts/training/build_float_heightmap.py) — top-down z(x,y) from mesh, float32 npz
+   - [`auto_label_heightmap.py`](scripts/training/auto_label_heightmap.py) — slope+step+height-above-floor rules on real ops2 mesh (vs `synth_terrain_dataset.py` which uses synthetic toy ramps)
+   - [`polish_trav_labels.py`](scripts/training/polish_trav_labels.py) — morphological speckle remove + bridge override (height > 1.2m AND slope < 20° → free)
+   - [`build_trav_dataset.py`](scripts/training/build_trav_dataset.py) — 7×7 patch extraction with rich augmentation (rot×4, flip-LR/UD, gaussian noise ±0.03m × N rounds, dropout, tilt ±5°, gaussian blur). 6M patches from 60k labelled cells.
+   - [`train_trav_filter.py`](scripts/training/train_trav_filter.py) — already existed; extended with **weighted MSE / BCE / focal** loss (`--lethal-weight 3.0` for FP-lethal-over-FN-lethal bias), **label smoothing 0.05** (guards against ~10% label noise), **pretrain mix 30%** every epoch (anti-catastrophic-forgetting from synth `weights_pretrain.dat`), **weight_decay 1e-4**, **early stopping**, and **periodic checkpoints** every N epochs.
+   - Result: val_mse 0.04, val_acc 0.95 across all fine-tuned variants (v2 / snap / flat / ransac / tiled). Pretrain baseline was 0.117 / 0.86. Per-class on tiled dataset: trav_pred 0.92, lethal_pred 0.11. **5090: 6M patches × 150 epochs in ~30 s** (120-param network, batch 4096, GPU 50% util — kernel launch overhead, not compute-bound).
+
+2. **5 mesh-cleanup variants explored** for the visual mesh feeding sim LiDAR. All trained equally well (CNN sees similar patch distributions), differ in **sim realism**:
+   - **strip** (patchwork delete-tris) — has holes, LiDAR escapes
+   - **snap** (patchwork + project ground to z=0) — flat but loses ramp tilt
+   - **flat** (no patchwork, z<0.10m → 0) — simpler, catches 88% more low-z noise than patchwork (284k vs 241k verts)
+   - **ransac** (patchwork + single-plane RANSAC) — preserves 0.43° real building tilt; ground std 16cm = expected tilt × 80m extent
+   - **tiled** (patchwork + per-2m-tile RANSAC) — preserves multi-level floor + ramps (p5 z=−0.15m → p95 z=+0.19m, true 0.34m height range across the building). Spawn tile has std 4mm (essentially flat).
+   - User reverted aggressive variants (orphan-strip dropped 79k debris tris, vertex-cluster 0.4m got us to 52k tri) because they cut too much; we ended back at original mesh (`scans_v4_sparse.obj`, 56k v / 150k tri) with `pos="0 0 0"` so the mesh's natural ground at z=−0.28m sits one Go2 height (~30cm) below the MJCF floor plane (z=0) acting as visual backdrop.
+
+3. **THE spawn-position bug** — robot was spawning at **(25.x, -15.x)** instead of (0,0) despite keyframe qpos="0 0 0.32". Root cause at [`slam_ops2_v4_go2_real.xml`](src/go2w/go2_gazebo_sim/mujoco/slam_ops2_v4_go2_real.xml#L1213): `<body name="base_link" pos="29.51 -15.77 0.32" ...>` — the body's default `pos` attribute was hardcoded to a stale old spawn from a different scene. With a `<freejoint>`, both the body `pos` and the keyframe qpos contribute; the body pos was apparently winning during sim startup. Fixed in both MJCF variants. Verified via headless MuJoCo: `qpos[:3]=(0, 0, 0.32)`. Live sim confirmed: GT pose at t=0 was (-0.03, +0.0, +0.28), exploration drove the robot to (15.39, -9.14, 0.28) over 90s.
+
+4. **Nav2 Go2 collision tightened** ([`nav2_go2_full_stack.yaml`](src/go2w/go2w_config/config/nav/nav2_go2_full_stack.yaml)) to fit narrower corridors: footprint 0.70×0.40m → **0.64×0.36m**, MPPI `collision_margin_distance` 0.10 → **0.05m**, local `inflation_radius` 0.30 → **0.22m**, global 0.25 → **0.20m**. Effective rejection envelope: 0.90×0.60m → **0.74×0.46m** (-16cm wide, -14cm tall).
+
+5. **Default trav weights = fine-tuned**. [`nav_test_slam_ops2_v4_go2.sh`](scripts/launch/nav_test_slam_ops2_v4_go2.sh) now auto-loads `weights_ops2_tiled.dat` when present; falls back to `weights_pretrain.dat` only if no fine-tune available. Boot log explicitly prints which one is in use.
+
+6. **`gt_passthrough` mode for `fast_lio_tf_adapter`** ([`scripts/runtime/fast_lio_tf_adapter.py`](scripts/runtime/fast_lio_tf_adapter.py)) — env `GT_PASSTHROUGH=1` makes the adapter subscribe to `/<ns>/odom/ground_truth` and emit TF directly from GT, bypassing Fast-LIO. Useful for isolating spawn-position issues from SLAM bootstrap timing.
+
+7. **`elevation_cost_max_h: 1.00 → 1.5m`** ([`nav_test_3d_explore.launch.py`](src/go2w/go2_gazebo_sim/launch/nav_test_3d_explore.launch.py#L295)) — broadens the height band over which `grid_map_to_occupancy_grid` scales elevation cost into the 0–90 occupancy range.
+
+### Other detours (kept as scripts but not on the main path)
+
+- **Sonata (Meta self-supervised PTv3) semantic segmentation** [`scripts/real/sonata_inference.py`](scripts/real/sonata_inference.py), [`sonata_to_instances.py`](scripts/real/sonata_to_instances.py), [`sonata_visualize_instances.py`](scripts/real/sonata_visualize_instances.py). Got it running on Blackwell sm_120 by upgrading `spconv-cu120` → `spconv-cu126 2.3.8` + `cumm-cu126` (the prior version had no sm_120 cubins and silently SubMConv3d-segfaulted). Achieved 0.954 acc per-pixel on the v4 mesh. **But the ScanNet-20 taxonomy is wrong for our outdoor/semi-outdoor building scene** — patchwork picked 26.1% of verts as ground (matching truth) but Sonata mis-labelled most building structures as "table" or "bed". Dropped semantic path. Sonata's 5 instances (with z<1.5m guard) were still extracted into 120 CoACD convex-decomposition collision geoms (`ops2_inst_*` in MJCF) — kept for collision-only use.
+- **Patchwork++ ground stripping** [`scripts/real/strip_floor_with_patchwork.py`](scripts/real/strip_floor_with_patchwork.py) (recreated inline after user deleted it during one iteration). Multiple modes: `strip` (delete tris, leaves holes), `snap` (project ground to z=0), `ransac` (single plane), **`ransac-tiled`** (per-tile plane, preserves multi-level floors). With z<0.05m guard, rescued 14k pillar-base verts that patchwork over-classified as ground.
+- **Mesh editor GUIs** (none turned out to be the right UX): [`mesh_box_carver.py`](scripts/real/mesh_box_carver.py) 3D AABB select-and-delete, [`mesh_height_cutoff.py`](scripts/real/mesh_height_cutoff.py) 2D top-down + max-z cutoff slider, [`trav_labeler.py`](scripts/training/trav_labeler.py) 2D paint w/ z-band slider + Bresenham straight-line tool, [`trav_labeler_3d.py`](scripts/training/trav_labeler_3d.py) Open3D shift-click point picker, [`trav_threshold_tuner.py`](scripts/training/trav_threshold_tuner.py) live-slider rule tuner. User preferred automated path over manual labeling.
+- **`flatten_floor_height.py`** [`scripts/real/flatten_floor_height.py`](scripts/real/flatten_floor_height.py) — height-only snap (no patchwork): every vert with z<0.10m → z=0. Catches 88% more low-z noise than patchwork but loses any real curb/step <10cm.
+
+### Open problem — overhead bridges treated as lethal at runtime
+
+The trav grid (visible in RViz `/robot/traversability_grid`) marks overhead bridges/awnings as **red lethal**, NOT free as we want for "robot walks under". Why: at offline label time, `polish_trav_labels.py` applies a `bridge_height_m=1.2m AND slope<20°` rule that flips high+flat cells to FREE. The CNN learns this from labels. **At runtime**, the elevation_mapping_cupy CNN sees a 7×7 patch from the live heightmap (max-z per cell from LiDAR) — but there is no equivalent height-based override in the *output* pipeline. The CNN's per-patch output gets multiplied with the `ramp_safe` analytical fallback ([grid_map_filters.yaml](src/collaborative_exploration/trav_cost_filters/config/grid_map_filters.yaml)) which is meant for ramp recovery, not bridge clearance.
+
+Two ways to fix:
+1. Add a post-CNN filter in `grid_map_filters.yaml`: `height_above_floor > 1.5m AND slope < 20° → trav_fused := max(trav_fused, 0.95)`. Same logic as offline polish, applied to the live grid before publish.
+2. Train the CNN with patches that include FLOOR underneath a bridge (i.e. patches that show "z=4m here, but z=0 just 1m laterally" → label=trav). Currently our patches show only the top-down max-z, so a bridge patch looks like a tall obstacle.
+
+(1) is the quick fix; (2) is the principled fix but needs a different patch builder.
+
 ## Active state (2026-05-16) — real-world walk → MuJoCo collidable scene (Go2 explores SLAM mesh autonomously)
 
 End-to-end: offline replay of a real-robot bag → static-only mesh → Go2 spawned and trotting inside it under CFPA2 + Nav2, with only foot-floor contacts.

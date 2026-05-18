@@ -207,6 +207,20 @@ class CFPA2Coordinator(Node):
         # Cylinder height (m) above the goal XY for 3D IG counting. Default 2.0m
         # captures the full robot-traversable column from floor to head clearance.
         self.declare_parameter("cfpa2_ig_height_m", 2.0)
+        # IG aggregation mode:
+        #   "local"     — count unknown cells in a fixed radius square/cylinder
+        #                 around the goal (original ETH-style local IG). Tends
+        #                 to undervalue large rooms because the count saturates
+        #                 at π·r²; near small nooks then win on distance.
+        #   "floodfill" — connected-component count of unknown cells reachable
+        #                 from the goal via 4-connectivity through unknown
+        #                 territory, capped at `cfpa2_floodfill_budget` cells
+        #                 and `cfpa2_floodfill_max_radius_cells` from the goal.
+        #                 Big rooms saturate the budget; small nooks finish
+        #                 well below it → utility now reflects geometric size.
+        self.declare_parameter("cfpa2_ig_mode", "local")
+        self.declare_parameter("cfpa2_floodfill_budget", 2000)
+        self.declare_parameter("cfpa2_floodfill_max_radius_cells", 100)
         self.declare_parameter("switch_hysteresis", 0.02)
         self.declare_parameter("switch_min_dist", 0.35)
         self.declare_parameter("min_assign_distance", 0.30)
@@ -295,6 +309,31 @@ class CFPA2Coordinator(Node):
         self.declare_parameter("cfpa2_challenger_streak_required", 3)
         self.declare_parameter("cfpa2_challenger_improvement_factor", 1.20)
         self.declare_parameter("cfpa2_challenger_min_lock_age_sec", 2.0)
+        # Frontier planner mode:
+        #   "greedy"   — pick the single frontier with highest utility (legacy).
+        #                Re-decides every tick → susceptible to sawtooth between
+        #                near-small and far-big frontiers when their utilities
+        #                are close.
+        #   "tsp_topk" — take the top-K frontiers by utility and solve a
+        #                nearest-neighbor TSP starting from the robot. The
+        #                head of that tour becomes the candidate. This picks
+        #                a near frontier when it's on the route to a bigger
+        #                far frontier, suppressing churn and producing roughly
+        #                linear sweep motion through clusters of frontiers.
+        self.declare_parameter("cfpa2_planner_mode", "greedy")
+        # K for tsp_topk. K=5 → 120 permutations, brute force in micro-s.
+        # K too large → top-K includes far/low-utility frontiers that drag
+        # the tour out of position.
+        self.declare_parameter("cfpa2_tsp_k", 5)
+        # Stranded-frontier abort radius: if NO current frontier candidate is
+        # within this distance of the held goal, the held goal is declared
+        # stale and switched immediately (mid-navigation). Previously the
+        # radius was hardcoded max(switch_min_dist*1.5, 0.50) = 0.67m which
+        # was too generous — even after exploration revealed the cells that
+        # made the goal a frontier, some unrelated frontier within 0.67m
+        # would keep it alive. 0.40m (4 cells @ 0.10m res) ties the check
+        # to a tight cell neighbourhood.
+        self.declare_parameter("cfpa2_stale_frontier_radius_m", 0.40)
         self.declare_parameter("cfpa2_min_utility", -0.5)
         self.declare_parameter("cfpa2_sigma_overlap_m", 0.0)
         self.declare_parameter("cfpa2_stuck_lock_sec", 45.0)
@@ -425,6 +464,15 @@ class CFPA2Coordinator(Node):
             _v3s = "/" + _v3s if _v3s else "/voxels_3d"
         self.voxels_3d_topic_suffix = _v3s
         self.cfpa2_ig_height_m = max(0.1, float(self.get_parameter("cfpa2_ig_height_m").value))
+        _ig_mode = str(self.get_parameter("cfpa2_ig_mode").value).strip().lower()
+        if _ig_mode not in ("local", "floodfill"):
+            self.get_logger().warn(
+                f"cfpa2_ig_mode='{_ig_mode}' invalid, falling back to 'local'")
+            _ig_mode = "local"
+        self.cfpa2_ig_mode = _ig_mode
+        self.cfpa2_floodfill_budget = int(max(1, self.get_parameter("cfpa2_floodfill_budget").value))
+        self.cfpa2_floodfill_max_radius_cells = int(max(1,
+            self.get_parameter("cfpa2_floodfill_max_radius_cells").value))
         if self.ig_dimension == "3d" and not _HAVE_VOXEL_GRID3D:
             self.get_logger().error(
                 "ig_dimension='3d' requested but nvblox_frontend_msgs not importable. "
@@ -501,6 +549,15 @@ class CFPA2Coordinator(Node):
             1.0, float(self.get_parameter("cfpa2_challenger_improvement_factor").value))
         self.cfpa2_challenger_min_lock_age_sec = max(
             0.0, float(self.get_parameter("cfpa2_challenger_min_lock_age_sec").value))
+        self.cfpa2_stale_frontier_radius_m = max(
+            0.05, float(self.get_parameter("cfpa2_stale_frontier_radius_m").value))
+        _planner_mode = str(self.get_parameter("cfpa2_planner_mode").value).strip().lower()
+        if _planner_mode not in ("greedy", "tsp_topk"):
+            self.get_logger().warn(
+                f"cfpa2_planner_mode='{_planner_mode}' invalid, falling back to 'greedy'")
+            _planner_mode = "greedy"
+        self.cfpa2_planner_mode = _planner_mode
+        self.cfpa2_tsp_k = max(1, int(self.get_parameter("cfpa2_tsp_k").value))
         self.cfpa2_min_utility = float(self.get_parameter("cfpa2_min_utility").value)
         self.cfpa2_sigma_overlap_m = max(0.0, float(self.get_parameter("cfpa2_sigma_overlap_m").value))
         self.cfpa2_stuck_lock_sec = max(0.0, float(self.get_parameter("cfpa2_stuck_lock_sec").value))
@@ -2140,6 +2197,58 @@ class CFPA2Coordinator(Node):
         self._set_policy_reason(ns, "switch/hysteresis_ok")
         return goal
 
+    def _tsp_top_k_head(
+        self,
+        ns: str,
+        utilities: dict[tuple[float, float], float],
+    ) -> Optional[tuple[float, float]]:
+        """Return the first goal in a nearest-neighbor TSP tour through the
+        top-K utility frontiers, starting from the current robot pose.
+
+        Why: greedy max-utility flips between a near-small and far-big
+        frontier each tick when their scores are close, producing sawtooth
+        motion. The TSP head answers "which frontier should I visit FIRST
+        if I were going to sweep all top-K?" — typically the one on the
+        route to the cluster of high-utility goals. Near-but-on-route
+        beats far-but-best-utility. Plumbs naturally into the existing
+        commit machinery (challenger streak, stale-frontier checks).
+        """
+        if not utilities:
+            return None
+        K = self.cfpa2_tsp_k
+        sorted_goals = sorted(utilities.items(), key=lambda kv: -kv[1])[:K]
+        candidates = [g for g, _ in sorted_goals]
+        if len(candidates) <= 1:
+            return candidates[0] if candidates else None
+        od = self.odoms.get(ns)
+        if od is None:
+            return candidates[0]
+        rx = float(od.pose.pose.position.x)
+        ry = float(od.pose.pose.position.y)
+        # Nearest-neighbor heuristic: from robot, repeatedly pick the
+        # nearest unvisited candidate. O(K²); for K=5 that's 25 ops.
+        remaining = set(range(len(candidates)))
+        cur_x, cur_y = rx, ry
+        first_idx: Optional[int] = None
+        while remaining:
+            best_i = -1
+            best_d2 = float("inf")
+            for i in remaining:
+                cx, cy = candidates[i]
+                d2 = (cx - cur_x) * (cx - cur_x) + (cy - cur_y) * (cy - cur_y)
+                if d2 < best_d2:
+                    best_d2 = d2
+                    best_i = i
+            if best_i < 0:
+                break
+            if first_idx is None:
+                first_idx = best_i
+            cur_x, cur_y = candidates[best_i]
+            remaining.discard(best_i)
+        if first_idx is None:
+            return candidates[0]
+        return candidates[first_idx]
+
     def _apply_goal_policy(
         self,
         ns: str,
@@ -2171,7 +2280,7 @@ class CFPA2Coordinator(Node):
         # goal in that case drives the robot into a wall. Force a switch
         # to the freshly-computed candidate.
         if current_targets:
-            stale_radius_m = max(self.switch_min_dist * 1.5, 0.50)
+            stale_radius_m = self.cfpa2_stale_frontier_radius_m
             stale_r2 = stale_radius_m * stale_radius_m
             still_frontier = False
             for tx, ty in current_targets:
@@ -2830,7 +2939,15 @@ class CFPA2Coordinator(Node):
         if self.ig_dimension == "3d" and ns is not None and ns in self.voxels_3d:
             return self._frontier_information_gain_3d(ns, goal)
 
-        # --- 2D path (legacy default) ---
+        # --- 2D path ---
+        # Floodfill mode: connected-component size of unknown region reachable
+        # from the goal cell. Rewards frontiers that open into large rooms vs
+        # small nooks, because nooks saturate well below the budget cap while
+        # rooms saturate at the cap.
+        if self.cfpa2_ig_mode == "floodfill":
+            return self._frontier_information_gain_floodfill(msg, goal)
+
+        # Local-window mode (default, legacy behaviour).
         g = self._world_to_grid(msg, goal[0], goal[1])
         if g is None:
             return 0.0
@@ -2847,6 +2964,78 @@ class CFPA2Coordinator(Node):
                 if data[idx] == self.unknown_value:
                     gain += 1.0
         return gain
+
+    def _frontier_information_gain_floodfill(
+        self,
+        msg: OccupancyGrid,
+        goal: tuple[float, float],
+    ) -> float:
+        """Count unknown cells connected to the goal via 4-conn BFS.
+
+        Bounded by two limits so worst-case work is O(budget):
+        - Stop after `cfpa2_floodfill_budget` cells visited.
+        - Stop expanding cells whose Chebyshev distance from the start
+          exceeds `cfpa2_floodfill_max_radius_cells`.
+
+        BFS expands into UNKNOWN cells only. Frontiers next to a thin wall
+        but open into a 10×10m room will saturate the budget (= big score);
+        a frontier opening into a 1×1m closet caps at ~100 cells (= small
+        score). Distance cost in the utility formula then prefers the
+        nearer big room over a far big room, NOT a near small nook over a
+        far big room.
+        """
+        g = self._world_to_grid(msg, goal[0], goal[1])
+        if g is None:
+            return 0.0
+        sx, sy = g
+        w = int(msg.info.width)
+        h = int(msg.info.height)
+        data = msg.data
+        unk = self.unknown_value
+
+        # Seed: the goal cell itself, even if it's not unknown — we want to
+        # expand into the adjacent unknown territory. If the goal is on a
+        # free cell next to UNK, the first iteration of the BFS will pick
+        # up the UNK neighbours.
+        budget = self.cfpa2_floodfill_budget
+        max_r = self.cfpa2_floodfill_max_radius_cells
+
+        # Visited as a set of linear indices for cheap membership testing.
+        seed_idx = sy * w + sx
+        visited: set[int] = {seed_idx}
+        q: deque[tuple[int, int]] = deque()
+        q.append((sx, sy))
+        gain = 0
+        # The seed cell counts only if it's itself unknown.
+        if 0 <= seed_idx < len(data) and data[seed_idx] == unk:
+            gain = 1
+
+        while q and gain < budget:
+            cx, cy = q.popleft()
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nx, ny = cx + dx, cy + dy
+                if nx < 0 or ny < 0 or nx >= w or ny >= h:
+                    continue
+                # Chebyshev radius cap — keeps work bounded even on a tiny
+                # connected unknown blob that spans the whole map (e.g. a
+                # corridor with leaks).
+                if abs(nx - sx) > max_r or abs(ny - sy) > max_r:
+                    continue
+                nidx = ny * w + nx
+                if nidx in visited:
+                    continue
+                v = data[nidx]
+                if v != unk:
+                    # Only expand THROUGH unknown territory. Free cells stop
+                    # the wave (otherwise we'd flood the whole free map).
+                    visited.add(nidx)  # mark so we don't revisit
+                    continue
+                visited.add(nidx)
+                gain += 1
+                if gain >= budget:
+                    break
+                q.append((nx, ny))
+        return float(gain)
 
     def _frontier_information_gain_3d(
         self, ns: str, goal: tuple[float, float]
@@ -2901,6 +3090,11 @@ class CFPA2Coordinator(Node):
         # the cylinder window is tiny (~r² × kz, e.g. 9×9×20 = 1620 voxels).
         if self.ig_dimension == "3d" and ns is not None and ns in self.voxels_3d:
             return [self._frontier_information_gain_3d(ns, g) for g in goals]
+
+        # Floodfill mode bypasses the C local-window accelerator. Each call
+        # is O(budget); for budget=2000 and ~30 frontiers that's ~60ms.
+        if self.cfpa2_ig_mode == "floodfill":
+            return [self._frontier_information_gain_floodfill(msg, g) for g in goals]
 
         w = int(msg.info.width)
         h = int(msg.info.height)
@@ -3714,25 +3908,43 @@ class CFPA2Coordinator(Node):
                 self._set_policy_reason(ns_a, "switch/cfpa2_joint")
                 self._set_policy_reason(ns_b, "switch/cfpa2_joint")
             else:
+                # Single-robot fallback (only one ns has viable utilities, or
+                # joint allocator found no admissible pair). Pick a single
+                # head via greedy max-utility OR TSP-of-top-K depending on
+                # cfpa2_planner_mode.
+                def _pick_single_head(
+                    ns: str, utils: dict[tuple[float, float], float]
+                ) -> tuple[Optional[tuple[float, float]], float]:
+                    if not utils:
+                        return None, -1e18
+                    if self.cfpa2_planner_mode == "tsp_topk":
+                        head = self._tsp_top_k_head(ns, utils)
+                        if head is not None:
+                            return head, utils.get(head, max(utils.values()))
+                    # Greedy fallback.
+                    g, s = max(utils.items(), key=lambda kv: kv[1])
+                    return g, s
+
                 best_single_ns: Optional[str] = None
                 best_single_goal: Optional[tuple[float, float]] = None
                 best_single_score = -1e18
-                if utilities_a:
-                    goal_a, score_a = max(utilities_a.items(), key=lambda kv: kv[1])
-                    if score_a > best_single_score:
-                        best_single_ns = ns_a
-                        best_single_goal = goal_a
-                        best_single_score = score_a
-                if utilities_b:
-                    goal_b, score_b = max(utilities_b.items(), key=lambda kv: kv[1])
-                    if score_b > best_single_score:
-                        best_single_ns = ns_b
-                        best_single_goal = goal_b
-                        best_single_score = score_b
+                goal_a, score_a = _pick_single_head(ns_a, utilities_a)
+                if goal_a is not None and score_a > best_single_score:
+                    best_single_ns = ns_a
+                    best_single_goal = goal_a
+                    best_single_score = score_a
+                goal_b, score_b = _pick_single_head(ns_b, utilities_b)
+                if goal_b is not None and score_b > best_single_score:
+                    best_single_ns = ns_b
+                    best_single_goal = goal_b
+                    best_single_score = score_b
                 if best_single_ns is not None and best_single_goal is not None:
                     candidate_goals[best_single_ns] = best_single_goal
                     assignment_scores[best_single_ns] = best_single_score
-                    self._set_policy_reason(best_single_ns, "switch/cfpa2_fallback_single")
+                    reason = ("switch/cfpa2_tsp_topk"
+                              if self.cfpa2_planner_mode == "tsp_topk"
+                              else "switch/cfpa2_fallback_single")
+                    self._set_policy_reason(best_single_ns, reason)
 
                     # [Duplicate-goal guard] When the joint pair search fails
                     # (typically because utilities_{a,b} share only one common
