@@ -275,11 +275,9 @@ Even with this ordering, the protocol is eventually consistent under message los
 This is acceptable for the comms-cut survival demo, which is the explicit success criterion (supervisor decision Q3, 08/05/2026). Stricter atomicity (two-phase commit, consensus) is out of scope.
 
 ### Validation by re-solving
-Responder validates a proposal by re-solving the MDVRP locally with the same inputs and comparing to the proposed allocation via set equality
-with FRONTIER_MATCH_TOLERANCE-tolerant matching. This works because MDVRP solver determinism is tested (see test_determinism_under_shuffled_inputs).
+Responder validates a proposal by re-solving the MDVRP locally with the same inputs and comparing to the proposed allocation via set equality with FRONTIER_MATCH_TOLERANCE-tolerant matching. This works because MDVRP solver determinism is tested (see test_determinism_under_shuffled_inputs).
 
-If the comparison fails, the responder rejects and lets state refresh (heartbeats, frontier updates) before the next retry. Counter-proposals
-are out of scope.
+If the comparison fails, the responder rejects and lets state refresh (heartbeats, frontier updates) before the next retry. Counter-proposals are out of scope.
 
 ### Tunables (defaults)
 - request_timeout_sec: 2.0  (matches negotiation_cooldown_sec)
@@ -288,44 +286,28 @@ are out of scope.
 - backoff after timeout: shorter than reject (treats as comms issue)
 
 ### Peer staleness and in-flight negotiation
-A peer's heartbeat timing out invalidates all claims attributed to that peer (Option B). This extends to requester state: any `RequesterState`
-targeting a stale peer is reset to `IDLE` at the moment staleness is detected, whether a request was in-flight or the slot was sitting in
-post-reject backoff.
+A peer's heartbeat timing out invalidates all claims attributed to that peer (Option B). This extends to requester state: any `RequesterState` targeting a stale peer is reset to `IDLE` at the moment staleness is detected, whether a request was in-flight or the slot was sitting in post-reject backoff.
 
-Rationale: the alternative — relying on natural request timeout — holds only while `request_timeout_sec < peer_timeout_sec` (currently
-2 s < 10 s). Eagerly resetting on peer-stale removes that hidden coupling and keeps the design intent ("stop trusting anything tied to
-that peer") robust to future parameter changes.
+Rationale: the alternative — relying on natural request timeout — holds only while `request_timeout_sec < peer_timeout_sec` (currently 2 s < 10 s). Eagerly resetting on peer-stale removes that hidden coupling and keeps the design intent ("stop trusting anything tied to that peer") robust to future parameter changes.
 
 In-flight cancellations are logged with the cancelled `request_id` so post-hoc evidence of stale-peer events stays correlated with the negotiation log stream.
 
 ### Responder validation and transient state divergence
-The responder runs an independent local MDVRP solve over its own `local_frontiers` before accepting a request, rather than rubber-stamping
-the requester's proposal. This makes rejections meaningful: a reject indicates the two robots' local observations have diverged, not just
-that the requester sent malformed data.
+The responder runs an independent local MDVRP solve over its own `local_frontiers` before accepting a request, rather than rubber-stamping the requester's proposal. This makes rejections meaningful: a reject indicates the two robots' local observations have diverged, not just that the requester sent malformed data.
 
-In practice, transient divergence happens at startup and during the brief windows when one robot's frontier marker stream is fresher than
-the other's. Observed behaviour:
+In practice, transient divergence happens at startup and during the brief windows when one robot's frontier marker stream is fresher than the other's. Observed behaviour:
 1. Requester sends a proposal containing frontiers it has just observed.
 2. Responder has not yet received the matching markers (or has a slightly different set) and rejects with `frontier_unknown_locally`.
-3. Requester backs off (`request_reject_backoff_sec`), local state catches up via the next marker callback, and the next negotiation
-   attempt succeeds.
+3. Requester backs off (`request_reject_backoff_sec`), local state catches up via the next marker callback, and the next negotiation attempt succeeds.
 
-This recovery happens automatically without any explicit coordination of the underlying marker stream. The responder's view of "what
-frontiers exist" is treated as ground truth from its perspective, and the protocol converges once both views align. The system therefore
-degrades gracefully when local observations briefly diverge, which is the intended decentralisation property: each robot trusts only what it
-can verify locally.
+This recovery happens automatically without any explicit coordination of the underlying marker stream. The responder's view of "what frontiers exist" is treated as ground truth from its perspective, and the protocol converges once both views align. The system therefore degrades gracefully when local observations briefly diverge, which is the intended decentralisation property: each robot trusts only what it can verify locally.
 
-Verified in Chunk C testing: request_id=robot_a-1 was rejected with `frontier_unknown_locally`, robot_a backed off for 2 s, and
-request_id=robot_a-2 succeeded once both robots' frontier sets had converged.
+Verified in Chunk C testing: request_id=robot_a-1 was rejected with `frontier_unknown_locally`, robot_a backed off for 2 s, and request_id=robot_a-2 succeeded once both robots' frontier sets had converged. This indicates transient divergence between the requester and responder's local frontier observations. The responder correctly refused to commit claims it could not verify locally, while the requester backed off and retried successfully once state had converged. This is desirable decentralised behaviour: inconsistent local observations lead to rejection and retry, not silent commitment to unverifiable assignments.
 
 ### Known: accept-side suppression depends on PeerState heartbeat timing
-When a robot accepts an incoming NegotiationRequest, it updates its own `own_claims` immediately but waits for the next PeerState
-heartbeat (up to ~500 ms at 2 Hz) before its view of the peer's claims is refreshed. During that window, the requester-side suppression check
-in `_tick_requester_state` sees a stale `peer_claims` entry and can fire a redundant outgoing request, which the peer then accepts (since
-the proposal agrees with the just-committed allocation).
+When a robot accepts an incoming NegotiationRequest, it updates its own `own_claims` immediately but waits for the next PeerState heartbeat (up to ~500 ms at 2 Hz) before its view of the peer's claims is refreshed. During that window, the requester-side suppression check in `_tick_requester_state` sees a stale `peer_claims` entry and can fire a redundant outgoing request, which the peer then accepts (since the proposal agrees with the just-committed allocation).
 
-This is correctness-preserving but produces extra protocol traffic. Chunk D will eliminate it by caching `msg.requester_claims` into
-`self.peer_claims[msg.requester_id]` at the moment of accept, rather than waiting for the next heartbeat.
+This is correctness-preserving but produces extra protocol traffic. Chunk D will eliminate it by caching `msg.requester_claims` into `self.peer_claims[msg.requester_id]` at the moment of accept, rather than waiting for the next heartbeat.
 
 ## Status
 - [X] Verify centralisation in cfpa2_coordinator_node.py
