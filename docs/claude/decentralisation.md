@@ -339,6 +339,7 @@ Following the Chunk D cleanup, `own_claims` is committed only via negotiated acc
   - [X] Chunk B: requester state machine
   - [X] Chunk C: responder validation + accept/reject
   - [X] Chunk D: replace interim MDVRP auto-claim path
+  - [ ] Optional: crossing-request stress test
 - [X] Claim management: storage, expiry, and peer-claim blocking implemented/tested
 - [X] Frontier management: local frontier ingestion from CFPA2 MarkerArray and peer-claim filtering implemented
 - [X] MDVRP-generated own-claim proposal
