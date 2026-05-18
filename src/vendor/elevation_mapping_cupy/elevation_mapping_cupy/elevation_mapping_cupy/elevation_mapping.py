@@ -150,12 +150,16 @@ class ElevationMap:
             # backend on Blackwell sm_120 — torch 2.7.1 ships sm_50..sm_90
             # cubins only, so torch.cat fails with no kernel image. cupy
             # works fine on sm_120 (per cmu_env w/ nvrtc-cu12==12.9.86).
+            # Env override ELEVATION_MAPPING_FORCE_CUPY=1 always picks cupy
+            # (used on Jetson Orin where we don't install PyTorch).
+            import os as _os
+            force_cupy = _os.environ.get("ELEVATION_MAPPING_FORCE_CUPY", "0") == "1"
             try:
                 cc = cp.cuda.runtime.getDeviceProperties(0)
                 cc_major = int(cc.get("major", 0))
             except Exception:
                 cc_major = 0
-            if cc_major >= 10:
+            if force_cupy or cc_major >= 10:
                 self.traversability_filter = get_filter_cupy(
                     param.w1, param.w2, param.w3, param.w_out
                 )

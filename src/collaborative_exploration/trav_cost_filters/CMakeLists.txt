@@ -17,6 +17,10 @@ find_package(grid_map_core REQUIRED)
 find_package(grid_map_msgs REQUIRED)
 find_package(grid_map_ros REQUIRED)
 find_package(grid_map_filters REQUIRED)
+find_package(nav_msgs REQUIRED)
+find_package(tf2 REQUIRED)
+find_package(tf2_ros REQUIRED)
+find_package(geometry_msgs REQUIRED)
 
 # C++ executable: filter_chain_runner
 add_executable(filter_chain_runner src/filter_chain_runner.cpp)
@@ -29,7 +33,21 @@ ament_target_dependencies(filter_chain_runner
   grid_map_filters
 )
 
-install(TARGETS filter_chain_runner
+# C++ executable: grid_map_to_occupancy_grid_cpp
+# Port of trav_cost_filters/grid_map_to_occupancy_grid.py (Python @ 0.59 Hz
+# on Orin Nano was a real bottleneck; the C++ port targets ~5 Hz).
+# Same param contract + topic names — drop-in replacement.
+add_executable(grid_map_to_occupancy_grid_cpp src/grid_map_to_occupancy_grid_node.cpp)
+ament_target_dependencies(grid_map_to_occupancy_grid_cpp
+  rclcpp
+  grid_map_msgs
+  nav_msgs
+  tf2
+  tf2_ros
+  geometry_msgs
+)
+
+install(TARGETS filter_chain_runner grid_map_to_occupancy_grid_cpp
   DESTINATION lib/${PROJECT_NAME}
 )
 

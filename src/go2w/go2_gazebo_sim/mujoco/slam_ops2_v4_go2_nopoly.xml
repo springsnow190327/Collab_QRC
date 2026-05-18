@@ -1,0 +1,1543 @@
+<mujoco model="slam_ops2_v4_go2_real">
+  <!-- demo1_go2_real: Menagerie Go2 (calf-tip centered feet) + demo1 world (12×8m).
+       Replaces demo1_go2.xml (broken stripped-Go2W: foot sphere offset ±4 cm sideways
+       from calf centerline broke CHAMP gait). Menagerie body has foot collision at
+       pos="-0.002 0 -0.213" via default class="foot" — geometrically consistent with
+       the real Go2 foot position, so CHAMP locomotion works without re-tuning. -->
+  <compiler angle="radian" meshdir="assets/go2_menagerie" autolimits="true"/>
+
+  <option timestep="0.002" gravity="0 0 -9.81" integrator="implicitfast"
+          cone="elliptic" impratio="100"/>
+
+  <statistic center="6 0 0.5" extent="8"/>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="-130" elevation="-20" offwidth="1920" offheight="1080"/>
+    <quality shadowsize="4096" offsamples="8"/>
+    <map shadowscale="0.5" shadowclip="1"/>
+  </visual>
+
+  <default>
+    <default class="go2">
+      <geom friction="0.6" margin="0.001" condim="1"/>
+      <joint axis="0 1 0" damping="2" armature="0.01" frictionloss="0.2"/>
+      <motor ctrlrange="-23.7 23.7"/>
+      <default class="abduction">
+        <joint axis="1 0 0" range="-1.0472 1.0472"/>
+      </default>
+      <default class="hip">
+        <default class="front_hip">
+          <joint range="-1.5708 3.4907"/>
+        </default>
+        <default class="back_hip">
+          <joint range="-0.5236 4.5379"/>
+        </default>
+      </default>
+      <default class="knee">
+        <joint range="-2.7227 -0.83776"/>
+        <motor ctrlrange="-45.43 45.43"/>
+      </default>
+      <default class="visual">
+        <geom type="mesh" contype="0" conaffinity="0" group="2"/>
+      </default>
+      <default class="collision">
+        <geom group="3"/>
+        <default class="foot">
+          <geom size="0.022" pos="-0.002 0 -0.213" priority="1"
+                solimp="0.015 1 0.022" condim="6"
+                friction="0.8 0.02 0.01"/>
+        </default>
+      </default>
+    </default>
+    <default class="world">
+      <geom contype="1" conaffinity="1"/>
+    </default>
+  </default>
+
+  <asset>
+    <!-- Skybox -->
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0"
+             width="512" height="3072"/>
+
+    <!-- Ground -->
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge"
+             rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8"
+             width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true"
+              texrepeat="5 5" reflectance="0.2"/>
+
+    <!-- Robot materials (Menagerie palette) -->
+    <material name="metal" rgba=".9 .95 .95 1"/>
+    <material name="black" rgba="0 0 0 1"/>
+    <material name="white" rgba="1 1 1 1"/>
+    <material name="gray" rgba="0.671705 0.692426 0.774270 1"/>
+
+    <!-- Robot meshes (Menagerie OBJ) -->
+    <mesh file="base_0.obj"/>
+    <mesh file="base_1.obj"/>
+    <mesh file="base_2.obj"/>
+    <mesh file="base_3.obj"/>
+    <mesh file="base_4.obj"/>
+    <mesh file="hip_0.obj"/>
+    <mesh file="hip_1.obj"/>
+    <mesh file="thigh_0.obj"/>
+    <mesh file="thigh_1.obj"/>
+    <mesh file="thigh_mirror_0.obj"/>
+    <mesh file="thigh_mirror_1.obj"/>
+    <mesh file="calf_0.obj"/>
+    <mesh file="calf_1.obj"/>
+    <mesh file="calf_mirror_0.obj"/>
+    <mesh file="calf_mirror_1.obj"/>
+    <mesh file="foot.obj"/>
+
+    <!-- World materials -->
+    <material name="wall_mat" rgba="0.7 0.7 0.75 1"/>
+    <material name="divider_mat" rgba="0.8 0.7 0.6 1"/>
+    <material name="green_mat" rgba="0.0 1.0 0.0 1" specular="0.3"/>
+    <material name="obstacle_mat" rgba="0.6 0.5 0.4 1"/>
+    <!-- v4 DBSCAN-cleaned single mesh (982k v / 2M tri).
+         Path is absolute because <mesh file=> is resolved relative to
+         <compiler meshdir="assets/go2_menagerie">, and the scene mesh
+         lives outside that directory. -->
+    <!-- Decimated to 150k tri (4.5 MB) for sim use. 2M → 400k → 150k.
+         MuJoCo per-frame rendering + lidar raycast scales with tri count;
+         150k keeps the visual character but lifts CPU pressure substantially. -->
+    <mesh name="ops2_v4" file="../../../../bags/meshes/ops2_cuda/scans_v4_sparse.obj"/>
+    <!-- Hard-collision via heightfield. Obstacle mesh (floor stripped) →
+         top-down rasterised per 0.10 m cell → max z per cell → PNG. Walls
+         become vertical extrusions, corridors stay free, ZERO convex hull
+         engulfing problem. 13.4% cells touched (= wall + obstacle XY area).
+         size attrs: rx ry zmax zbase (m). -->
+    <hfield name="ops2_v4_hfield"
+            file="../../../../bags/meshes/ops2_cuda/hfield/ops2_v4_hfield.png"
+            size="41.189 16.958 4.000 0.05"
+            nrow="340" ncol="824"/>
+
+
+    <!-- ===== Sonata instances (5 real objects, z<1.5m filter) ===== -->
+    <mesh name="ops2_inst_otherfurniture_0001_p000" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0001_p000.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0001_p001" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0001_p001.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0001_p002" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0001_p002.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0001_p003" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0001_p003.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0001_p004" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0001_p004.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0001_p005" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0001_p005.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0001_p006" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0001_p006.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0001_p007" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0001_p007.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0001_p008" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0001_p008.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0001_p009" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0001_p009.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0001_p010" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0001_p010.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0001_p011" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0001_p011.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0001_p012" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0001_p012.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0001_p013" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0001_p013.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0001_p014" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0001_p014.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0001_p015" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0001_p015.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0001_p016" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0001_p016.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0001_p017" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0001_p017.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0001_p018" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0001_p018.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0001_p019" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0001_p019.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0001_p020" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0001_p020.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0001_p021" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0001_p021.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0001_p022" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0001_p022.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0001_p023" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0001_p023.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0001_p024" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0001_p024.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0001_p025" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0001_p025.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0001_p026" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0001_p026.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0001_p027" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0001_p027.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0001_p028" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0001_p028.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0001_p029" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0001_p029.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0001_p030" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0001_p030.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0001_p031" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0001_p031.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p000" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p000.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p001" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p001.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p002" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p002.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p003" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p003.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p004" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p004.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p005" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p005.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p006" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p006.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p007" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p007.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p008" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p008.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p009" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p009.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p010" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p010.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p011" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p011.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p012" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p012.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p013" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p013.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p014" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p014.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p015" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p015.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p016" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p016.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p017" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p017.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p018" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p018.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p019" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p019.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p020" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p020.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p021" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p021.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p022" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p022.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p023" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p023.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p024" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p024.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p025" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p025.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p026" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p026.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p027" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p027.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p028" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p028.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p029" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p029.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p030" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p030.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p031" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p031.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p032" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p032.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p033" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p033.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p034" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p034.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p035" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p035.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p036" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p036.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p037" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p037.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p038" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p038.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p039" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p039.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p040" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p040.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p041" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p041.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p042" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p042.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p043" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p043.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p044" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p044.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p045" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p045.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p046" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p046.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p047" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p047.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0002_p048" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0002_p048.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0003_p000" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0003_p000.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0003_p001" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0003_p001.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0003_p002" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0003_p002.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0003_p003" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0003_p003.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0003_p004" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0003_p004.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0003_p005" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0003_p005.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0003_p006" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0003_p006.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0003_p007" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0003_p007.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0003_p008" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0003_p008.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0003_p009" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0003_p009.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0003_p010" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0003_p010.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0003_p011" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0003_p011.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0003_p012" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0003_p012.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0003_p013" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0003_p013.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0003_p014" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0003_p014.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0003_p015" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0003_p015.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0003_p016" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0003_p016.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0003_p017" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0003_p017.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0003_p018" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0003_p018.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0003_p019" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0003_p019.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0003_p020" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0003_p020.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0003_p021" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0003_p021.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0003_p022" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0003_p022.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0003_p023" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0003_p023.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0003_p024" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0003_p024.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0003_p025" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0003_p025.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0003_p026" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0003_p026.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0003_p027" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0003_p027.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0003_p028" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0003_p028.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0003_p029" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0003_p029.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0003_p030" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0003_p030.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0003_p031" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0003_p031.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0003_p032" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0003_p032.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0003_p033" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0003_p033.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0003_p034" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0003_p034.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0003_p035" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0003_p035.obj"/>
+    <mesh name="ops2_inst_otherfurniture_0003_p036" file="../../../../bags/meshes/ops2_cuda/sonata/instances/meshes/ops2_inst_otherfurniture_0003_p036.obj"/>
+
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 6" dir="0 0 -1" diffuse="0.7 0.7 0.7"/>
+
+    <!-- v4 DBSCAN-cleaned single visual mesh.
+         contype=0 conaffinity=0  → visual reference only.
+         Collision is handled by the heightfield geom below. -->
+    <geom name="ops2_v4_visual" type="mesh" mesh="ops2_v4"
+          pos="0 0 0.0"
+          rgba="0.65 0.65 0.70 0.85" contype="0" conaffinity="0"/>
+
+    <!-- PolyFit-style wall primitives. 19 oriented thin AABB boxes
+         extracted from the obstacle point cloud via iterative RANSAC
+         (filtered to |n_z| < 0.5 = walls + steep slopes). Each box is
+         5cm thick along its plane normal; collision is exact AABB,
+         CPU-cheapest geometry in MuJoCo. Replaces the heightfield
+         approach which was correct but heavier. -->
+    <!-- polyfit walls removed in this variant -->
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    <geom name="floor" type="plane" size="50 50 0.1" material="groundplane"
+          class="world" pos="0 0 0"/>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    <body name="base_link" pos="0 0 0.32" childclass="go2">
+      <inertial pos="0.021112 0 -0.005366" quat="-0.000543471 0.713435 -0.00173769 0.700719"
+        mass="6.921" diaginertia="0.107027 0.0980771 0.0244531"/>
+      <freejoint name="root"/>
+
+      <!-- Base visual meshes -->
+      <geom mesh="base_0" material="black" class="visual"/>
+      <geom mesh="base_1" material="black" class="visual"/>
+      <geom mesh="base_2" material="black" class="visual"/>
+      <geom mesh="base_3" material="white" class="visual"/>
+      <geom mesh="base_4" material="gray" class="visual"/>
+      <!-- Base collisions -->
+      <geom name="base_collision" size="0.1881 0.04675 0.057" type="box" class="collision"/>
+      <geom name="head_upper_collision" size="0.05 0.045" pos="0.285 0 0.01" type="cylinder" class="collision"/>
+      <geom name="head_lower_collision" size="0.047" pos="0.293 0 -0.06" class="collision"/>
+
+      <!-- Body-frame site for ground-truth pose sensors -->
+      <site name="base_link_site" pos="0 0 0" size="0.01"/>
+
+      <!-- IMU site -->
+      <site name="imu" pos="-0.02557 0 0.04232" size="0.01"/>
+
+      <!-- Livox MID-360 site (matches URDF chain base→imu→livox_mid360_base;
+           pos = imu_pos + livox_offset = (-0.02557+0.1870, 0, 0.04232+0.0803)) -->
+      <!-- Mid-360 mount tilt: pitch 0.263591 rad (15.10°) + roll -0.036809 rad. Matches real-robot calibration (scripts/real/onboard_fastlio_noetic.sh:258, 2026-04-17). quat = ROS RPY (Rz*Ry*Rx). -->
+      <site name="livox_mid360" pos="0.16143 0 0.12262" quat="0.991160 -0.018244 0.131392 0.002418" size="0.01"/>
+
+      <!-- Front camera: mounted at Head_upper (0.285,0,0.01), offset fwd+down,
+           pitched 5° down. MuJoCo camera looks along -Z; xyaxes rotates to +X. -->
+      <camera name="front_camera" pos="0.30 0 -0.01"
+              xyaxes="0 -1 0 0.0872 0 0.9962"
+              fovy="80" resolution="1280 720" mode="fixed"/>
+
+      <!-- ====== Front-Left leg ====== -->
+      <body name="FL_hip" pos="0.1934 0.0465 0">
+        <inertial pos="-0.0054 0.00194 -0.000105" quat="0.497014 0.499245 0.505462 0.498237"
+          mass="0.678" diaginertia="0.00088403 0.000596003 0.000479967"/>
+        <joint name="FL_hip_joint" class="abduction"/>
+        <geom mesh="hip_0" material="metal" class="visual"/>
+        <geom mesh="hip_1" material="gray" class="visual"/>
+        <geom name="FL_hip_collision" size="0.046 0.02" pos="0 0.08 0" quat="1 1 0 0"
+              type="cylinder" class="collision"/>
+        <body name="FL_thigh" pos="0 0.0955 0">
+          <inertial pos="-0.00374 -0.0223 -0.0327" quat="0.829533 0.0847635 -0.0200632 0.551623"
+            mass="1.152" diaginertia="0.00594973 0.00584149 0.000878787"/>
+          <joint name="FL_thigh_joint" class="front_hip"/>
+          <geom mesh="thigh_0" material="metal" class="visual"/>
+          <geom mesh="thigh_1" material="gray" class="visual"/>
+          <geom name="FL_thigh_collision" size="0.1065 0.01225 0.017" pos="0 0 -0.1065"
+                quat="0.707107 0 0.707107 0" type="box" class="collision"/>
+          <body name="FL_calf" pos="0 0 -0.213">
+            <inertial pos="0.00629595 -0.000622121 -0.141417"
+              quat="0.710672 0.00154099 -0.00450087 0.703508"
+              mass="0.241352" diaginertia="0.0014901 0.00146356 5.31397e-05"/>
+            <joint name="FL_calf_joint" class="knee"/>
+            <geom mesh="calf_0" material="gray" class="visual"/>
+            <geom mesh="calf_1" material="black" class="visual"/>
+            <geom name="FL_calf_upper_collision" size="0.012 0.06" pos="0.008 0 -0.06"
+                  quat="0.994493 0 -0.104807 0" type="cylinder" class="collision"/>
+            <geom name="FL_calf_lower_collision" size="0.011 0.0325" pos="0.02 0 -0.148"
+                  quat="0.999688 0 0.0249974 0" type="cylinder" class="collision"/>
+            <geom pos="0 0 -0.213" mesh="foot" class="visual" material="black"/>
+            <geom name="FL" class="foot"/>
+            <site name="FL_foot_site" pos="-0.002 0 -0.213" size="0.01"/>
+          </body>
+        </body>
+      </body>
+
+      <!-- ====== Front-Right leg ====== -->
+      <body name="FR_hip" pos="0.1934 -0.0465 0">
+        <inertial pos="-0.0054 -0.00194 -0.000105" quat="0.498237 0.505462 0.499245 0.497014"
+          mass="0.678" diaginertia="0.00088403 0.000596003 0.000479967"/>
+        <joint name="FR_hip_joint" class="abduction"/>
+        <geom mesh="hip_0" material="metal" class="visual" quat="4.63268e-05 1 0 0"/>
+        <geom mesh="hip_1" material="gray" class="visual" quat="4.63268e-05 1 0 0"/>
+        <geom name="FR_hip_collision" size="0.046 0.02" pos="0 -0.08 0"
+              quat="0.707107 0.707107 0 0" type="cylinder" class="collision"/>
+        <body name="FR_thigh" pos="0 -0.0955 0">
+          <inertial pos="-0.00374 0.0223 -0.0327" quat="0.551623 -0.0200632 0.0847635 0.829533"
+            mass="1.152" diaginertia="0.00594973 0.00584149 0.000878787"/>
+          <joint name="FR_thigh_joint" class="front_hip"/>
+          <geom mesh="thigh_mirror_0" material="metal" class="visual"/>
+          <geom mesh="thigh_mirror_1" material="gray" class="visual"/>
+          <geom name="FR_thigh_collision" size="0.1065 0.01225 0.017" pos="0 0 -0.1065"
+                quat="0.707107 0 0.707107 0" type="box" class="collision"/>
+          <body name="FR_calf" pos="0 0 -0.213">
+            <inertial pos="0.00629595 0.000622121 -0.141417"
+              quat="0.703508 -0.00450087 0.00154099 0.710672"
+              mass="0.241352" diaginertia="0.0014901 0.00146356 5.31397e-05"/>
+            <joint name="FR_calf_joint" class="knee"/>
+            <geom mesh="calf_mirror_0" material="gray" class="visual"/>
+            <geom mesh="calf_mirror_1" material="black" class="visual"/>
+            <geom name="FR_calf_upper_collision" size="0.013 0.06" pos="0.01 0 -0.06"
+                  quat="0.995004 0 -0.0998334 0" type="cylinder" class="collision"/>
+            <geom name="FR_calf_lower_collision" size="0.011 0.0325" pos="0.02 0 -0.148"
+                  quat="0.999688 0 0.0249974 0" type="cylinder" class="collision"/>
+            <geom pos="0 0 -0.213" mesh="foot" class="visual" material="black"/>
+            <geom name="FR" class="foot"/>
+            <site name="FR_foot_site" pos="-0.002 0 -0.213" size="0.01"/>
+          </body>
+        </body>
+      </body>
+
+      <!-- ====== Rear-Left leg ====== -->
+      <body name="RL_hip" pos="-0.1934 0.0465 0">
+        <inertial pos="0.0054 0.00194 -0.000105" quat="0.505462 0.498237 0.497014 0.499245"
+          mass="0.678" diaginertia="0.00088403 0.000596003 0.000479967"/>
+        <joint name="RL_hip_joint" class="abduction"/>
+        <geom mesh="hip_0" material="metal" class="visual" quat="4.63268e-05 0 1 0"/>
+        <geom mesh="hip_1" material="gray" class="visual" quat="4.63268e-05 0 1 0"/>
+        <geom name="RL_hip_collision" size="0.046 0.02" pos="0 0.08 0"
+              quat="0.707107 0.707107 0 0" type="cylinder" class="collision"/>
+        <body name="RL_thigh" pos="0 0.0955 0">
+          <inertial pos="-0.00374 -0.0223 -0.0327" quat="0.829533 0.0847635 -0.0200632 0.551623"
+            mass="1.152" diaginertia="0.00594973 0.00584149 0.000878787"/>
+          <joint name="RL_thigh_joint" class="back_hip"/>
+          <geom mesh="thigh_0" material="metal" class="visual"/>
+          <geom mesh="thigh_1" material="gray" class="visual"/>
+          <geom name="RL_thigh_collision" size="0.1065 0.01225 0.017" pos="0 0 -0.1065"
+                quat="0.707107 0 0.707107 0" type="box" class="collision"/>
+          <body name="RL_calf" pos="0 0 -0.213">
+            <inertial pos="0.00629595 -0.000622121 -0.141417"
+              quat="0.710672 0.00154099 -0.00450087 0.703508"
+              mass="0.241352" diaginertia="0.0014901 0.00146356 5.31397e-05"/>
+            <joint name="RL_calf_joint" class="knee"/>
+            <geom mesh="calf_0" material="gray" class="visual"/>
+            <geom mesh="calf_1" material="black" class="visual"/>
+            <geom name="RL_calf_upper_collision" size="0.013 0.06" pos="0.01 0 -0.06"
+                  quat="0.995004 0 -0.0998334 0" type="cylinder" class="collision"/>
+            <geom name="RL_calf_lower_collision" size="0.011 0.0325" pos="0.02 0 -0.148"
+                  quat="0.999688 0 0.0249974 0" type="cylinder" class="collision"/>
+            <geom pos="0 0 -0.213" mesh="foot" class="visual" material="black"/>
+            <geom name="RL" class="foot"/>
+            <site name="RL_foot_site" pos="-0.002 0 -0.213" size="0.01"/>
+          </body>
+        </body>
+      </body>
+
+      <!-- ====== Rear-Right leg ====== -->
+      <body name="RR_hip" pos="-0.1934 -0.0465 0">
+        <inertial pos="0.0054 -0.00194 -0.000105" quat="0.499245 0.497014 0.498237 0.505462"
+          mass="0.678" diaginertia="0.00088403 0.000596003 0.000479967"/>
+        <joint name="RR_hip_joint" class="abduction"/>
+        <geom mesh="hip_0" material="metal" class="visual"
+              quat="2.14617e-09 4.63268e-05 4.63268e-05 -1"/>
+        <geom mesh="hip_1" material="gray" class="visual"
+              quat="2.14617e-09 4.63268e-05 4.63268e-05 -1"/>
+        <geom name="RR_hip_collision" size="0.046 0.02" pos="0 -0.08 0"
+              quat="0.707107 0.707107 0 0" type="cylinder" class="collision"/>
+        <body name="RR_thigh" pos="0 -0.0955 0">
+          <inertial pos="-0.00374 0.0223 -0.0327" quat="0.551623 -0.0200632 0.0847635 0.829533"
+            mass="1.152" diaginertia="0.00594973 0.00584149 0.000878787"/>
+          <joint name="RR_thigh_joint" class="back_hip"/>
+          <geom mesh="thigh_mirror_0" material="metal" class="visual"/>
+          <geom mesh="thigh_mirror_1" material="gray" class="visual"/>
+          <geom name="RR_thigh_collision" size="0.1065 0.01225 0.017" pos="0 0 -0.1065"
+                quat="0.707107 0 0.707107 0" type="box" class="collision"/>
+          <body name="RR_calf" pos="0 0 -0.213">
+            <inertial pos="0.00629595 0.000622121 -0.141417"
+              quat="0.703508 -0.00450087 0.00154099 0.710672"
+              mass="0.241352" diaginertia="0.0014901 0.00146356 5.31397e-05"/>
+            <joint name="RR_calf_joint" class="knee"/>
+            <geom mesh="calf_mirror_0" material="gray" class="visual"/>
+            <geom mesh="calf_mirror_1" material="black" class="visual"/>
+            <geom name="RR_calf_upper_collision" size="0.013 0.06" pos="0.01 0 -0.06"
+                  quat="0.995004 0 -0.0998334 0" type="cylinder" class="collision"/>
+            <geom name="RR_calf_lower_collision" size="0.011 0.0325" pos="0.02 0 -0.148"
+                  quat="0.999688 0 0.0249974 0" type="cylinder" class="collision"/>
+            <geom pos="0 0 -0.213" mesh="foot" class="visual" material="black"/>
+            <geom name="RR" class="foot"/>
+            <site name="RR_foot_site" pos="-0.002 0 -0.213" size="0.01"/>
+          </body>
+        </body>
+      </body>
+    </body>
+
+
+    <!-- ===== Sonata instance collisions ===== -->
+    <geom name="ops2_inst_bathtub_0000" type="box" pos="6.1388 -2.2795 -0.2280" size="0.6024 0.5669 0.0756" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0001_p000_g" type="mesh" mesh="ops2_inst_otherfurniture_0001_p000" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0001_p001_g" type="mesh" mesh="ops2_inst_otherfurniture_0001_p001" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0001_p002_g" type="mesh" mesh="ops2_inst_otherfurniture_0001_p002" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0001_p003_g" type="mesh" mesh="ops2_inst_otherfurniture_0001_p003" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0001_p004_g" type="mesh" mesh="ops2_inst_otherfurniture_0001_p004" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0001_p005_g" type="mesh" mesh="ops2_inst_otherfurniture_0001_p005" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0001_p006_g" type="mesh" mesh="ops2_inst_otherfurniture_0001_p006" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0001_p007_g" type="mesh" mesh="ops2_inst_otherfurniture_0001_p007" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0001_p008_g" type="mesh" mesh="ops2_inst_otherfurniture_0001_p008" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0001_p009_g" type="mesh" mesh="ops2_inst_otherfurniture_0001_p009" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0001_p010_g" type="mesh" mesh="ops2_inst_otherfurniture_0001_p010" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0001_p011_g" type="mesh" mesh="ops2_inst_otherfurniture_0001_p011" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0001_p012_g" type="mesh" mesh="ops2_inst_otherfurniture_0001_p012" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0001_p013_g" type="mesh" mesh="ops2_inst_otherfurniture_0001_p013" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0001_p014_g" type="mesh" mesh="ops2_inst_otherfurniture_0001_p014" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0001_p015_g" type="mesh" mesh="ops2_inst_otherfurniture_0001_p015" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0001_p016_g" type="mesh" mesh="ops2_inst_otherfurniture_0001_p016" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0001_p017_g" type="mesh" mesh="ops2_inst_otherfurniture_0001_p017" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0001_p018_g" type="mesh" mesh="ops2_inst_otherfurniture_0001_p018" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0001_p019_g" type="mesh" mesh="ops2_inst_otherfurniture_0001_p019" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0001_p020_g" type="mesh" mesh="ops2_inst_otherfurniture_0001_p020" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0001_p021_g" type="mesh" mesh="ops2_inst_otherfurniture_0001_p021" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0001_p022_g" type="mesh" mesh="ops2_inst_otherfurniture_0001_p022" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0001_p023_g" type="mesh" mesh="ops2_inst_otherfurniture_0001_p023" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0001_p024_g" type="mesh" mesh="ops2_inst_otherfurniture_0001_p024" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0001_p025_g" type="mesh" mesh="ops2_inst_otherfurniture_0001_p025" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0001_p026_g" type="mesh" mesh="ops2_inst_otherfurniture_0001_p026" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0001_p027_g" type="mesh" mesh="ops2_inst_otherfurniture_0001_p027" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0001_p028_g" type="mesh" mesh="ops2_inst_otherfurniture_0001_p028" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0001_p029_g" type="mesh" mesh="ops2_inst_otherfurniture_0001_p029" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0001_p030_g" type="mesh" mesh="ops2_inst_otherfurniture_0001_p030" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0001_p031_g" type="mesh" mesh="ops2_inst_otherfurniture_0001_p031" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p000_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p000" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p001_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p001" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p002_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p002" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p003_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p003" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p004_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p004" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p005_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p005" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p006_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p006" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p007_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p007" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p008_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p008" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p009_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p009" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p010_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p010" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p011_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p011" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p012_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p012" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p013_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p013" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p014_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p014" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p015_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p015" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p016_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p016" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p017_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p017" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p018_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p018" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p019_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p019" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p020_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p020" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p021_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p021" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p022_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p022" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p023_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p023" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p024_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p024" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p025_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p025" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p026_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p026" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p027_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p027" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p028_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p028" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p029_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p029" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p030_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p030" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p031_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p031" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p032_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p032" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p033_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p033" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p034_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p034" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p035_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p035" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p036_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p036" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p037_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p037" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p038_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p038" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p039_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p039" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p040_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p040" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p041_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p041" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p042_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p042" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p043_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p043" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p044_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p044" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p045_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p045" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p046_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p046" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p047_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p047" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0002_p048_g" type="mesh" mesh="ops2_inst_otherfurniture_0002_p048" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0003_p000_g" type="mesh" mesh="ops2_inst_otherfurniture_0003_p000" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0003_p001_g" type="mesh" mesh="ops2_inst_otherfurniture_0003_p001" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0003_p002_g" type="mesh" mesh="ops2_inst_otherfurniture_0003_p002" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0003_p003_g" type="mesh" mesh="ops2_inst_otherfurniture_0003_p003" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0003_p004_g" type="mesh" mesh="ops2_inst_otherfurniture_0003_p004" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0003_p005_g" type="mesh" mesh="ops2_inst_otherfurniture_0003_p005" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0003_p006_g" type="mesh" mesh="ops2_inst_otherfurniture_0003_p006" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0003_p007_g" type="mesh" mesh="ops2_inst_otherfurniture_0003_p007" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0003_p008_g" type="mesh" mesh="ops2_inst_otherfurniture_0003_p008" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0003_p009_g" type="mesh" mesh="ops2_inst_otherfurniture_0003_p009" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0003_p010_g" type="mesh" mesh="ops2_inst_otherfurniture_0003_p010" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0003_p011_g" type="mesh" mesh="ops2_inst_otherfurniture_0003_p011" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0003_p012_g" type="mesh" mesh="ops2_inst_otherfurniture_0003_p012" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0003_p013_g" type="mesh" mesh="ops2_inst_otherfurniture_0003_p013" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0003_p014_g" type="mesh" mesh="ops2_inst_otherfurniture_0003_p014" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0003_p015_g" type="mesh" mesh="ops2_inst_otherfurniture_0003_p015" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0003_p016_g" type="mesh" mesh="ops2_inst_otherfurniture_0003_p016" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0003_p017_g" type="mesh" mesh="ops2_inst_otherfurniture_0003_p017" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0003_p018_g" type="mesh" mesh="ops2_inst_otherfurniture_0003_p018" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0003_p019_g" type="mesh" mesh="ops2_inst_otherfurniture_0003_p019" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0003_p020_g" type="mesh" mesh="ops2_inst_otherfurniture_0003_p020" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0003_p021_g" type="mesh" mesh="ops2_inst_otherfurniture_0003_p021" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0003_p022_g" type="mesh" mesh="ops2_inst_otherfurniture_0003_p022" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0003_p023_g" type="mesh" mesh="ops2_inst_otherfurniture_0003_p023" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0003_p024_g" type="mesh" mesh="ops2_inst_otherfurniture_0003_p024" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0003_p025_g" type="mesh" mesh="ops2_inst_otherfurniture_0003_p025" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0003_p026_g" type="mesh" mesh="ops2_inst_otherfurniture_0003_p026" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0003_p027_g" type="mesh" mesh="ops2_inst_otherfurniture_0003_p027" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0003_p028_g" type="mesh" mesh="ops2_inst_otherfurniture_0003_p028" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0003_p029_g" type="mesh" mesh="ops2_inst_otherfurniture_0003_p029" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0003_p030_g" type="mesh" mesh="ops2_inst_otherfurniture_0003_p030" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0003_p031_g" type="mesh" mesh="ops2_inst_otherfurniture_0003_p031" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0003_p032_g" type="mesh" mesh="ops2_inst_otherfurniture_0003_p032" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0003_p033_g" type="mesh" mesh="ops2_inst_otherfurniture_0003_p033" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0003_p034_g" type="mesh" mesh="ops2_inst_otherfurniture_0003_p034" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0003_p035_g" type="mesh" mesh="ops2_inst_otherfurniture_0003_p035" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0003_p036_g" type="mesh" mesh="ops2_inst_otherfurniture_0003_p036" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+    <geom name="ops2_inst_otherfurniture_0004" type="box" pos="1.5833 1.6119 1.8637" size="0.1380 0.0986 0.4241" rgba="0.5 0.6 0.4 0.6" contype="1" conaffinity="1" condim="3" friction="0.8 0.02 0.01"/>
+
+  </worldbody>
+
+  <!-- Actuators: 12 effort motors (no wheel actuators — pure Go2) -->
+  <actuator>
+    <motor class="abduction" name="FL_hip" joint="FL_hip_joint"/>
+    <motor class="hip" name="FL_thigh" joint="FL_thigh_joint"/>
+    <motor class="knee" name="FL_calf" joint="FL_calf_joint"/>
+    <motor class="abduction" name="FR_hip" joint="FR_hip_joint"/>
+    <motor class="hip" name="FR_thigh" joint="FR_thigh_joint"/>
+    <motor class="knee" name="FR_calf" joint="FR_calf_joint"/>
+    <motor class="abduction" name="RL_hip" joint="RL_hip_joint"/>
+    <motor class="hip" name="RL_thigh" joint="RL_thigh_joint"/>
+    <motor class="knee" name="RL_calf" joint="RL_calf_joint"/>
+    <motor class="abduction" name="RR_hip" joint="RR_hip_joint"/>
+    <motor class="hip" name="RR_thigh" joint="RR_thigh_joint"/>
+    <motor class="knee" name="RR_calf" joint="RR_calf_joint"/>
+  </actuator>
+
+  <!-- Sensors -->
+  <!-- Initial state. When env MUJOCO_INIT_KEYFRAME=home is set (RL-policy
+       launch does this), DFKI's mujoco_ros2_control plugin calls
+       mj_resetDataKeyframe to apply this qpos on startup. Without it the
+       default qpos is 0 for every joint — calves then extend straight down
+       through the ground at spawn, triggering an explosive contact that
+       flips the body forward. qpos layout:
+         [x, y, z, qw, qx, qy, qz,
+          FL_hip, FL_thigh, FL_calf, FR_hip, FR_thigh, FR_calf,
+          RL_hip, RL_thigh, RL_calf, RR_hip, RR_thigh, RR_calf]
+       Leg angles (0, 0.9, -1.8) are Menagerie Go2 home stance — body CoG
+       ≈ 0.27 m, feet at ground. -->
+  <keyframe>
+    <key name="home"
+         qpos="0.0 0.0 0.32 1 0 0 0 0 0.9 -1.8 0 0.9 -1.8 0 0.9 -1.8 0 0.9 -1.8"/>
+  </keyframe>
+
+  <sensor>
+    <accelerometer name="imu_accel" site="imu"/>
+    <gyro name="imu_gyro" site="imu"/>
+
+    <touch name="FL_foot_contact" site="FL_foot_site"/>
+    <touch name="FR_foot_contact" site="FR_foot_site"/>
+    <touch name="RL_foot_contact" site="RL_foot_site"/>
+    <touch name="RR_foot_contact" site="RR_foot_site"/>
+
+    <framepos name="base_pos" objtype="site" objname="base_link_site"/>
+    <framequat name="base_quat" objtype="site" objname="base_link_site"/>
+    <framelinvel name="base_linvel" objtype="site" objname="base_link_site"/>
+    <frameangvel name="base_angvel" objtype="site" objname="base_link_site"/>
+  </sensor>
+
+</mujoco>

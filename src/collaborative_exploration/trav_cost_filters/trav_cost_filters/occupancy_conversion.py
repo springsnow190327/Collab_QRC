@@ -7,6 +7,27 @@ import math
 import numpy as np
 
 
+def grid_map_layer_to_world_array(
+    data: np.ndarray,
+    *,
+    height: int,
+    width: int,
+    dtype=np.float32,
+) -> np.ndarray:
+    """Convert a GridMap flat layer into world XY row/column convention.
+
+    elevation_mapping_cupy publishes GridMap data with both axes ordered from
+    max to min.  The planning code uses row=y(min→max), col=x(min→max), matching
+    OccupancyGrid indexing and the selector geometry helpers.
+    """
+
+    expected = int(height) * int(width)
+    arr = np.asarray(data, dtype=dtype)
+    if arr.size != expected:
+        raise ValueError(f"GridMap layer has {arr.size} values, expected {expected}")
+    return arr.reshape(int(height), int(width))[::-1, ::-1]
+
+
 def traversability_to_occupancy(
     traversability: np.ndarray,
     *,
@@ -145,6 +166,80 @@ def apply_slope_verified_ramp_override(
     return n_changed
 
 
+def apply_cliff_proximity_cost(
+    occupancy: np.ndarray,
+    *,
+    step_height: np.ndarray,
+    resolution: float,
+    proximity_radius_m: float,
+    step_threshold_m: float,
+    step_saturation_m: float,
+    max_cost: int,
+) -> int:
+    """Raise cost for known cells near a local height discontinuity.
+
+    This models stability margin around cliffs/platform edges separately from
+    traversability.  A platform cell can be locally flat and still be unsafe if
+    a neighbouring cell has a large vertical drop within the robot's support
+    margin.  Unknown cells remain unknown and lethal cells stay lethal.
+    """
+
+    if resolution <= 0.0:
+        raise ValueError("resolution must be positive")
+    if proximity_radius_m <= 0.0:
+        return 0
+    if step_saturation_m <= step_threshold_m:
+        raise ValueError("step_saturation_m must be greater than step_threshold_m")
+    if max_cost < 0 or max_cost > 100:
+        raise ValueError("max_cost must be in [0, 100]")
+
+    grid = np.asarray(occupancy)
+    step = np.asarray(step_height, dtype=np.float32)
+    if grid.ndim != 2 or step.ndim != 2:
+        raise ValueError("occupancy and step_height must be 2D arrays")
+    if grid.shape != step.shape:
+        raise ValueError("occupancy and step_height must share shape")
+
+    finite_step = np.where(np.isfinite(step), step, -np.inf)
+    if not np.any(np.isfinite(finite_step)):
+        return 0
+
+    before = grid.copy()
+    local_max = np.full(step.shape, -np.inf, dtype=np.float32)
+    radius_cells = int(math.ceil(proximity_radius_m / resolution))
+
+    for dy in range(-radius_cells, radius_cells + 1):
+        for dx in range(-radius_cells, radius_cells + 1):
+            if math.hypot(dx * resolution, dy * resolution) > proximity_radius_m + 1e-9:
+                continue
+
+            src_y0 = max(0, -dy)
+            src_y1 = min(step.shape[0], step.shape[0] - dy)
+            src_x0 = max(0, -dx)
+            src_x1 = min(step.shape[1], step.shape[1] - dx)
+            if src_y0 >= src_y1 or src_x0 >= src_x1:
+                continue
+
+            dst_y0 = src_y0 + dy
+            dst_y1 = src_y1 + dy
+            dst_x0 = src_x0 + dx
+            dst_x1 = src_x1 + dx
+            local_max[dst_y0:dst_y1, dst_x0:dst_x1] = np.maximum(
+                local_max[dst_y0:dst_y1, dst_x0:dst_x1],
+                finite_step[src_y0:src_y1, src_x0:src_x1],
+            )
+
+    denom = step_saturation_m - step_threshold_m
+    risk = np.clip((local_max - step_threshold_m) / denom, 0.0, 1.0)
+    risk_cost = np.rint(risk * int(max_cost)).astype(np.int16)
+
+    known = grid >= 0
+    raised = known & (risk_cost > grid.astype(np.int16))
+    if np.any(raised):
+        grid[raised] = risk_cost[raised].astype(grid.dtype, copy=False)
+    return int(np.count_nonzero(grid != before))
+
+
 def project_rolling_grid_to_fixed_grid(
     rolling_occupancy: np.ndarray,
     fixed_occupancy: np.ndarray,
@@ -156,7 +251,7 @@ def project_rolling_grid_to_fixed_grid(
     fixed_origin_y: float,
     resolution: float,
     unknown_clears_history: bool = False,
-    occupied_cost_threshold: int = 80,
+    occupied_cost_threshold: int = 100,
     free_cost_threshold: int = 30,
     occupied_confirm_hits: int = 2,
     occupied_clear_hits: int = 0,

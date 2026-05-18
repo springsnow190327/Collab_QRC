@@ -277,6 +277,15 @@ class StuckWatchdog(Node):
         gx = self._latest_goal.pose.position.x
         gy = self._latest_goal.pose.position.y
         d2g = math.hypot(xs[-1] - gx, ys[-1] - gy)
+        # Goal-progress veto: even if absolute displacement is small, if
+        # the robot has measurably closed the gap to the goal over the
+        # window, it's making progress — don't trigger BackUp. CHAMP Go2 +
+        # MPPI on a noisy trav grid can crawl at 1-3 cm/s in a straight
+        # line; the old "moved<0.20m in 10s" criterion fired BackUp on
+        # genuine slow-but-steady forward motion.
+        d2g_oldest = math.hypot(xs[0] - gx, ys[0] - gy)
+        if d2g_oldest - d2g >= self.threshold_m:
+            return
         # If we're already effectively at an exploration goal, don't
         # recover; Nav2/CFPA2 should mark success or switch target soon.
         if d2g < self.goal_reached_radius:

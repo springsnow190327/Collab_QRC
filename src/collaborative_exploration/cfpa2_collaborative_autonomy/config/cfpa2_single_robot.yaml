@@ -58,17 +58,21 @@
     adaptive_max_skip_ticks: 3
     ig_dimension: 2d
     cfpa2_max_goal_distance_m: 2.5
-    ramp_ascent_enabled: true
+    # Ramp-ascent goals are an optional overlay feature. Keep the base CFPA2
+    # policy scene-agnostic; demo-specific ramp behavior must be enabled from a
+    # launch/config overlay that also supplies the ramp-goal publisher.
+    ramp_ascent_enabled: false
     ramp_ascent_goal_topic_suffix: /ramp_ascent_goal
     ramp_ascent_max_goal_distance_m: 5.0
-    ramp_ascent_goal_stale_sec: 8.0
-    ramp_ascent_require_grid_reachable: false
-    ramp_ascent_exclusive: true
-    ramp_ascent_ignore_blacklist: true
+    ramp_ascent_goal_stale_sec: 2.0
+    ramp_ascent_require_grid_reachable: true
+    ramp_ascent_reachability_occ_threshold: 100
+    ramp_ascent_exclusive: false
+    ramp_ascent_ignore_blacklist: false
     ramp_ascent_switch_min_dist_m: 0.25
     ramp_ascent_utility: 100000.0
-    ramp_ascent_corridor_lock_sec: 20.0
-    ramp_ascent_lock_min_x: 5.3
-    ramp_ascent_lock_max_x: 13.0
-    ramp_ascent_lock_max_abs_y: 1.2
+    ramp_ascent_corridor_lock_sec: 0.0
+    ramp_ascent_lock_min_x: -1000000000.0
+    ramp_ascent_lock_max_x: 1000000000.0
+    ramp_ascent_lock_max_abs_y: 1000000000.0
     startup_delay_sec: 24.0

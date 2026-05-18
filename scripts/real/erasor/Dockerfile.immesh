@@ -1,0 +1,28 @@
+# ImMesh (HKU-MARS) on top of the erasor:noetic image.
+# Build: docker build -t immesh:noetic -f scripts/real/erasor/Dockerfile.immesh scripts/real/erasor/
+FROM erasor:noetic
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+# ── ImMesh deps: CGAL + OpenGL stack + bridge bits ───────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libcgal-dev pcl-tools \
+      libgl-dev libglm-dev libglfw3-dev libglew-dev libglu1-mesa-dev \
+      libxkbcommon-x11-dev libxinerama-dev libxcursor-dev libxi-dev \
+      ros-noetic-cv-bridge ros-noetic-tf ros-noetic-message-filters \
+      ros-noetic-image-transport \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── clone + patch ImMesh into existing /ws ────────────────────────────
+RUN cd /ws/src \
+    && git clone https://github.com/hku-mars/ImMesh.git \
+    && cd ImMesh \
+    # ImMesh references livox_ros_driver (singular), already available in /ws
+    && echo "ImMesh cloned, ready to build"
+
+# ── build ────────────────────────────────────────────────────────────
+RUN /bin/bash -c "set -eo pipefail; source /opt/ros/noetic/setup.bash \
+    && source /ws/devel/setup.bash \
+    && cd /ws && catkin_make -DCMAKE_BUILD_TYPE=Release -j$(nproc) --pkg ImMesh"
+
+CMD ["bash"]

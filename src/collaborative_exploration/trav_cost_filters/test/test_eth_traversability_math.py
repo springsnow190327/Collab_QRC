@@ -4,9 +4,11 @@ import numpy as np
 import pytest
 
 from trav_cost_filters.eth_traversability import (
+    RampRescueThresholds,
     TraversabilityThresholds,
     classify_surface,
     plane_metrics,
+    ramp_rescue_score,
 )
 
 
@@ -51,3 +53,27 @@ def test_step_equation_vetoes_vertical_wall_or_cliff():
 
     assert not verdict.traversable
     assert verdict.score == 0.0
+
+
+def test_ramp_rescue_requires_slope_floor_before_overriding_cnn():
+    thresholds = RampRescueThresholds()
+
+    foot_transition = ramp_rescue_score(
+        math.radians(6.0),
+        step_residual_m=0.01,
+        thresholds=thresholds,
+    )
+    shallow_transition = ramp_rescue_score(
+        math.radians(9.0),
+        step_residual_m=0.0,
+        thresholds=thresholds,
+    )
+    clean_ramp = ramp_rescue_score(
+        math.radians(14.0),
+        step_residual_m=0.0,
+        thresholds=thresholds,
+    )
+
+    assert foot_transition == 0.0
+    assert shallow_transition < 0.60
+    assert clean_ramp >= 0.95

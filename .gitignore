@@ -105,6 +105,7 @@ imu_calib_data.yaml*
 # Bag / data directories
 # =============================================
 /bags/
+!/bags/meshes/
 /logs/
 /balm2_data/
 /balm2_carto_data/
@@ -249,3 +250,9 @@ realtek-r8126-dkms/
 /external/**/*.db3
 /external/**/*.mcap
 /external/**/*.pcd
+
+# =============================================
+# SLAM mesh pipeline intermediate outputs (regenerable)
+# =============================================
+/scripts/real/erasor/out/
+/src/go2w/go2_gazebo_sim/mujoco/assets/slam_ops2/hulls/

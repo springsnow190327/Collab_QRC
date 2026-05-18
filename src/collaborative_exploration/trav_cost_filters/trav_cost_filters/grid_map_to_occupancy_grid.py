@@ -37,8 +37,10 @@ from grid_map_msgs.msg import GridMap
 from nav_msgs.msg import OccupancyGrid
 
 from trav_cost_filters.occupancy_conversion import (
+    apply_cliff_proximity_cost,
     apply_rectangular_workspace_mask,
     apply_slope_verified_ramp_override,
+    grid_map_layer_to_world_array,
     project_rolling_grid_to_fixed_grid,
     stamp_free_disk,
     traversability_to_occupancy,
@@ -110,6 +112,48 @@ class GridMapToOccupancyGrid(Node):
         self.elevation_cost_max_value = int(
             self.declare_parameter("elevation_cost_max_value", 90).value
         )
+        # Stability margin around sharp vertical discontinuities. This is not
+        # obstacle detection; it raises the cost of known traversable cells near
+        # cliff/platform edges where the robot support polygon can tip.
+        self.cliff_proximity_cost_enabled = bool(
+            self.declare_parameter("cliff_proximity_cost_enabled", False).value
+        )
+        self.cliff_step_layer = str(
+            self.declare_parameter("cliff_step_layer", "step_height").value
+        )
+        self.cliff_proximity_radius_m = float(
+            self.declare_parameter("cliff_proximity_radius_m", 0.25).value
+        )
+        self.cliff_step_threshold_m = float(
+            self.declare_parameter("cliff_step_threshold_m", 0.30).value
+        )
+        self.cliff_step_saturation_m = float(
+            self.declare_parameter("cliff_step_saturation_m", 0.45).value
+        )
+        self.cliff_proximity_cost_max_value = int(
+            self.declare_parameter("cliff_proximity_cost_max_value", 90).value
+        )
+        # Upper-bound clearance (Miki et al. 2022, Sec. II-H). When the
+        # ray-cast-derived upper_bound is well below the cell's elevation
+        # reading, the elevation point came from an overhang above an
+        # observed-clear floor (bridge underside, ceiling) — reclassify
+        # such cells as free instead of letting them remain lethal.
+        self.upper_bound_clearance_enabled = bool(
+            self.declare_parameter("upper_bound_clearance_enabled", False).value
+        )
+        self.upper_bound_layer = str(
+            self.declare_parameter("upper_bound_layer", "upper_bound").value
+        )
+        # If elevation - upper_bound exceeds this, the elevation reading is
+        # treated as an overhang and the cell is cleared. 0.30m chosen so a
+        # small Kalman fusion artefact (~0.1m) doesn't trip it.
+        self.upper_bound_overhang_threshold_m = float(
+            self.declare_parameter("upper_bound_overhang_threshold_m", 0.30).value
+        )
+        # Cost to assign to cells flagged as overhang-over-floor. 0 = free.
+        self.upper_bound_clear_cost = int(
+            self.declare_parameter("upper_bound_clear_cost", 0).value
+        )
         self.fixed_grid_enabled = bool(
             self.declare_parameter("fixed_grid_enabled", False).value
         )
@@ -129,7 +173,7 @@ class GridMapToOccupancyGrid(Node):
             self.declare_parameter("unknown_clears_history", False).value
         )
         self.occupied_cost_threshold = int(
-            self.declare_parameter("occupied_cost_threshold", 80).value
+            self.declare_parameter("occupied_cost_threshold", 100).value
         )
         self.free_cost_threshold = int(
             self.declare_parameter("free_cost_threshold", 30).value
@@ -214,6 +258,7 @@ class GridMapToOccupancyGrid(Node):
             f"seed_robot_footprint={self.seed_robot_footprint} "
             f"robot_frame={self.robot_frame} radius={self.robot_seed_radius_m:.2f}m "
             f"ramp_override={self.ramp_override_enabled} "
+            f"cliff_proximity_cost={self.cliff_proximity_cost_enabled} "
             f"fixed_grid={self.fixed_grid_enabled}"
         )
 
@@ -228,16 +273,17 @@ class GridMapToOccupancyGrid(Node):
         data = np.array(msg.data[layer_idx].data, dtype=np.float32)
         if data.size != expected:
             return None
-        # GridMap column-major (outer=col=y-axis, inner=row=x-axis).
-        # col 0 = max-y, row 0 = max-x → flip both axes to get OG convention.
-        return data.reshape(n_y, n_x)[::-1, ::-1]
+        try:
+            return grid_map_layer_to_world_array(data, height=n_y, width=n_x)
+        except ValueError:
+            return None
 
     def _on_map(self, msg: GridMap) -> None:
         if self.traversability_layer not in msg.layers:
-            self.get_logger().warn_throttle(
-                self.get_clock(), 5000,
+            self.get_logger().warn(
                 f"layer '{self.traversability_layer}' not in GridMap; "
-                f"available: {list(msg.layers)}"
+                f"available: {list(msg.layers)}",
+                throttle_duration_sec=5.0,
             )
             return
 
@@ -252,9 +298,9 @@ class GridMapToOccupancyGrid(Node):
 
         data_float = np.array(msg.data[layer_idx].data, dtype=np.float32)
         if data_float.size != n_cells:
-            self.get_logger().warn_throttle(
-                self.get_clock(), 5000,
-                f"size mismatch: data={data_float.size} expected={n_cells}"
+            self.get_logger().warn(
+                f"size mismatch: data={data_float.size} expected={n_cells}",
+                throttle_duration_sec=5.0,
             )
             return
 
@@ -262,7 +308,7 @@ class GridMapToOccupancyGrid(Node):
         # inner dim = row index (x-axis), row 0 = max-x.
         # Flip both axes to produce OccupancyGrid layout where
         # arr[r, c] = world (ox + c*res, oy + r*res).
-        trav = data_float.reshape(n_y, n_x)[::-1, ::-1]
+        trav = grid_map_layer_to_world_array(data_float, height=n_y, width=n_x)
 
         cost = traversability_to_occupancy(
             trav,
@@ -303,6 +349,49 @@ class GridMapToOccupancyGrid(Node):
                 valid = (cost >= 0)
                 merged = np.where(valid, np.maximum(cost.astype(np.int16), h_cost), -1)
                 cost = merged.astype(np.int8)
+
+        # Overhang clearance via upper_bound (paper Sec. II-H). Applied
+        # BEFORE cliff/proximity costs so a cell rescued as walk-under-bridge
+        # isn't subsequently re-penalised by an apparent step at its edge
+        # (the overhang itself produces a fake step gradient).
+        if self.upper_bound_clearance_enabled:
+            elev = self._layer_array(msg, self.elevation_layer)
+            ubnd = self._layer_array(msg, self.upper_bound_layer)
+            if (elev is not None and ubnd is not None
+                    and elev.shape == cost.shape and ubnd.shape == cost.shape):
+                with np.errstate(invalid="ignore"):
+                    gap = elev - ubnd
+                    overhang_mask = (
+                        np.isfinite(elev) & np.isfinite(ubnd)
+                        & (gap > self.upper_bound_overhang_threshold_m)
+                    )
+                if overhang_mask.any():
+                    cost = np.where(
+                        overhang_mask,
+                        np.int8(self.upper_bound_clear_cost),
+                        cost,
+                    )
+                    self.get_logger().debug(
+                        f"upper_bound clearance: cleared "
+                        f"{int(overhang_mask.sum())} overhang cells"
+                    )
+
+        if self.cliff_proximity_cost_enabled:
+            step_height = self._layer_array(msg, self.cliff_step_layer)
+            if step_height is not None and step_height.shape == cost.shape:
+                changed = apply_cliff_proximity_cost(
+                    cost,
+                    step_height=step_height,
+                    resolution=float(res),
+                    proximity_radius_m=self.cliff_proximity_radius_m,
+                    step_threshold_m=self.cliff_step_threshold_m,
+                    step_saturation_m=self.cliff_step_saturation_m,
+                    max_cost=self.cliff_proximity_cost_max_value,
+                )
+                if changed > 0:
+                    self.get_logger().debug(
+                        f"cliff proximity cost raised {changed} cells"
+                    )
 
         # Rolling-window origin (bottom-left corner of current GridMap).
         roll_ox = info.pose.position.x - info.length_x / 2.0
@@ -449,10 +538,10 @@ class GridMapToOccupancyGrid(Node):
                 Time(),
             )
         except TransformException as exc:
-            self.get_logger().warn_throttle(
-                self.get_clock(), 5000,
+            self.get_logger().warn(
                 f"robot footprint seed skipped: cannot transform "
                 f"{occ.header.frame_id} <- {self.robot_frame}: {exc}",
+                throttle_duration_sec=5.0,
             )
             return
 
@@ -481,9 +570,16 @@ def main(args=None) -> None:
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
+    except RuntimeError:
+        # During launch-managed SIGINT shutdown, rclpy can raise from a pending
+        # subscription take after the context has already started shutting down.
+        # Preserve real runtime failures while treating that path as clean exit.
+        if rclpy.ok():
+            raise
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

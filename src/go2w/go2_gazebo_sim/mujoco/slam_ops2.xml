@@ -1,0 +1,395 @@
+<mujoco model="slam_ops2">
+  <!-- slam_ops2 — Go2W spawned inside the ops2 SLAM-reconstructed scene.
+       Drop-in for nav_test_mujoco_*.launch.py:
+           mujoco_model_path:=$REPO/src/go2w/go2_gazebo_sim/mujoco/slam_ops2.xml
+
+       Robot spawn: (2.0, 0.0, 0.6).  Adjust if it intersects the mesh.
+       Mesh provenance: see scripts/real/erasor/ pipeline. -->
+  <compiler angle="radian" meshdir="assets" autolimits="true"/>
+
+  <option timestep="0.002" gravity="0 0 -9.81" integrator="implicitfast"
+          cone="elliptic" impratio="100"/>
+
+  <statistic center="8 0 0.8" extent="12"/>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="-130" elevation="-20" offwidth="1920" offheight="1080"/>
+    <quality shadowsize="4096" offsamples="8"/>
+    <map shadowscale="0.5" shadowclip="1"/>
+  </visual>
+
+  <default>
+    <default class="go2">
+      <geom friction="0.4" margin="0.001" condim="1"/>
+      <joint axis="0 1 0" damping="0.1" armature="0.01" frictionloss="0.2"/>
+      <motor ctrlrange="-23.7 23.7"/>
+      <default class="abduction">
+        <joint axis="1 0 0" range="-1.0472 1.0472"/>
+      </default>
+      <default class="hip">
+        <default class="front_hip">
+          <joint range="-1.5708 3.4907"/>
+        </default>
+        <default class="back_hip">
+          <joint range="-0.5236 4.5379"/>
+        </default>
+      </default>
+      <default class="knee">
+        <joint range="-2.7227 -0.83776"/>
+        <motor ctrlrange="-45.43 45.43"/>
+      </default>
+      <default class="visual">
+        <geom type="mesh" contype="0" conaffinity="0" group="2"/>
+      </default>
+      <default class="collision">
+        <geom group="3"/>
+        <default class="foot">
+          <geom size="0.022" pos="-0.002 0 -0.2264" priority="1" condim="6"
+            friction="0.8 0.02 0.01"/>
+        </default>
+      </default>
+    </default>
+    <default class="world">
+      <geom contype="1" conaffinity="1"/>
+    </default>
+  </default>
+
+  <asset>
+    <!-- Skybox -->
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0"
+             width="512" height="3072"/>
+
+    <!-- Ground -->
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge"
+             rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8"
+             width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true"
+              texrepeat="5 5" reflectance="0.2"/>
+
+    <!-- Robot materials -->
+    <material name="metal" rgba=".9 .95 .95 1"/>
+    <material name="black" rgba="0 0 0 1"/>
+    <material name="white" rgba="1 1 1 1"/>
+    <material name="gray" rgba="0.671705 0.692426 0.774270 1"/>
+
+    <!-- Robot mesh assets (official Unitree OBJ) -->
+    <mesh file="base_0.obj"/>
+    <mesh file="base_1.obj"/>
+    <mesh file="base_2.obj"/>
+    <mesh file="base_3.obj"/>
+    <mesh file="base_4.obj"/>
+    <mesh file="hip_0.obj"/>
+    <mesh file="hip_1.obj"/>
+    <mesh file="thigh_0.obj"/>
+    <mesh file="thigh_1.obj"/>
+    <mesh file="thigh_mirror_0.obj"/>
+    <mesh file="thigh_mirror_1.obj"/>
+    <mesh file="calf_mirror_0.obj"/>
+    <mesh file="calf_mirror_1.obj"/>
+    <mesh file="calf.stl"/>
+    <mesh file="calf_mirror.stl"/>
+    <mesh file="foot.obj"/>
+    <mesh file="wheel.stl"/>
+
+    <!-- World materials -->
+    <material name="wall_mat" rgba="0.7 0.7 0.75 1"/>
+    <material name="divider_mat" rgba="0.8 0.7 0.6 1"/>
+    <material name="green_mat" rgba="0.0 1.0 0.0 1" specular="0.3"/>
+    <material name="obstacle_mat" rgba="0.6 0.5 0.4 1"/>
+      <mesh name="slam_ops2_mesh" file="slam_ops2/scans.obj"/>
+  </asset>
+
+
+  <worldbody>
+    <!-- ===== SLAM-derived terrain from ops2 walk (Mid-360 + FAST-LIO, no LC) =====
+         Pipeline: density_filter (min_pts=8) + Poisson (voxel=0.02, depth=11,
+         density-pct=10) + quadric decimation 500K + connected-component cull.
+         Mesh frame is ground-aligned (RANSAC bottom-30% z subset).
+         ============================================================================ -->
+    <light pos="0 0 6" dir="0 0 -1" diffuse="0.7 0.7 0.7"/>
+
+    <!-- Pseudo ground at z=-0.05. SLAM mesh ground (RANSAC-aligned) is at z=0
+         ±0.04m, so this plane sits ~5cm below it: scanned ground is always the
+         higher surface (robot walks on SLAM where covered), pseudo ground only
+         takes effect where SLAM didn't scan (no points → no SLAM mesh →
+         pseudo ground catches the robot). -->
+    <geom name="floor" size="0 0 0.01" type="plane" material="groundplane"
+          pos="0 0 0.05" condim="3" friction="0.8 0.005 0.0001"/>
+
+    <!-- SLAM mesh as static, collidable terrain -->
+    <geom name="slam_terrain" type="mesh" mesh="slam_ops2_mesh"
+          rgba="0.7 0.7 0.7 1" contype="1" conaffinity="1"
+          condim="3" friction="0.8 0.005 0.0001"/>
+
+    <!-- Spawn at the SLAM frame origin (0,0,*) — this is where the bag's first
+         Fast-LIO odometry recorded the robot. Mesh ground there is at z~0.0
+         (7778 verts in 2m radius confirmed). Z=0.55 puts the base body just
+         above the ground. -->
+    <body name="base_link" pos="5.12 -8.76 0.60" childclass="go2">
+      <inertial pos="0.021112 0 -0.005366" quat="-0.000543471 0.713435 -0.00173769 0.700719"
+        mass="6.921" diaginertia="0.107027 0.0980771 0.0244531"/>
+      <freejoint name="root"/>
+
+      <!-- Base visual meshes (OBJ with materials) -->
+      <geom mesh="base_0" material="black" class="visual"/>
+      <geom mesh="base_1" material="black" class="visual"/>
+      <geom mesh="base_2" material="black" class="visual"/>
+      <geom mesh="base_3" material="white" class="visual"/>
+      <geom mesh="base_4" material="gray" class="visual"/>
+      <!-- Base collision -->
+      <geom name="base_collision" size="0.1881 0.04675 0.057" type="box" class="collision"/>
+      <geom name="head_upper_collision" size="0.05 0.045" pos="0.285 0 0.01" type="cylinder" class="collision"/>
+      <geom name="head_lower_collision" size="0.047" pos="0.293 0 -0.06" class="collision"/>
+
+      <!-- Body-frame site for pose sensors (avoids inertial-frame rotation) -->
+      <site name="base_link_site" pos="0 0 0" size="0.01"/>
+
+      <!-- IMU site -->
+      <site name="imu" pos="-0.02557 0 0.04232" size="0.01"/>
+
+      <!-- Livox MID-360 LiDAR site (matches URDF: base→imu→livox_mid360_base) -->
+      <!-- pos = imu_pos + livox_offset = (-0.02557+0.1870, 0, 0.04232+0.0803) -->
+      <!-- Mid-360 mount tilt: pitch 0.263591 rad (15.10°) + roll -0.036809 rad. Matches real-robot calibration (scripts/real/onboard_fastlio_noetic.sh:258, 2026-04-17). quat = ROS RPY (Rz*Ry*Rx). -->
+      <site name="livox_mid360" pos="0.16143 0 0.12262" quat="0.991160 -0.018244 0.131392 0.002418" size="0.01"/>
+      <!-- Unitree 4D LiDAR-L1: real mounting is at the CHIN of Go2/Go2W.
+           Hemispherical (0°–90° vert), 360 h-rays, 11 Hz.
+           To use L1: uncomment this site (plugin prefers it over MID-360).
+           To use MID-360: keep this commented out.
+           NOTE: chin position requires adjusting pointcloud_to_laserscan
+           min_height to filter ground hits at closer range (LiDAR is lower). -->
+      <!-- <site name="unitree_l1" pos="0.29 0 -0.04" euler="0 0 0" size="0.01"/> -->
+
+      <!-- Front camera: on Head_upper (0.285,0,0.01), offset +0.015 fwd, -0.02 down,
+           pitched down 5 deg. 1280x720, 120 deg HFOV (matches real Go2 specs).
+           MuJoCo cameras look along -Z; xyaxes rotates to face +X (forward).
+           X-axis = body -Y (right), Y-axis = body +Z tilted 5 deg down. -->
+      <camera name="front_camera" pos="0.30 0 -0.01"
+              xyaxes="0 -1 0 0.0872 0 0.9962"
+              fovy="80" resolution="1280 720" mode="fixed"/>
+
+      <!-- ====== Front-Left leg ====== -->
+      <body name="FL_hip" pos="0.1934 0.0465 0">
+        <inertial pos="-0.0054 0.00194 -0.000105" quat="0.497014 0.499245 0.505462 0.498237"
+          mass="0.678" diaginertia="0.00088403 0.000596003 0.000479967"/>
+        <joint name="FL_hip_joint" class="abduction"/>
+        <geom mesh="hip_0" material="metal" class="visual"/>
+        <geom mesh="hip_1" material="gray" class="visual"/>
+        <geom name="FL_hip_collision" size="0.046 0.02" pos="0 0.08 0" quat="1 1 0 0" type="cylinder" class="collision"/>
+        <body name="FL_thigh" pos="0 0.0955 0">
+          <inertial pos="-0.00374 -0.0223 -0.0327" quat="0.829533 0.0847635 -0.0200632 0.551623"
+            mass="1.152" diaginertia="0.00594973 0.00584149 0.000878787"/>
+          <joint name="FL_thigh_joint" class="front_hip"/>
+          <geom mesh="thigh_0" material="metal" class="visual"/>
+          <geom mesh="thigh_1" material="gray" class="visual"/>
+          <geom name="FL_thigh_collision" size="0.1065 0.01225 0.017" pos="0 0 -0.1065" quat="0.707107 0 0.707107 0"
+            type="box" class="collision"/>
+          <body name="FL_calf" pos="0 0 -0.213">
+            <inertial pos="0.00629595 -0.000622121 -0.141417"
+              quat="0.710672 0.00154099 -0.00450087 0.703508"
+              mass="0.241352" diaginertia="0.0014901 0.00146356 5.31397e-05"/>
+            <joint name="FL_calf_joint" class="knee"/>
+            <geom mesh="calf" material="gray" class="visual"/>
+            <geom name="FL_calf_upper_collision" size="0.012 0.06" pos="0.008 0 -0.06" quat="0.994493 0 -0.104807 0"
+              type="cylinder" class="collision"/>
+            <geom name="FL_calf_lower_collision" size="0.011 0.0325" pos="0.02 0 -0.148" quat="0.999688 0 0.0249974 0"
+              type="cylinder" class="collision"/>
+            <body name="FL_foot" pos="0 0 -0.2264">
+              <inertial pos="-0.0 0.04 -0.0"
+                quat="0.661419 0.248219 0.250051 0.662108" mass="0.98"
+                diaginertia="0.003 0.0016 0.0016"/>
+              <joint name="FL_foot_joint" pos="0 0 0" axis="0 1 0"/>
+              <geom type="mesh" rgba="0.15 0.15 0.15 1" mesh="wheel" pos="0 0.0 0"
+                quat="0.0 1.0 0.0 0.0" class="visual"/>
+              <!-- Explicit named cylinder collision geom (replaces unnamed
+                   mesh collision that MuJoCo was not reliably picking up
+                   for wheel-vs-wall contacts). -->
+              <geom name="FL_wheel_collision" type="cylinder" size="0.086 0.026"
+                pos="0 0 0" quat="0.707107 0.707107 0 0"
+                class="collision" condim="6" priority="1"
+                friction="0.8 0.02 0.01"/>
+              <site name="FL_foot_site" pos="0 0.04 0" size="0.01"/>
+            </body>
+          </body>
+        </body>
+      </body>
+
+      <!-- ====== Front-Right leg ====== -->
+      <body name="FR_hip" pos="0.1934 -0.0465 0">
+        <inertial pos="-0.0054 -0.00194 -0.000105" quat="0.498237 0.505462 0.499245 0.497014"
+          mass="0.678" diaginertia="0.00088403 0.000596003 0.000479967"/>
+        <joint name="FR_hip_joint" class="abduction"/>
+        <geom mesh="hip_0" material="metal" class="visual" quat="4.63268e-05 1 0 0"/>
+        <geom mesh="hip_1" material="gray" class="visual" quat="4.63268e-05 1 0 0"/>
+        <geom name="FR_hip_collision" size="0.046 0.02" pos="0 -0.08 0" quat="0.707107 0.707107 0 0" type="cylinder"
+          class="collision"/>
+        <body name="FR_thigh" pos="0 -0.0955 0">
+          <inertial pos="-0.00374 0.0223 -0.0327" quat="0.551623 -0.0200632 0.0847635 0.829533"
+            mass="1.152" diaginertia="0.00594973 0.00584149 0.000878787"/>
+          <joint name="FR_thigh_joint" class="front_hip"/>
+          <geom mesh="thigh_mirror_0" material="metal" class="visual"/>
+          <geom mesh="thigh_mirror_1" material="gray" class="visual"/>
+          <geom name="FR_thigh_collision" size="0.1065 0.01225 0.017" pos="0 0 -0.1065" quat="0.707107 0 0.707107 0"
+            type="box" class="collision"/>
+          <body name="FR_calf" pos="0 0 -0.213">
+            <inertial pos="0.00629595 0.000622121 -0.141417"
+              quat="0.703508 -0.00450087 0.00154099 0.710672"
+              mass="0.241352" diaginertia="0.0014901 0.00146356 5.31397e-05"/>
+            <joint name="FR_calf_joint" class="knee"/>
+            <geom mesh="calf_mirror" material="gray" class="visual"/>
+            <geom name="FR_calf_upper_collision" size="0.013 0.06" pos="0.01 0 -0.06" quat="0.995004 0 -0.0998334 0"
+              type="cylinder" class="collision"/>
+            <geom name="FR_calf_lower_collision" size="0.011 0.0325" pos="0.02 0 -0.148" quat="0.999688 0 0.0249974 0"
+              type="cylinder" class="collision"/>
+            <body name="FR_foot" pos="0 0 -0.2264">
+              <inertial pos="-0.0 -0.04 -0.0"
+                quat="0.661419 0.248219 0.250051 0.662108" mass="0.98"
+                diaginertia="0.003 0.0016 0.0016"/>
+              <joint name="FR_foot_joint" pos="0 0 0" axis="0 1 0"/>
+              <geom type="mesh" rgba="0.15 0.15 0.15 1" mesh="wheel" pos="0 -0.0 0" class="visual"/>
+              <geom name="FR_wheel_collision" type="cylinder" size="0.086 0.026"
+                pos="0 0 0" quat="0.707107 0.707107 0 0"
+                class="collision" condim="6" priority="1"
+                friction="0.8 0.02 0.01"/>
+              <site name="FR_foot_site" pos="0 -0.04 0" size="0.01"/>
+            </body>
+          </body>
+        </body>
+      </body>
+
+      <!-- ====== Rear-Left leg ====== -->
+      <body name="RL_hip" pos="-0.1934 0.0465 0">
+        <inertial pos="0.0054 0.00194 -0.000105" quat="0.505462 0.498237 0.497014 0.499245"
+          mass="0.678" diaginertia="0.00088403 0.000596003 0.000479967"/>
+        <joint name="RL_hip_joint" class="abduction"/>
+        <geom mesh="hip_0" material="metal" class="visual" quat="4.63268e-05 0 1 0"/>
+        <geom mesh="hip_1" material="gray" class="visual" quat="4.63268e-05 0 1 0"/>
+        <geom name="RL_hip_collision" size="0.046 0.02" pos="0 0.08 0" quat="0.707107 0.707107 0 0" type="cylinder"
+          class="collision"/>
+        <body name="RL_thigh" pos="0 0.0955 0">
+          <inertial pos="-0.00374 -0.0223 -0.0327" quat="0.829533 0.0847635 -0.0200632 0.551623"
+            mass="1.152" diaginertia="0.00594973 0.00584149 0.000878787"/>
+          <joint name="RL_thigh_joint" class="back_hip"/>
+          <geom mesh="thigh_0" material="metal" class="visual"/>
+          <geom mesh="thigh_1" material="gray" class="visual"/>
+          <geom name="RL_thigh_collision" size="0.1065 0.01225 0.017" pos="0 0 -0.1065" quat="0.707107 0 0.707107 0"
+            type="box" class="collision"/>
+          <body name="RL_calf" pos="0 0 -0.213">
+            <inertial pos="0.00629595 -0.000622121 -0.141417"
+              quat="0.710672 0.00154099 -0.00450087 0.703508"
+              mass="0.241352" diaginertia="0.0014901 0.00146356 5.31397e-05"/>
+            <joint name="RL_calf_joint" class="knee"/>
+            <geom mesh="calf" material="gray" class="visual"/>
+            <geom name="RL_calf_upper_collision" size="0.013 0.06" pos="0.01 0 -0.06" quat="0.995004 0 -0.0998334 0"
+              type="cylinder" class="collision"/>
+            <geom name="RL_calf_lower_collision" size="0.011 0.0325" pos="0.02 0 -0.148" quat="0.999688 0 0.0249974 0"
+              type="cylinder" class="collision"/>
+            <body name="RL_foot" pos="0 0 -0.2264">
+              <inertial pos="-0.0 0.04 -0.0"
+                quat="0.661419 0.248219 0.250051 0.662108" mass="0.98"
+                diaginertia="0.003 0.0016 0.0016"/>
+              <joint name="RL_foot_joint" pos="0 0 0" axis="0 1 0"/>
+              <geom type="mesh" rgba="0.15 0.15 0.15 1" mesh="wheel" pos="0 0.0 0"
+                quat="0.0 1.0 0.0 0.0" class="visual"/>
+              <geom name="RL_wheel_collision" type="cylinder" size="0.086 0.026"
+                pos="0 0 0" quat="0.707107 0.707107 0 0"
+                class="collision" condim="6" priority="1"
+                friction="0.8 0.02 0.01"/>
+              <site name="RL_foot_site" pos="0 0.04 0" size="0.01"/>
+            </body>
+          </body>
+        </body>
+      </body>
+
+      <!-- ====== Rear-Right leg ====== -->
+      <body name="RR_hip" pos="-0.1934 -0.0465 0">
+        <inertial pos="0.0054 -0.00194 -0.000105" quat="0.499245 0.497014 0.498237 0.505462"
+          mass="0.678" diaginertia="0.00088403 0.000596003 0.000479967"/>
+        <joint name="RR_hip_joint" class="abduction"/>
+        <geom mesh="hip_0" material="metal" class="visual"
+          quat="2.14617e-09 4.63268e-05 4.63268e-05 -1"/>
+        <geom mesh="hip_1" material="gray" class="visual"
+          quat="2.14617e-09 4.63268e-05 4.63268e-05 -1"/>
+        <geom name="RR_hip_collision" size="0.046 0.02" pos="0 -0.08 0" quat="0.707107 0.707107 0 0" type="cylinder"
+          class="collision"/>
+        <body name="RR_thigh" pos="0 -0.0955 0">
+          <inertial pos="-0.00374 0.0223 -0.0327" quat="0.551623 -0.0200632 0.0847635 0.829533"
+            mass="1.152" diaginertia="0.00594973 0.00584149 0.000878787"/>
+          <joint name="RR_thigh_joint" class="back_hip"/>
+          <geom mesh="thigh_mirror_0" material="metal" class="visual"/>
+          <geom mesh="thigh_mirror_1" material="gray" class="visual"/>
+          <geom name="RR_thigh_collision" size="0.1065 0.01225 0.017" pos="0 0 -0.1065" quat="0.707107 0 0.707107 0"
+            type="box" class="collision"/>
+          <body name="RR_calf" pos="0 0 -0.213">
+            <inertial pos="0.00629595 0.000622121 -0.141417"
+              quat="0.703508 -0.00450087 0.00154099 0.710672"
+              mass="0.241352" diaginertia="0.0014901 0.00146356 5.31397e-05"/>
+            <joint name="RR_calf_joint" class="knee"/>
+            <geom mesh="calf_mirror" material="gray" class="visual"/>
+            <geom name="RR_calf_upper_collision" size="0.013 0.06" pos="0.01 0 -0.06" quat="0.995004 0 -0.0998334 0"
+              type="cylinder" class="collision"/>
+            <geom name="RR_calf_lower_collision" size="0.011 0.0325" pos="0.02 0 -0.148" quat="0.999688 0 0.0249974 0"
+              type="cylinder" class="collision"/>
+            <body name="RR_foot" pos="0 0 -0.2264">
+              <inertial pos="-0.0 -0.04 -0.0"
+                quat="0.661419 0.248219 0.250051 0.662108" mass="0.98"
+                diaginertia="0.003 0.0016 0.0016"/>
+              <joint name="RR_foot_joint" pos="0 0 0" axis="0 1 0"/>
+              <geom type="mesh" rgba="0.15 0.15 0.15 1" mesh="wheel" pos="0 -0.00 0" class="visual"/>
+              <geom name="RR_wheel_collision" type="cylinder" size="0.086 0.026"
+                pos="0 0 0" quat="0.707107 0.707107 0 0"
+                class="collision" condim="6" priority="1"
+                friction="0.8 0.02 0.01"/>
+              <site name="RR_foot_site" pos="0 -0.04 0" size="0.01"/>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <!-- Actuators: effort for leg joints, velocity for wheel joints -->
+  <actuator>
+    <motor class="abduction" name="FL_hip" joint="FL_hip_joint"/>
+    <motor class="front_hip" name="FL_thigh" joint="FL_thigh_joint"/>
+    <motor class="knee" name="FL_calf" joint="FL_calf_joint"/>
+
+    <motor class="abduction" name="FR_hip" joint="FR_hip_joint"/>
+    <motor class="front_hip" name="FR_thigh" joint="FR_thigh_joint"/>
+    <motor class="knee" name="FR_calf" joint="FR_calf_joint"/>
+
+    <motor class="abduction" name="RL_hip" joint="RL_hip_joint"/>
+    <motor class="back_hip" name="RL_thigh" joint="RL_thigh_joint"/>
+    <motor class="knee" name="RL_calf" joint="RL_calf_joint"/>
+
+    <motor class="abduction" name="RR_hip" joint="RR_hip_joint"/>
+    <motor class="back_hip" name="RR_thigh" joint="RR_thigh_joint"/>
+    <motor class="knee" name="RR_calf" joint="RR_calf_joint"/>
+
+    <velocity name="FL_wheel" joint="FL_foot_joint" ctrlrange="-15 15" kv="5.0"/>
+    <velocity name="FR_wheel" joint="FR_foot_joint" ctrlrange="-15 15" kv="5.0"/>
+    <velocity name="RL_wheel" joint="RL_foot_joint" ctrlrange="-15 15" kv="5.0"/>
+    <velocity name="RR_wheel" joint="RR_foot_joint" ctrlrange="-15 15" kv="5.0"/>
+  </actuator>
+
+  <!-- Sensors -->
+  <sensor>
+    <!-- IMU (accel + gyro only; framequat removed to avoid DFKI creating
+         a bogus pose sensor for "imu" that reads garbage position data) -->
+    <accelerometer name="imu_accel" site="imu"/>
+    <gyro name="imu_gyro" site="imu"/>
+
+    <!-- Foot contact (touch sensors) -->
+    <touch name="FL_foot_contact" site="FL_foot_site"/>
+    <touch name="FR_foot_contact" site="FR_foot_site"/>
+    <touch name="RL_foot_contact" site="RL_foot_site"/>
+    <touch name="RR_foot_contact" site="RR_foot_site"/>
+
+    <!-- Base body state (ground truth) — use site to get body frame, not inertial frame -->
+    <framepos name="base_pos" objtype="site" objname="base_link_site"/>
+    <framequat name="base_quat" objtype="site" objname="base_link_site"/>
+    <framelinvel name="base_linvel" objtype="site" objname="base_link_site"/>
+    <frameangvel name="base_angvel" objtype="site" objname="base_link_site"/>
+  </sensor>
+</mujoco>

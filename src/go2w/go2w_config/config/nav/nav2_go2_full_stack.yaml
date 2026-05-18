@@ -53,7 +53,7 @@ local_costmap:
       # circle. In demo3_mixed narrow passages the rectangle remains the
       # least conservative model that still covers leg sweep; the old circle
       # approximation rejected valid passages.
-      footprint: "[[0.35, 0.20], [0.35, -0.20], [-0.35, -0.20], [-0.35, 0.20]]"
+      footprint: "[[0.32, 0.18], [0.32, -0.18], [-0.32, -0.18], [-0.32, 0.18]]"
       footprint_padding: 0.03
       plugins: ["obstacle_layer", "inflation_layer"]
       obstacle_layer:
@@ -70,11 +70,8 @@ local_costmap:
           obstacle_max_range: 5.0
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        # Go2 uses a wider controller footprint than its bare trunk because
-        # MuJoCo contacts include walking thigh/calf sweep. Local inflation
-        # keeps path following away from corners before the rotated footprint
-        # enters hard collision.
-        inflation_radius: 0.30
+        # Tightened 2026-05-18 to let robot fit through ~0.5 m gaps in ops2.
+        inflation_radius: 0.22
         cost_scaling_factor: 5.0
       always_send_full_costmap: true
 
@@ -87,22 +84,24 @@ global_costmap:
       global_frame: map
       robot_base_frame: b_base_link  # Go2/robot_b URDF uses b_-prefixed links
       # See local_costmap footprint comment above. Same rectangle for global.
-      footprint: "[[0.35, 0.20], [0.35, -0.20], [-0.35, -0.20], [-0.35, 0.20]]"
+      footprint: "[[0.32, 0.18], [0.32, -0.18], [-0.32, -0.18], [-0.32, 0.18]]"
       footprint_padding: 0.03
       resolution: 0.05
       track_unknown_space: true
       plugins: ["static_layer", "inflation_layer"]
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
-        # Subscribe to our octomap-published /robot_b/map.
-        map_topic: /robot_b/map
+        # 2026-05-18: switched from /robot_b/map (octomap projection — bridges
+        # show as obstacles because octomap traces LiDAR hits regardless of
+        # height) to /robot_b/traversability_grid (CNN+ramp_safe+bridge-override
+        # fused trav layer). The trav grid correctly clears overhead-only
+        # geometry.
+        map_topic: /robot_b/traversability_grid
         map_subscribe_transient_local: true
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        # Body half-width 0.20 m. Inflation 0.25 m gives the planner a
-        # small comfort margin; SmacHybrid's own footprint check during
-        # search is the real safety guarantee.
-        inflation_radius: 0.25
+        # Tightened 2026-05-18 to match local costmap.
+        inflation_radius: 0.20
         cost_scaling_factor: 5.0
       always_send_full_costmap: true
 
@@ -245,11 +244,8 @@ controller_server:
         # corridors that the planner can already plan.
         consider_footprint: true
         collision_cost: 10000.0
-        # MuJoCo contact validation showed walking thigh/calf sweep can touch
-        # corner obstacles before the narrow trunk footprint collides. The
-        # 10 cm margin matches the real Go2 profile and rejects those
-        # corner-scraping trajectories earlier.
-        collision_margin_distance: 0.10
+        # Tightened to 0.05 m 2026-05-18 to fit through narrow ops2 paths.
+        collision_margin_distance: 0.05
         near_goal_distance: 0.5
       PathAlignCritic:
         enabled: true

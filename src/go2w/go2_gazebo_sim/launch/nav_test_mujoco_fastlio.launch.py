@@ -268,6 +268,12 @@ def _launch_setup(context):
                 "has_wheels": _get(context, "has_wheels"),
                 "rl_policy": _get(context, "rl_policy"),
                 "rl_use_champ_gains": _get(context, "rl_use_champ_gains"),
+                "ramp_force_legged_enabled": LaunchConfiguration("ramp_force_legged_enabled"),
+                "ramp_force_wheel_enabled": LaunchConfiguration("ramp_force_wheel_enabled"),
+                "ramp_goal_mode_topic": LaunchConfiguration("ramp_goal_mode_topic"),
+                "ramp_goal_stale_sec": LaunchConfiguration("ramp_goal_stale_sec"),
+                "ramp_force_max_vx_mps": LaunchConfiguration("ramp_force_max_vx_mps"),
+                "ramp_force_max_yaw_rate_rps": LaunchConfiguration("ramp_force_max_yaw_rate_rps"),
             }.items(),
         )
     )
@@ -479,6 +485,18 @@ def _launch_setup(context):
                                 "robot_namespace": robot_ns,
                                 "namespaces": [robot_ns],
                                 "goal_topic_suffix": "/way_point_coord",
+                                # In 3d mode, CFPA2 reads Nav2's INFLATED
+                                # global_costmap, not the raw trav grid, so its
+                                # BFS reachability matches Nav2's plannability
+                                # (avoids the 33% ABORTED churn the raw grid
+                                # produced — CFPA2 thought robot could squeeze
+                                # through cells Nav2's footprint-aware
+                                # inflation actually rejected). Overlay yaml
+                                # can re-override per-scene.
+                                "planning_map_topic_suffix": (
+                                    "/global_costmap/costmap"
+                                    if nav_costmap_mode == "3d" else "/map"
+                                ),
                                 "marker_frame_override": "map",
                             }]
                         ),
@@ -659,9 +677,10 @@ def _launch_setup(context):
         # root without redefining it.
 
         # CFPA2 → Nav2 goal bridge: way_point_coord (PointStamped) → goal_pose
-        # (PoseStamped, BEST_EFFORT to match bt_navigator). When explore=false
-        # the bridge is a no-op (CFPA2 isn't running) and RViz "2D Goal Pose"
-        # is the goal source — but the bridge is harmless to leave running.
+        # (PoseStamped, RELIABLE to match bt_navigator). It also converts
+        # repeated Nav2 BT planning failures into /<ns>/nav_status so CFPA2
+        # can blacklist unreachable frontiers without waiting for the outer
+        # stuck watchdog.
         bridge_node = ExecuteProcess(
             cmd=[
                 "python3", "-u",
@@ -1183,6 +1202,12 @@ def generate_launch_description():
                               "kp=100/kd=1.0 PD gains instead of the training kp=20/kd=0.5. "
                               "Allows the pre-RL stand-up trajectory to hold the robot "
                               "upright at the cost of 5× policy torque overshoot."),
+        DeclareLaunchArgument("ramp_force_legged_enabled", default_value="false"),
+        DeclareLaunchArgument("ramp_force_wheel_enabled", default_value="false"),
+        DeclareLaunchArgument("ramp_goal_mode_topic", default_value=""),
+        DeclareLaunchArgument("ramp_goal_stale_sec", default_value="1.5"),
+        DeclareLaunchArgument("ramp_force_max_vx_mps", default_value="0.30"),
+        DeclareLaunchArgument("ramp_force_max_yaw_rate_rps", default_value="0.20"),
         DeclareLaunchArgument("far_goal_topic", default_value="",
                               description="Override topic FAR subscribes to for the "
                               "global goal (normally CFPA2 → /{ns}/way_point_coord). "

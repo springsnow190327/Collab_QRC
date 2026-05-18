@@ -290,8 +290,16 @@ void standard_pcl_cbk(const sensor_msgs::msg::PointCloud2::UniquePtr msg)
     double preprocess_start_time = omp_get_wtime();
     if (!is_first_lidar && cur_time < last_timestamp_lidar)
     {
-        std::cerr << "lidar loop back, clear buffer" << std::endl;
-        lidar_buffer.clear();
+        // Offline replay: only clear buffer for large jumps (true sensor restart).
+        // Small jitter across bag chunks is handled by skipping the scan.
+        if (last_timestamp_lidar - cur_time > 1.0) {
+            std::cerr << "lidar loop back (true), clear buffer" << std::endl;
+            lidar_buffer.clear();
+        } else {
+            std::cerr << "lidar minor jitter (" << last_timestamp_lidar - cur_time << "s), skip" << std::endl;
+            mtx_buffer.unlock(); sig_buffer.notify_all(); return;
+        }
+        (void)0; // suppress empty body warning
     }
     if (is_first_lidar)
     {
@@ -319,8 +327,16 @@ void livox_pcl_cbk(const livox_ros_driver2::msg::CustomMsg::UniquePtr msg)
     scan_count ++;
     if (!is_first_lidar && cur_time < last_timestamp_lidar)
     {
-        std::cerr << "lidar loop back, clear buffer" << std::endl;
-        lidar_buffer.clear();
+        // Offline replay: only clear buffer for large jumps (true sensor restart).
+        // Small jitter across bag chunks is handled by skipping the scan.
+        if (last_timestamp_lidar - cur_time > 1.0) {
+            std::cerr << "lidar loop back (true), clear buffer" << std::endl;
+            lidar_buffer.clear();
+        } else {
+            std::cerr << "lidar minor jitter (" << last_timestamp_lidar - cur_time << "s), skip" << std::endl;
+            mtx_buffer.unlock(); sig_buffer.notify_all(); return;
+        }
+        (void)0; // suppress empty body warning
     }
     if(is_first_lidar)
     {
@@ -514,10 +530,7 @@ void publish_frame_world(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::Share
         publish_count -= PUBFRAME_PERIOD;
     }
 
-    /**************** save map ****************/
-    /* 1. make sure you have enough memories
-    /* 2. noted that pcd save will influence the real-time performences **/
-    /*
+    /**************** save map (re-enabled for offline replay) ****************/
     if (pcd_save_en)
     {
         int size = feats_undistort->points.size();
@@ -544,7 +557,6 @@ void publish_frame_world(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::Share
             scan_wait_num = 0;
         }
     }
-    */
 }
 
 void publish_frame_body(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudFull_body)

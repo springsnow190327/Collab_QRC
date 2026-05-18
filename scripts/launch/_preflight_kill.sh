@@ -24,6 +24,8 @@ fi
 # leaves stale publishers on /robot/map, state_estimation_at_scan, etc.
 _PREFLIGHT_PATTERNS=(
   "ros2 launch .*(nav_test|vlm_demo|real_autonomy)"
+  # Visualization — rviz2 holds GPU + DDS resources that block restart
+  "rviz2"
   # Sim core
   "mujoco_ros2_control"
   "mujoco_sensor_bridge"
@@ -165,11 +167,15 @@ _preflight_clean_shm() {
   rm -f /tmp/map_merge_params.yaml /tmp/dual_robot_collision_report.json 2>/dev/null || true
 }
 
-if pgrep -f "${_PREFLIGHT_ALIVE_RE}" >/dev/null 2>&1; then
-  echo "[preflight] killing stale sim/nav processes..."
-  _preflight_kill_patterns "-TERM"
-  sleep 2
+if pgrep -f "${_PREFLIGHT_ALIVE_RE}" >/dev/null 2>&1 || pgrep -f rviz2 >/dev/null 2>&1; then
+  echo "[preflight] killing stale sim/nav/rviz processes (SIGKILL only)..."
+  # Skip -TERM: rviz2 ignores SIGTERM until it finishes loading TF, MuJoCo's
+  # libsensor plugin holds CUDA contexts that don't release on -TERM, and
+  # ros2 launch's child supervisor races SIGTERM cleanup. Go straight to -9
+  # so DDS shm, GPU fds, and DDS guid handles release reliably on every
+  # relaunch. See feedback_preflight_pipefail.md for the prior soft-kill bug.
   _preflight_kill_patterns "-KILL"
+  pkill -9 -f rviz2 2>/dev/null || true
   sleep 1
   _preflight_stop_ros2_daemon
   _preflight_clean_shm

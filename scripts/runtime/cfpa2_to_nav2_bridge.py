@@ -5,12 +5,14 @@ CFPA2 publishes /<ns>/way_point as PointStamped (just an XY target with
 no orientation). Nav2's bt_navigator subscribes to /<ns>/goal_pose as
 PoseStamped (full pose with orientation). This bridge:
 
-  - subscribes /<ns>/way_point (BEST_EFFORT to match CFPA2's QoS)
+  - subscribes /<ns>/way_point (RELIABLE to match CFPA2's QoS)
   - synthesizes orientation = atan2(goal - robot_pose) so the planner
     has a sensible terminal heading
-  - publishes /<ns>/goal_pose (BEST_EFFORT to match Nav2's QoS) only
+  - publishes /<ns>/goal_pose (RELIABLE to match Nav2's QoS) only
     when the goal *changed* — re-publishing identical goals at 2 Hz
     would force Nav2 to abort + replan every tick
+  - converts repeated Nav2 BT planner failures into /<ns>/nav_status
+    messages so CFPA2 can blacklist unreachable frontiers quickly
 
 Run alongside:
   - the sim (any backend including 'none')
@@ -19,6 +21,7 @@ Run alongside:
 """
 from __future__ import annotations
 
+import json
 import math
 import sys
 
@@ -28,8 +31,11 @@ from rclpy.qos import (
     QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy,
 )
 
+from action_msgs.msg import GoalStatus, GoalStatusArray
 from geometry_msgs.msg import PointStamped, PoseStamped
 from nav_msgs.msg import Odometry
+from nav2_msgs.msg import BehaviorTreeLog
+from std_msgs.msg import String
 
 
 def _split_ros_argv(argv):
@@ -39,6 +45,13 @@ def _split_ros_argv(argv):
     return argv, []
 
 
+def _ns_topic(ns: str, topic: str) -> str:
+    topic = str(topic)
+    if topic.startswith("/"):
+        return topic
+    return f"/{ns}/{topic}" if ns else f"/{topic}"
+
+
 class Cfpa2ToNav2Bridge(Node):
     def __init__(self) -> None:
         super().__init__("cfpa2_to_nav2_bridge")
@@ -46,18 +59,43 @@ class Cfpa2ToNav2Bridge(Node):
         self.declare_parameter("waypoint_topic", "way_point")
         self.declare_parameter("goal_pose_topic", "goal_pose")
         self.declare_parameter("odom_topic", "odom/nav")
+        self.declare_parameter("nav_status_topic", "nav_status")
+        self.declare_parameter("behavior_tree_log_topic", "behavior_tree_log")
         # Skip republishing if new goal is within this distance of last
         # published goal — CFPA2 republishes its current goal at 2 Hz to
         # keep the channel alive, we don't want Nav2 to restart every tick.
         self.declare_parameter("goal_change_min_m", 0.30)
+        # Nav2 can keep the NavigateToPose action RUNNING while the BT's
+        # planner child is repeatedly failing and running recoveries. Convert
+        # those repeated planner failures into CFPA2's existing nav_status/v1
+        # contract so frontier blacklisting happens at the task layer.
+        self.declare_parameter("planner_failure_threshold", 3)
+        self.declare_parameter(
+            "planner_failure_node_names",
+            ["ComputePathToPose", "ComputePathThroughPoses"],
+        )
+        # Nav2's NavigateToPose action status topic. The action server is
+        # bt_navigator; status messages go to this topic by ROS 2 convention.
+        self.declare_parameter("action_status_topic", "navigate_to_pose/_action/status")
 
         ns = str(self.get_parameter("namespace").value)
-        wp_topic = f"/{ns}/{self.get_parameter('waypoint_topic').value}"
-        goal_topic = f"/{ns}/{self.get_parameter('goal_pose_topic').value}"
-        odom_topic = f"/{ns}/{self.get_parameter('odom_topic').value}"
+        wp_topic = _ns_topic(ns, self.get_parameter("waypoint_topic").value)
+        goal_topic = _ns_topic(ns, self.get_parameter("goal_pose_topic").value)
+        odom_topic = _ns_topic(ns, self.get_parameter("odom_topic").value)
+        nav_status_topic = _ns_topic(ns, self.get_parameter("nav_status_topic").value)
+        bt_log_topic = _ns_topic(
+            ns, self.get_parameter("behavior_tree_log_topic").value
+        )
         self.goal_change_min_m = float(
             self.get_parameter("goal_change_min_m").value
         )
+        self._planner_failure_threshold = max(
+            1, int(self.get_parameter("planner_failure_threshold").value)
+        )
+        failure_nodes = self.get_parameter("planner_failure_node_names").value
+        if isinstance(failure_nodes, str):
+            failure_nodes = [failure_nodes]
+        self._planner_failure_node_names = {str(v) for v in failure_nodes}
 
         # CFPA2's way_point_coord publishes RELIABLE; odom_relay also reliable.
         cfpa_qos = QoSProfile(
@@ -84,22 +122,79 @@ class Cfpa2ToNav2Bridge(Node):
         self._last_pose_y: float | None = None
         self._last_goal_x: float | None = None
         self._last_goal_y: float | None = None
+        self._goal_seq = 0
+        self._active_goal: tuple[float, float] | None = None
+        self._planner_failure_count = 0
 
         self.create_subscription(Odometry, odom_topic, self._on_odom, cfpa_qos)
         self.create_subscription(
             PointStamped, wp_topic, self._on_waypoint, cfpa_qos
         )
+        self.create_subscription(
+            BehaviorTreeLog, bt_log_topic, self._on_behavior_tree_log, 10
+        )
+        # Nav2's navigate_to_pose action server publishes its goal state list
+        # here. ABORTED/CANCELED transitions = "Nav2 gave up on this goal".
+        # We translate that into a fast-blacklist nav_status the moment it
+        # happens, instead of waiting for the watchdog's 10 s stall timeout.
+        # QoS: the action status uses TRANSIENT_LOCAL on the server side.
+        action_status_topic = _ns_topic(
+            ns,
+            self.get_parameter("action_status_topic").value,
+        )
+        action_status_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
+        self.create_subscription(
+            GoalStatusArray, action_status_topic,
+            self._on_action_status, action_status_qos,
+        )
+        # State for action-status terminal detection. We don't have Nav2's
+        # internal goal_uuid (bt_navigator generates it when it forwards
+        # /goal_pose into its own navigate_to_pose action). Track the
+        # latest-seen status STAMP and the goal_uuid we've already acted
+        # on, so we fire once per terminal transition per Nav2-side goal.
+        self._action_last_acted_uuid: bytes | None = None
         self._goal_pub = self.create_publisher(
             PoseStamped, goal_topic, nav2_goal_qos
         )
+        self._nav_status_pub = self.create_publisher(String, nav_status_topic, 10)
 
         self.get_logger().info(
-            f"bridge armed. {wp_topic} → {goal_topic}; pose from {odom_topic}"
+            f"bridge armed. {wp_topic} → {goal_topic}; pose from {odom_topic}; "
+            f"nav_status on {nav_status_topic}; BT log from {bt_log_topic}"
         )
 
     def _on_odom(self, msg: Odometry) -> None:
         self._last_pose_x = msg.pose.pose.position.x
         self._last_pose_y = msg.pose.pose.position.y
+
+    def _emit_nav_status(
+        self,
+        state: str,
+        reason: str,
+        *,
+        extra: dict | None = None,
+    ) -> None:
+        goal = getattr(self, "_active_goal", None)
+        payload = {
+            "schema": "nav_status/v1",
+            "source": "cfpa2_to_nav2_bridge",
+            "state": state,
+            "reason": reason,
+            "stamp_ns": int(self.get_clock().now().nanoseconds),
+            "goal_seq": int(getattr(self, "_goal_seq", 0)),
+        }
+        if goal is not None:
+            payload["goal"] = [float(goal[0]), float(goal[1])]
+        if extra:
+            payload.update(extra)
+        msg = String()
+        msg.data = json.dumps(payload, separators=(",", ":"))
+        self._nav_status_pub.publish(msg)
 
     def _on_waypoint(self, msg: PointStamped) -> None:
         gx, gy = float(msg.point.x), float(msg.point.y)
@@ -136,6 +231,119 @@ class Cfpa2ToNav2Bridge(Node):
         )
         self._last_goal_x = gx
         self._last_goal_y = gy
+        self._goal_seq += 1
+        self._active_goal = (gx, gy)
+        self._planner_failure_count = 0
+        self._emit_nav_status("navigating", "goal_forwarded")
+
+    def _on_action_status(self, msg: GoalStatusArray) -> None:
+        """Fire nav_status(unreachable) on the first ABORTED/CANCELED we see
+        for a goal_uuid we haven't yet acted on.
+
+        Nav2 stamps the navigate_to_pose action with its own goal_uuid
+        (we don't see it — bt_navigator forwards /goal_pose → action call
+        internally). The status array lists ALL recent goals; we pick the
+        most-recently-stamped terminal entry. Dedupe by goal_uuid so we
+        only emit once per Nav2-side goal even if the status keeps republishing.
+        """
+        if getattr(self, "_active_goal", None) is None:
+            return
+        terminal = None  # (stamp_ns, goal_uuid, status_code)
+        for st in msg.status_list:
+            code = int(st.status)
+            if code not in (GoalStatus.STATUS_ABORTED, GoalStatus.STATUS_CANCELED):
+                continue
+            stamp_ns = int(st.goal_info.stamp.sec) * 1_000_000_000 \
+                + int(st.goal_info.stamp.nanosec)
+            uuid = bytes(st.goal_info.goal_id.uuid)
+            if terminal is None or stamp_ns > terminal[0]:
+                terminal = (stamp_ns, uuid, code)
+        if terminal is None:
+            return
+        _, uuid, code = terminal
+        if uuid == self._action_last_acted_uuid:
+            return
+        self._action_last_acted_uuid = uuid
+        state = "unreachable" if code == GoalStatus.STATUS_ABORTED else "failed"
+        reason = "nav2_action_aborted" if code == GoalStatus.STATUS_ABORTED \
+            else "nav2_action_canceled"
+        # CFPA2's fast-BL needs N (default 3) consecutive `unreachable` for the
+        # same goal_key. A single action terminal event only fires our callback
+        # once per UUID, so spin a tiny one-shot timer to emit 3 in a row (the
+        # second + third are necessary to satisfy CFPA2's consec_threshold).
+        extra = {"status_code": int(code), "goal_uuid_hex": uuid.hex()}
+        self._emit_nav_status(state, reason, extra=extra)
+        self._action_terminal_burst_remaining = 2
+        self._action_terminal_burst_state = state
+        self._action_terminal_burst_reason = reason
+        self._action_terminal_burst_extra = extra
+        # 100 ms cadence × 2 follow-ups → CFPA2 sees 3 emits within 250 ms.
+        # rclpy has no one-shot timer; we cancel inside the tick.
+        if getattr(self, "_action_terminal_burst_timer", None) is not None:
+            self._action_terminal_burst_timer.cancel()
+        self._action_terminal_burst_timer = self.create_timer(
+            0.10, self._action_terminal_burst_tick)
+        self.get_logger().info(
+            f"Nav2 {state}: goal=({self._active_goal[0]:+.2f},"
+            f"{self._active_goal[1]:+.2f}) code={code} → fast BL burst (3 emits)"
+        )
+
+    def _action_terminal_burst_tick(self) -> None:
+        if getattr(self, "_action_terminal_burst_remaining", 0) <= 0:
+            t = getattr(self, "_action_terminal_burst_timer", None)
+            if t is not None:
+                t.cancel()
+                self._action_terminal_burst_timer = None
+            return
+        self._emit_nav_status(
+            self._action_terminal_burst_state,
+            self._action_terminal_burst_reason,
+            extra=self._action_terminal_burst_extra,
+        )
+        self._action_terminal_burst_remaining -= 1
+        if self._action_terminal_burst_remaining <= 0:
+            t = getattr(self, "_action_terminal_burst_timer", None)
+            if t is not None:
+                t.cancel()
+                self._action_terminal_burst_timer = None
+
+    def _on_behavior_tree_log(self, msg: BehaviorTreeLog) -> None:
+        if getattr(self, "_active_goal", None) is None:
+            return
+
+        failed_node_name: str | None = None
+        for event in msg.event_log:
+            node_name = str(event.node_name)
+            if node_name not in self._planner_failure_node_names:
+                continue
+
+            current = str(event.current_status).upper()
+            previous = str(event.previous_status).upper()
+            if current == "SUCCESS":
+                self._planner_failure_count = 0
+                continue
+            if previous == "RUNNING" and current == "FAILURE":
+                failed_node_name = failed_node_name or node_name
+
+        if failed_node_name is None:
+            return
+
+        self._planner_failure_count += 1
+        if self._planner_failure_count < self._planner_failure_threshold:
+            return
+
+        # Keep publishing after the bridge-side threshold. CFPA2 applies its
+        # own consecutive-message debounce keyed by goal_seq before it
+        # blacklists, so a single terminal-looking message is intentionally
+        # not enough for the task layer to act.
+        self._emit_nav_status(
+            "unreachable",
+            "bt_compute_path_failure",
+            extra={
+                "bt_node": failed_node_name,
+                "failure_count": int(self._planner_failure_count),
+            },
+        )
 
 
 def main(argv=None) -> int:

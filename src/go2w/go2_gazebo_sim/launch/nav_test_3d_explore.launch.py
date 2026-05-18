@@ -43,6 +43,8 @@ def generate_launch_description() -> LaunchDescription:
         elevation_cupy_share, "config", "core", "core_param.yaml")
     emap_setup_params = os.path.join(
         trav_share, "config", "elevation_mapping.yaml")
+    default_trav_weights = os.path.join(
+        elevation_cupy_share, "config", "core", "weights.dat")
     filter_chain_params = os.path.join(
         trav_share, "config", "grid_map_filters.yaml")
     cfpa2_demo_ramp_overlay = os.path.join(
@@ -57,6 +59,29 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("use_sim_time", default_value="true"),
         DeclareLaunchArgument("rviz", default_value="true"),
         DeclareLaunchArgument("gui", default_value="true"),
+        DeclareLaunchArgument(
+            "explore", default_value="true",
+            description="true: CFPA2 autonomous frontier exploration. "
+                        "false: CFPA2 disabled; drive manually by clicking "
+                        "RViz 'Nav2 Goal' (publishes /robot/goal_pose)."),
+        DeclareLaunchArgument(
+            "robot_seed_radius_m",
+            default_value=PythonExpression([
+                "'2.0' if '", LaunchConfiguration("explore"), "' == 'false' else '0.65'"
+            ]),
+            description="Initial cleared-disk radius (m) seeded around the "
+                        "robot in /robot/traversability_grid. Larger in manual "
+                        "mode so a first user-clicked goal can leave the spawn "
+                        "pose before elevation_mapping has filled in around it."),
+        DeclareLaunchArgument(
+            "upper_bound_clearance", default_value="true",
+            description="Enable Miki et al. 2022 Sec. II-H upper_bound overhang "
+                        "rescue in grid_map_to_occupancy_grid. When the "
+                        "ray-cast upper_bound is much lower than the cell's "
+                        "elevation, the elevation point came from an overhang "
+                        "above clear floor (bridge, ceiling) — cell is forced "
+                        "free. Useful for indoor scenes with overhanging "
+                        "structures (e.g. slam_ops2). Off by default."),
         # nvblox_frontend knobs
         DeclareLaunchArgument("nvblox_voxel_size_m", default_value="0.10"),
         DeclareLaunchArgument(
@@ -80,6 +105,19 @@ def generate_launch_description() -> LaunchDescription:
                         "(docs/claude/plans/2026-05-14-trav-grid-rewrite.md) "
                         "owns /<ns>/traversability_grid when this is false. "
                         "Set true for A/B comparison or fallback."),
+        DeclareLaunchArgument(
+            "has_wheels", default_value="true",
+            description="True spawns Go2W (wheel-legged hybrid + "
+                        "go2w_hybrid_cmd_router). False spawns pure Go2 "
+                        "(12-DoF leg only, CHAMP cmd_vel_legged direct, no "
+                        "router). Forwarded to nav_test_mujoco_fastlio."),
+        DeclareLaunchArgument(
+            "trav_weight_file", default_value=default_trav_weights,
+            description="Path to the traversability CNN weights.dat pickle. "
+                        "Default = baseline ETH weights shipped in "
+                        "elevation_mapping_cupy/config/core. Point at a "
+                        "fine-tuned file (e.g. training_runs/weights_*.dat) "
+                        "to A/B test without touching the baseline."),
     ]
 
     # Reuse the full fastlio launch — it handles MuJoCo, Point-LIO/Fast-LIO,
@@ -98,7 +136,19 @@ def generate_launch_description() -> LaunchDescription:
             "robot_namespace": LaunchConfiguration("robot_namespace"),
             "rviz": LaunchConfiguration("rviz"),
             "gui":  LaunchConfiguration("gui"),
+            "explore": LaunchConfiguration("explore"),
             "nav_costmap_mode": LaunchConfiguration("nav_costmap_mode"),
+            "has_wheels": LaunchConfiguration("has_wheels"),
+            # A verified ramp viewpoint means the Go2W should climb with
+            # controlled wheel drive instead of treating the segment as open
+            # flat-ground cruise. The trigger remains sensor-derived; no
+            # scene-coordinate corridor is configured.
+            "ramp_force_legged_enabled": "false",
+            "ramp_force_wheel_enabled": "true",
+            "ramp_goal_mode_topic": "ramp_ascent_goal_mode",
+            "ramp_goal_stale_sec": "3.0",
+            "ramp_force_max_vx_mps": "0.17",
+            "ramp_force_max_yaw_rate_rps": "0.20",
             # demo_ramp has 2 m corridors flanked by lethal walls; base CFPA2
             # frontier filters (0.35 m clearance + 20 live unknowns) reject
             # every corridor frontier and report no_frontiers. Overlay
@@ -171,7 +221,8 @@ def generate_launch_description() -> LaunchDescription:
         respawn=True,
         respawn_delay=3.0,
         parameters=[emap_core_params, emap_setup_params,
-                    {"use_sim_time": LaunchConfiguration("use_sim_time")}],
+                    {"use_sim_time": LaunchConfiguration("use_sim_time"),
+                     "weight_file": LaunchConfiguration("trav_weight_file")}],
         remappings=[
             # elevation_mapping_cupy hardcodes topic as f"/{self.get_name()}/{pub_key}".
             # With name="elevation_mapping" that is /elevation_mapping/elevation_map_raw.
@@ -215,36 +266,67 @@ def generate_launch_description() -> LaunchDescription:
             "output_topic":    "traversability_grid",
             # CNN ↔ analytical fusion: trav_fused = max(CNN_traversability,
             # ramp_safe). CNN catches walls the analytical chain misses;
-            # ramp_safe rescues sloped surfaces the CNN over-rejects. See the
-            # bottom of grid_map_filters.yaml for the construction.
+            # ramp_safe rescues clear ramp-body slopes the CNN over-rejects,
+            # while shallow ramp-foot transitions fall back to CNN/mid-band
+            # cost. See grid_map_filters.yaml for the trapezoidal envelope.
             "traversability_layer": "trav_fused",
-            # Conservative thresholds: only cells with trav ≥ 0.55 are
-            # treated as cost-0 free; cells in [0.25, 0.55] get the costly
+            # Conservative thresholds: only cells with trav ≥ 0.60 are
+            # treated as cost-0 free; cells in [0.30, 0.60] get the costly
             # mid-band 1-99 interpolation so MPPI/planner steers AROUND
-            # them when an obviously-free route exists; trav < 0.25 is
+            # them when an obviously-free route exists; trav < 0.30 is
             # outright lethal. This stops the planner from grazing
-            # ramp-foot / wall-edge cells whose ramp_safe rescue gives
-            # them confident "free" verdicts while CNN says otherwise.
+            # ramp-foot / wall-edge cells whose local geometry is ambiguous.
             "free_threshold":  0.60,
-            "lethal_threshold": 0.30,
+            # Lowered 0.30 → 0.05 (aggressive). The current trav_fused has
+            # excess noisy low values from CNN+ramp_safe combined; even 0.08
+            # still produced too many lethal cells choking the costmap. At
+            # 0.05, only cells with very high CNN-confidence in "non-
+            # traversable" become hard-lethal; the rest stays in the
+            # mid-band where Nav2 inflation does footprint-aware spread.
+            "lethal_threshold": 0.05,
             # Height-based extra cost — discourages planning over elevated
             # surfaces (ramp, platform) when a flat-ground route reaches
             # the same frontier. Cells at h=0.05m → 0 cost; h=1.00m → 90
             # cost (just below the 100 lethal). Combined with trav-cost
             # via max() so lethal walls stay lethal.
-            "elevation_cost_enabled": True,
+            "elevation_cost_enabled": False,
             "elevation_layer":        "elevation",
             "elevation_cost_min_h":   0.05,
-            "elevation_cost_max_h":   1.00,
+            "elevation_cost_max_h":   1.50,
             "elevation_cost_max_value": 90,
+            # Dynamic stability margin around platform/cliff edges. This uses
+            # the measured step_height layer and a robot-scale proximity
+            # radius; it is not a scene-coordinate keep-out zone.
+            # Disabled 2026-05-17: this layer applied a circular Gaussian-like
+            # cost halo around any step_height ≥ 0.30m cell, which double-bumps
+            # against Nav2's own InflationLayer (radius 0.60m, footprint-aware).
+            # The double inflation produced visible "bleed" of high cost into
+            # otherwise free cells along walls/cliffs. Nav2's inflation alone
+            # is now the single source of truth for footprint-aware spread;
+            # cliff cells still propagate via the trav layer hitting the
+            # lethal_threshold, just without the extra circular halo.
+            "cliff_proximity_cost_enabled": False,
+            "cliff_step_layer": "step_height",
+            "cliff_proximity_radius_m": 0.25,
+            "cliff_step_threshold_m": 0.30,
+            "cliff_step_saturation_m": 0.45,
+            "cliff_proximity_cost_max_value": 90,
+            "upper_bound_clearance_enabled": LaunchConfiguration("upper_bound_clearance"),
+            "upper_bound_layer": "upper_bound",
+            "upper_bound_overhang_threshold_m": 0.30,
+            "upper_bound_clear_cost": 0,
             "seed_robot_footprint": True,
             "robot_frame": "base_link",
-            "robot_seed_radius_m": 0.65,
+            # Manual-goal mode (explore:=false) needs a larger initial cleared
+            # disk so the planner can route the very first user-clicked goal
+            # out of the spawn pose before elevation_mapping has filled in the
+            # surroundings. CFPA2 autonomous mode keeps the tight 0.65 m seed.
+            "robot_seed_radius_m": LaunchConfiguration("robot_seed_radius_m"),
             "seed_max_clear_cost": 50,
             "ramp_override_enabled": True,
             "slope_layer": "slope",
             "step_residual_layer": "step_residual",
-            "ramp_min_slope_rad": 0.13962634015954636,
+            "ramp_min_slope_rad": 0.20943951023931956,
             "ramp_max_slope_rad": 0.5235987755982988,
             "ramp_max_step_residual_m": 0.06,
             # elevation_mapping_cupy is a robot-centered rolling map. Project
@@ -252,12 +334,23 @@ def generate_launch_description() -> LaunchDescription:
             # otherwise unknown holes and one-frame obstacle hits make the
             # traversability display change shape continuously.
             "fixed_grid_enabled": True,
-            "fixed_origin_x": -7.0,
-            "fixed_origin_y": -15.0,
-            "fixed_width_cells": 300,
-            "fixed_height_cells": 300,
+            # 100×40 m world-fixed window at 0.10 m/cell. demo_ramp (16×16) and
+            # slam_ops2 (80×32) both fit inside; before, the 30×30 default cut
+            # off the ops2 corridor edges and surfaced as a phantom black
+            # boundary in RViz.
+            # 200×200 m world-fixed grid at 0.10 m/cell. Centred near the
+            # ops2 building so any spawn in [-100, +100]×[-100, +100] sits
+            # inside. demo_ramp + slam_ops2 both fit comfortably. Cost: ~4 MB
+            # per published OccupancyGrid msg (2000×2000 int8).
+            "fixed_origin_x": -100.0,
+            "fixed_origin_y": -100.0,
+            "fixed_width_cells": 2000,
+            "fixed_height_cells": 2000,
             "unknown_clears_history": False,
-            "occupied_cost_threshold": 80,
+            # Preserve high-but-traversable costs (e.g. elevation/cliff
+            # stability cost 90). Only true OccupancyGrid lethal cells are
+            # temporally confirmed into persistent obstacles.
+            "occupied_cost_threshold": 100,
             "free_cost_threshold": 30,
             "occupied_confirm_hits": 2,
             "occupied_clear_hits": 0,
@@ -275,12 +368,23 @@ def generate_launch_description() -> LaunchDescription:
         condition=is_3d,
     )
 
-    # NOTE: ramp_ascent_goal_node + ramp_cmd_vel_assist_node were removed so
-    # the CFPA2 frontier-driven autonomy can run unassisted. The CNN + ramp_safe
-    # fusion in the filter chain already keeps the ramp traversable in the
-    # OccupancyGrid, so Nav2 should plan onto it naturally without the
-    # scripted ascent helper. Re-add the two nodes if scene-bound ascent
-    # behaviour is needed for a benchmark.
+    # 4. (REMOVED) Slope-verified ramp viewpoint goals.
+    #
+    # ramp_ascent_goal_node used to publish /<ns>/ramp_ascent_goal here,
+    # producing PointStamped viewpoints whenever the filtered GridMap layers
+    # showed a traversable ramp patch. This was removed because:
+    #   - On flat indoor scenes (slam_ops2) the slope/step layers fire on
+    #     stair-step mesh artifacts → CFPA2 chases phantom ramp goals.
+    #   - Even when disabled via `cfpa2_single_robot.yaml: ramp_ascent_enabled:
+    #     false`, the node kept publishing the topic and stayed alive across
+    #     restarts (no kill pattern matched), so the next launch saw two ramp
+    #     goal publishers racing.
+    #   - On demo_ramp the rest of the autonomy stack (Nav2 SmacPlannerLattice
+    #     + MPPI on the trav_grid) can drive the robot onto the ramp once the
+    #     planner sees the ramp cells as traversable; the explicit viewpoint
+    #     goal was an optimisation, not a hard requirement.
+    # If ramp viewpoint goals are needed again, restore this Node and add
+    # `ramp_ascent_goal_node` to scripts/launch/_preflight_kill.sh.
 
     # Static identity: base_link → body
     # Fast-LIO hardcodes cloud_registered_body.header.frame_id = "body"

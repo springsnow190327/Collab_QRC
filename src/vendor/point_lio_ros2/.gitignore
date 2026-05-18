@@ -1,0 +1,11 @@
+/.idea/
+/cmake-build-debug/
+*.pcd
+/Log/pos_log.csv
+
+# Vendored-only excludes (upstream ships demo gifs/png + debug dumps that
+# are not needed to build the ROS 2 port).
+image/
+Log/*.txt
+Log/*.py
+PCD/

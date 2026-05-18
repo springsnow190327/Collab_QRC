@@ -115,6 +115,7 @@ class CFPA2SingleRobotNode(CFPA2Coordinator):
         self.declare_parameter("ramp_ascent_goal_stale_sec", 2.0)
         self.declare_parameter("ramp_ascent_max_goal_distance_m", 5.0)
         self.declare_parameter("ramp_ascent_require_grid_reachable", True)
+        self.declare_parameter("ramp_ascent_reachability_occ_threshold", 100)
         self.declare_parameter("ramp_ascent_exclusive", False)
         self.declare_parameter("ramp_ascent_ignore_blacklist", False)
         self.declare_parameter("ramp_ascent_switch_min_dist_m", 0.25)
@@ -140,6 +141,15 @@ class CFPA2SingleRobotNode(CFPA2Coordinator):
         )
         self.ramp_ascent_require_grid_reachable = bool(
             self.get_parameter("ramp_ascent_require_grid_reachable").value
+        )
+        self.ramp_ascent_reachability_occ_threshold = int(
+            max(
+                1,
+                min(
+                    101,
+                    int(self.get_parameter("ramp_ascent_reachability_occ_threshold").value),
+                ),
+            )
         )
         self.ramp_ascent_exclusive = bool(
             self.get_parameter("ramp_ascent_exclusive").value
@@ -271,11 +281,39 @@ class CFPA2SingleRobotNode(CFPA2Coordinator):
             return None
         if not self.ramp_ascent_ignore_blacklist and self._is_blacklisted(ns, goal, now_ns):
             return None
+        ramp_occ_threshold = int(
+            getattr(
+                self,
+                "ramp_ascent_reachability_occ_threshold",
+                max(int(getattr(self, "occ_thresh", 50)), 100),
+            )
+        )
+        ramp_dist_map = dist_map
+        if (
+            self.ramp_ascent_require_grid_reachable
+            and ramp_occ_threshold != int(getattr(self, "occ_thresh", 50))
+        ):
+            odom = self.odoms.get(ns)
+            if odom is None:
+                return None
+            ramp_dist_map = self._distance_transform(
+                map_msg,
+                (
+                    float(odom.pose.pose.position.x),
+                    float(odom.pose.pose.position.y),
+                ),
+                occ_threshold=ramp_occ_threshold,
+                allow_unknown=False,
+            )
         if self.ramp_ascent_require_grid_reachable and not self._goal_reachable(
-            map_msg, dist_map, goal
+            map_msg, ramp_dist_map, goal
         ):
             return None
-        if not self._goal_has_obstacle_clearance(map_msg, goal):
+        if not self._goal_has_obstacle_clearance(
+            map_msg,
+            goal,
+            occ_threshold=ramp_occ_threshold,
+        ):
             return None
         return goal
 
@@ -585,6 +623,12 @@ class CFPA2SingleRobotNode(CFPA2Coordinator):
         dist_map: dict[int, int],
         info_gain: float,
     ) -> float:
+        if getattr(self, "goal_satisfied_dist", 0.0) > 0.0 and self._goal_satisfied(
+            ns,
+            goal,
+            map_msg,
+        ):
+            return -1e18
         dist_m = self._grid_path_cost_m(map_msg, dist_map, goal)
         if dist_m is None or dist_m <= 0.0:
             return -1e18
@@ -704,6 +748,14 @@ class CFPA2SingleRobotNode(CFPA2Coordinator):
         dist_map = self._distance_transform(
             planning_map,
             (float(odom.pose.pose.position.x), float(odom.pose.pose.position.y)),
+            occ_threshold=getattr(
+                self,
+                "cfpa2_reachability_occ_threshold",
+                getattr(self, "occ_thresh", 50),
+            ),
+            allow_unknown=bool(
+                getattr(self, "cfpa2_reachability_allow_unknown", False)
+            ),
         )
         dist_maps = {ns: dist_map}
         ramp_goal = self._ramp_ascent_goal_if_valid(
@@ -851,22 +903,51 @@ class CFPA2SingleRobotNode(CFPA2Coordinator):
                     )
                 return
 
-            if self._is_blacklisted(ns, held_goal, now_ns):
+            held_failure: Optional[str] = None
+            held_blacklisted = self._is_blacklisted(ns, held_goal, now_ns)
+            if not held_blacklisted and not self._is_active_ramp_goal(ns, held_goal):
+                held_failure = self._held_goal_safety_failure(
+                    planning_map,
+                    dist_map,
+                    held_goal,
+                )
+                if held_failure is not None:
+                    self._blacklist_active_goal(
+                        ns,
+                        held_goal,
+                        now_ns,
+                        f"held_goal_{held_failure}",
+                    )
+                    held_blacklisted = True
+
+            if held_blacklisted:
                 fallback = self._cfpa2_best_available_goal(
                     ns=ns,
                     now_ns=now_ns,
                     utilities=utilities,
                     exclude_goal=held_goal,
                     fallback_targets=targets,
+                    map_msg=planning_map,
+                    dist_map=dist_map,
                 )
                 if fallback is not None:
                     candidate_goal = fallback
                     assignment_score = utilities.get(fallback, 0.0)
                     forced_switch = True
-                    self._set_policy_reason(ns, "switch/cfpa2_blacklist_fallback")
+                    reason = (
+                        f"switch/held_goal_{held_failure}"
+                        if held_failure is not None
+                        else "switch/cfpa2_blacklist_fallback"
+                    )
+                    self._set_policy_reason(ns, reason)
                 else:
                     goal = self._robot_xy(ns)
-                    self._set_policy_reason(ns, "hold/cfpa2_blacklisted_stop")
+                    reason = (
+                        f"hold/held_goal_{held_failure}_stop"
+                        if held_failure is not None
+                        else "hold/cfpa2_blacklisted_stop"
+                    )
+                    self._set_policy_reason(ns, reason)
             else:
                 goal = held_goal
                 self._set_policy_reason(ns, "hold/cfpa2_keep_previous")

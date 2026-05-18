@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  CycloneDDS config — Jetson side of the Orin Nano HIL link.
+
+  Binds DDS to enP8p1s0 (Orin Nano built-in NIC, direct cable to desktop
+  at 192.168.55.1). Peer list includes BOTH ends so discovery works
+  without multicast.
+
+  Deployed to /home/johnpork233/jetson_ws/config/cyclonedds_orin_nano.xml
+  by scripts/real/deploy_to_orin_nano.sh.
+
+  Use:
+    export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+    export CYCLONEDDS_URI=file:///home/johnpork233/jetson_ws/config/cyclonedds_orin_nano.xml
+
+  Reminder: WiFi interface wlP1p1s0 (10.92.39.31) is intentionally NOT
+  bound here — DDS traffic must stay on the direct link to avoid latency
+  spikes when the Jetson is also pulling apt/pip over WiFi.
+-->
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain id="any">
+    <General>
+      <Interfaces>
+        <NetworkInterface name="enP8p1s0" priority="default" multicast="true" />
+      </Interfaces>
+      <AllowMulticast>false</AllowMulticast>
+    </General>
+    <Discovery>
+      <Peers>
+        <Peer address="192.168.55.1"/>
+        <Peer address="192.168.55.49"/>
+      </Peers>
+      <ParticipantIndex>auto</ParticipantIndex>
+      <MaxAutoParticipantIndex>200</MaxAutoParticipantIndex>
+    </Discovery>
+  </Domain>
+</CycloneDDS>

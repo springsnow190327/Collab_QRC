@@ -30,7 +30,15 @@ safe_source "${WS_DIR}/install/setup.bash"
 SC_PGO_PREFIX="${HOME}/COMP0225_LRC_stack/install/sc_pgo"
 if [[ -d "${SC_PGO_PREFIX}" ]]; then
   export AMENT_PREFIX_PATH="${SC_PGO_PREFIX}:${AMENT_PREFIX_PATH}"
-  export LD_LIBRARY_PATH="${SC_PGO_PREFIX}/lib:${LD_LIBRARY_PATH}"
+  export LD_LIBRARY_PATH="${SC_PGO_PREFIX}/lib:${LD_LIBRARY_PATH:-}"
+fi
+
+# mujoco_ros2_control's libsensor.so plugin dlopens libmujoco.so.3.6.0 which
+# lives in the conda env's mujoco site-packages dir; without it on
+# LD_LIBRARY_PATH, plugin load fails and the sim chain dies silently.
+# See memory/feedback_libmujoco_ld_path.md.
+if [[ -n "${CONDA_PREFIX:-}" ]] && [[ -d "${CONDA_PREFIX}/lib/python3.10/site-packages/mujoco" ]]; then
+  export LD_LIBRARY_PATH="${CONDA_PREFIX}/lib/python3.10/site-packages/mujoco:${LD_LIBRARY_PATH:-}"
 fi
 
 export FASTRTPS_DEFAULT_PROFILES_FILE="${WS_DIR}/config/fastdds_no_shm.xml"

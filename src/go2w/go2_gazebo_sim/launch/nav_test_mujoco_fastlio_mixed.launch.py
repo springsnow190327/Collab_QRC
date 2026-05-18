@@ -963,9 +963,9 @@ def _build_fastlio_nav_stack(
 
         # CFPA2 → Nav2 bridge: subscribes /<ns>/way_point_coord
         # (PointStamped, RELIABLE), publishes /<ns>/goal_pose (PoseStamped,
-        # BEST_EFFORT to match bt_navigator's QoS). Lives outside an
-        # installed package so we run it via ExecuteProcess with an
-        # absolute path.
+        # RELIABLE to match bt_navigator), and emits /<ns>/nav_status from
+        # repeated BT planning failures. Lives outside an installed package
+        # so we run it via ExecuteProcess with an absolute path.
         bridge_path = os.path.join(_ws_root, "scripts/runtime/cfpa2_to_nav2_bridge.py")
         bridge_node = ExecuteProcess(
             cmd=[
