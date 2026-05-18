@@ -1,6 +1,6 @@
 """Decentralised peer coordinator node.
 
-Each robot runs one instance of this node. It broadcasts this robot's PeerState heartbeat and (later) negotiates frontier ownership with peers.
+Each robot runs one instance of this node. It broadcasts this robot's PeerState heartbeat and negotiates frontier ownership with peers via NegotiationRequest/NegotiationResponse. Claims are committed only on negotiated accept; there is no unilateral claim path.
 """
 
 from __future__ import annotations
@@ -91,9 +91,7 @@ REJECT_NO_LOCAL_EXPECTED_PROPOSAL = "no_local_expected_proposal"  # responder la
 class PeerInfo:
     """Tracks per-peer state for the local coordinator.
 
-    Extended over the project: currently holds the last received
-    PeerState and the local timestamp it arrived at. Future fields
-    will include claim tracking and negotiation-state machines."""
+    Extended over the project: currently holds the last received PeerState and the local timestamp it arrived at. Future fields will include claim tracking and negotiation-state machines."""
 
     last_state: PeerState | None = None
     last_received_ns: int = 0
@@ -103,8 +101,7 @@ class PeerInfo:
 class RequesterState:
     """Per-peer requester-side negotiation state.
 
-    Tracks one in-flight proposal from this robot to a specific peer.
-    Claims are not committed until the peer accepts the request.
+    Tracks one in-flight proposal from this robot to a specific peer. Claims are not committed until the peer accepts the request.
     """
     state: str = REQUESTER_IDLE
     in_flight_request_id: str | None = None
@@ -144,7 +141,6 @@ class PeerCoordinatorNode(Node):
 
         # Interim milestone parameters
         # This is NOT the final request/response protocol yet. It lets the node generate local own_claims from the shared MDVRP solver so claim broadcast and conflict resolution can be tested before full negotiation exists
-        self.declare_parameter("enable_mdvrp_auto_claims", True)
         self.declare_parameter("mdvrp_time_limit_sec", 0.5)
         self.declare_parameter("mdvrp_span_cost_coefficient", 100)
 
@@ -195,10 +191,7 @@ class PeerCoordinatorNode(Node):
             self.get_parameter("blocked_frontiers_rate_hz").value
         )
 
-        # Interim milestone parameters
-        self.enable_mdvrp_auto_claims: bool = bool(
-            self.get_parameter("enable_mdvrp_auto_claims").value
-        )
+        # MDVRP solver parameter readback
         self.mdvrp_time_limit_sec: float = float(
             self.get_parameter("mdvrp_time_limit_sec").value
         )
@@ -215,9 +208,10 @@ class PeerCoordinatorNode(Node):
         self._latest_pose: Pose | None = None
 
         # Frontier + claim storage
-        """local_frontiers is updated from the existing CFPA2 frontier MarkerArray
-        own_claims will be filled by the future negotiation logic
-        peer_claims is updated from received PeerState messages"""
+        """local_frontiers: updated from CFPA2 frontier MarkerArray
+            own_claims: committed only on negotiated accept (responder or requester path)
+            peer_claims: updated from received PeerState messages AND from negotiated accept of the corresponding peer (immediate cache)
+        """
         self.local_frontiers: list[Point3] = []
         self.own_claims: list[ClaimedFrontier] = []
         self.peer_claims: dict[str, list[ClaimedFrontier]] = {
@@ -225,7 +219,7 @@ class PeerCoordinatorNode(Node):
         }
 
         # Cooldown for interim MDVRP auto-claim generation
-        # Final request/response negotiation will use the same cooldown concept
+        # Updated when this robot sends a NegotiationRequest
         self._last_negotiation_attempt_ns: int = 0
 
         # Request ID counter for negotiation protocol
@@ -407,11 +401,8 @@ class PeerCoordinatorNode(Node):
             f"requests_to={list(self.peer_request_pubs.keys())} "
             f"responses_to={list(self.peer_response_pubs.keys())}"
         )
-
-        # Interim MDVRP auto-claim generation log
         self.get_logger().info(
-            "Interim MDVRP auto-claims | "
-            f"enabled={self.enable_mdvrp_auto_claims} "
+            "MDVRP solver | "
             f"time_limit_sec={self.mdvrp_time_limit_sec:.2f}s "
             f"span_cost={self.mdvrp_span_cost_coefficient}"
         )
@@ -600,10 +591,8 @@ class PeerCoordinatorNode(Node):
         """Drop claims from peers whose heartbeat has become stale.
 
         Supervisor decision: Option B.
-        If a peer's heartbeat times out, all claims from that peer are treated
-        as stale immediately. This supports graceful degradation under comms loss:
-        the local robot falls back to its own frontier observations instead of
-        preserving possibly-dead peer claims.
+        If a peer's heartbeat times out, all claims from that peer are treated as stale immediately. This supports graceful degradation under comms loss:
+        the local robot falls back to its own frontier observations instead of preserving possibly-dead peer claims.
         """
         now_ns = self.get_clock().now().nanoseconds
 
@@ -960,7 +949,6 @@ class PeerCoordinatorNode(Node):
             if not self._frontier_blocked_by_peer_claim(frontier)
         ]
 
-    # Interim MDVRP claim generation. This is deliberately not the final request/response protocol. It lets us create own_claims from the same MDVRP solver that the centralised CFPA2 mode uses, so claim broadcasting and conflict resolution can be tested before negotiation messages exist
     def _point3_to_claim_for(self, point: Point3, *, claimed_by: str, information_gain: float = 0.0) -> ClaimedFrontier:
         """Convert a frontier point into an owned ClaimedFrontier message."""
         claim = ClaimedFrontier()
@@ -975,88 +963,6 @@ class PeerCoordinatorNode(Node):
         claim.information_gain = float(information_gain)
 
         return claim
-
-    def _point3_to_claim(self, point: Point3, *, information_gain: float = 0.0) -> ClaimedFrontier:
-        """Interim wrapper"""
-        return self._point3_to_claim_for(
-            point,
-            claimed_by=self.robot_id,
-            information_gain=information_gain
-        )
-
-    def _generate_mdvrp_own_claims(
-        self,
-        *,
-        fresh_peers: list[str],
-        available_frontiers: list[Point3],
-    ) -> None:
-        """Generate local own_claims using the reusable MDVRP adapter.
-
-        This is an interim step only: the final decentralised implementation
-        will place the resulting proposal inside NegotiationRequest and only
-        commit it after the peer accepts. For now, we commit local own_claims
-        directly so the heartbeat/claim/conflict pipeline can be tested.
-        """
-        if not self.enable_mdvrp_auto_claims:
-            return
-
-        if self._latest_pose is None:
-            self.get_logger().debug("Skipping MDVRP auto-claim: no local odom yet")
-            return
-        
-        if not fresh_peers:
-            self.get_logger().debug("Skipping MDVRP auto-claim: no fresh peers")
-            return
-
-        if not available_frontiers:
-            # No candidates means any old own claims should naturally expire, but we should not fabricate new ones
-            self.get_logger().debug("Skipping MDVRP auto-claim: no available frontiers")
-            return
-
-        now_ns = self.get_clock().now().nanoseconds
-        if self._last_negotiation_attempt_ns > 0:
-            cooldown_age_sec = (now_ns - self._last_negotiation_attempt_ns) / 1e9
-            if cooldown_age_sec < self.negotiation_cooldown_sec:
-                return  # still in cooldown
-
-        robot_poses: dict[str, Point3] = {
-            self.robot_id: pose_msg_to_tuple(self._latest_pose)
-        }
-
-        for peer_id in fresh_peers:
-            info = self.peer_info.get(peer_id)
-            if info is None or info.last_state is None:
-                continue  # should not happen since we check for fresh peers, but be defensive
-            robot_poses[peer_id] = pose_msg_to_tuple(info.last_state.pose)
-
-        if len(robot_poses) <= 1:
-            self.get_logger().debug(
-                "Skipping MDVRP auto-claim: no usable fresh peer poses"
-            )
-            return
-
-        assignment = solve_frontier_assignment(
-            robot_poses=robot_poses,
-            candidate_frontiers=available_frontiers,
-            time_limit_sec=self.mdvrp_time_limit_sec,
-            span_cost_coefficient=self.mdvrp_span_cost_coefficient,
-        )
-
-        assigned_to_self = assignment.get(self.robot_id, [])
-        
-        self.own_claims = [
-            self._point3_to_claim(frontier) for frontier in assigned_to_self
-        ]
-
-        self._resolve_own_claim_conflicts()  # resolve against peer claims in case of overlap
-        self._last_negotiation_attempt_ns = now_ns  # start cooldown
-
-        self.get_logger().info(
-            "MDVRP auto-claim proposal generated | "
-            f"robots={sorted(robot_poses.keys())} "
-            f"candidate_frontiers={len(available_frontiers)} "
-            f"own_claims={len(self.own_claims)}"
-        )
 
     # Negotiation Chunk A: request/response inbox wiring
     def _next_request_id(self) -> str:
@@ -1120,7 +1026,9 @@ class PeerCoordinatorNode(Node):
         self.peer_response_pubs[msg.requester_id].publish(response)
 
         if accepted:
+            # Chunk D: cache peer claims immediately so the requester-side suppression check in _tick_requester_state sees consistent state before the next PeerState heartbeat arrives
             self.own_claims = list(msg.responder_claims)
+            self.peer_claims[msg.requester_id] = list(msg.requester_claims)
             self._last_successful_interaction_ns = self.get_clock().now().nanoseconds
 
         log_fn = self.get_logger().info if accepted else self.get_logger().warn
@@ -1215,7 +1123,9 @@ class PeerCoordinatorNode(Node):
                 state.backoff_until_ns = now_ns + int(self.request_reject_backoff_sec * 1e9)
                 return
 
+            # Chunk D: cache peer claims immediately so future suppression checks have consistent state before next PeerState heartbeat
             self.own_claims = list(msg.accepted_requester_claims)
+            self.peer_claims[msg.responder_id] = list(msg.accepted_responder_claims)
 
             state.state = REQUESTER_IDLE
             state.in_flight_request_id = None
@@ -1406,15 +1316,10 @@ class PeerCoordinatorNode(Node):
 
         if self.enable_negotiation_requests:
             # Negotiation must solve over the full local frontier set
-            # Peer claims are used by the local planner as avoidance constraints, not inputs that remove candidates from the negotiation problem
+            # Peer claims are used by the local planner as avoidance constraints, not as inputs that remove candidates from the negotiation problem
             self._tick_requester_state(
                 fresh_peers=fresh_peers,
                 candidate_frontiers=list(self.local_frontiers),
-            )
-        else:
-            self._generate_mdvrp_own_claims(
-                fresh_peers=fresh_peers,
-                available_frontiers=available_frontiers,
             )
 
         if not self._logged_negotiation_stub:
