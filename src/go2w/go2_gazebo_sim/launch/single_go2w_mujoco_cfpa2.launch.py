@@ -552,7 +552,12 @@ def _launch_setup(context):
             )
         )
 
-    if enable_perception and enable_slam and use_fast_lio:
+    # pointcloud_adapter is needed for HIL (desktop-side sensor publishing)
+    # even when enable_slam=false (fast_lio runs on Jetson, subscribes to
+    # the /robot/velodyne_points this adapter publishes). Gate it on
+    # perception+use_fast_lio only; the fast_lio Node below stays gated on
+    # all three flags.
+    if enable_perception and use_fast_lio:
         robot_actions.append(
             Node(
                 package="go2w_perception",
@@ -568,6 +573,9 @@ def _launch_setup(context):
                 output="screen",
             )
         )
+    # fast_lio stays gated on enable_slam so HIL desktop (enable_slam=false)
+    # skips local fast_lio (Jetson runs its own).
+    if enable_perception and enable_slam and use_fast_lio:
         robot_actions.append(
             Node(
                 package="fast_lio",

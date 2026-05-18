@@ -289,7 +289,7 @@ def generate_launch_description() -> LaunchDescription:
             # the same frontier. Cells at h=0.05m → 0 cost; h=1.00m → 90
             # cost (just below the 100 lethal). Combined with trav-cost
             # via max() so lethal walls stay lethal.
-            "elevation_cost_enabled": True,
+            "elevation_cost_enabled": False,
             "elevation_layer":        "elevation",
             "elevation_cost_min_h":   0.05,
             "elevation_cost_max_h":   1.50,

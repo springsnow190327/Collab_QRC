@@ -42,6 +42,15 @@ def main():
                          "are mesh-touched (would be all-zero noise)")
     ap.add_argument("--augment", action="store_true",
                     help="add 4-rotation augmentation (x4 dataset size)")
+    # Wider-context patch builder (2026-05-18): each patch still 7×7 but
+    # cells sampled with stride > 1 over the heightmap. Stride 2 = each
+    # patch covers 1.4 m of XY context (vs 0.7 m at stride 1). Lets CNN
+    # see "z=4 m here AND z=4 m 1 m laterally → bridge" instead of
+    # "z=4 m here, can't tell what's 1 m laterally → assume wall".
+    ap.add_argument("--patch-stride", type=int, default=1,
+                    help="cell stride within each 7×7 patch (1 = native "
+                         "0.1 m cells = 0.7 m total; 2 = 0.2 m cells = "
+                         "1.4 m total; 3 = 0.3 m cells = 2.1 m total)")
     # Sensor-noise augmentations — match what runtime LiDAR delivers
     ap.add_argument("--flip-lr", action="store_true",
                     help="add left-right flip (x2)")
@@ -73,7 +82,8 @@ def main():
     origin = d["origin_xy"]
     H, W = heights.shape
     ps = args.patch_size
-    half = ps // 2
+    stride = max(1, int(args.patch_stride))
+    half = (ps // 2) * stride
 
     n_lethal = int((labels == 1).sum())
     n_free   = int((labels == 0).sum())
@@ -99,14 +109,14 @@ def main():
     skipped_sparse = 0
 
     for yy, xx in zip(iy, ix):
-        win_t = touched[yy - half:yy + half + 1, xx - half:xx + half + 1]
+        # Sample a ps×ps patch with stride between cells. yy,xx is the center.
+        ys = yy - half + stride * np.arange(ps)
+        xs = xx - half + stride * np.arange(ps)
+        win_t = touched[np.ix_(ys, xs)]
         if win_t.sum() < min_touched:
             skipped_sparse += 1
             continue
-        win = heights[yy - half:yy + half + 1, xx - half:xx + half + 1].copy()
-        # Replace untouched cells with the min touched value in the window
-        # (so they don't pretend to be tall obstacles). Train script also
-        # subtracts per-patch min so this is safe.
+        win = heights[np.ix_(ys, xs)].copy()
         if (~win_t).any():
             fill = float(win[win_t].min()) if win_t.any() else 0.0
             win[~win_t] = fill

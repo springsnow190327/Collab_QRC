@@ -4,6 +4,34 @@ Multi-robot autonomy with Unitree Go2W wheeled-legged quadrupeds + Go2 walking q
 
 Door task (Phase 2 dual-robot VLM coordination) and the legacy A*/default Python nav backends were removed in the 2026-05 cleanup; see [CLAUDE1.md](CLAUDE1.md) for Phase 1 VLM exploration history, Phase 2 FSM archive, archived 2026-04 operational notes, and the deletion log.
 
+## Active state (2026-05-18 evening) — bridge-as-obstacle root-cause hunt: it's the ingest, not the CNN
+
+Follow-up to the morning's trav-CNN fine-tune commit (2dd8664). The exploration sim worked end-to-end and the robot spawned correctly at (0,0), but **RViz showed overhead bridges / awnings as red lethal cells** in `trav_fused`, even with the fine-tuned weights. Spent the afternoon ruling out hypotheses; final fix was upstream of the CNN.
+
+### What was tried and what it told us
+
+| Hypothesis | Action | Verdict |
+|---|---|---|
+| CNN under-trained on bridges → train more epochs | Inspected curve: val_mse plateau at ep100 (0.04). Adding epochs would not move it. | **Not it.** |
+| CNN sees too narrow a context (7×7 at 0.10m = 0.7m FoV, smaller than typical bridge → patch looks like a wall step at the bridge boundary). | Added `--patch-stride` to [`build_trav_dataset.py`](scripts/training/build_trav_dataset.py): same 7×7 cells but spaced 0.20m, total FoV 1.4m. Trained `weights_ops2_wide.dat` (val_mse 0.088, val_acc 0.904 — worse than tiled 0.040/0.948). | **Not it.** Wider FoV degraded the model. The 7×7 base CNN already had enough info; smearing it over 1.4m hurt fine-detail walls. |
+| CNN really is wrong on uniform high-z patches | Synthetic eval: fed CNN three patch types — floor (z=0), bridge top (uniform z=3m), wall edge (half z=0 / half z=3m). **All weights (pretrain / ops2_tiled / ops2_wide) predict 0.84+ free for both floor AND bridge, and 0.000 lethal for wall edge.** The CNN was correctly classifying bridges as free the whole time. | **CNN ≠ root cause. Stop blaming the model.** |
+| `grid_map_to_occupancy_grid.elevation_cost_enabled=True` was unconditionally adding 90 cost for cells with z > 1.5m, overriding CNN's free verdict | Disabled it via [nav_test_3d_explore.launch.py:292](src/go2w/go2_gazebo_sim/launch/nav_test_3d_explore.launch.py#L292). Bridges still lethal. | **Not it** (but `elevation_cost_enabled=False` left as default since it didn't help and added unnecessary penalty). |
+| Nav2 global_costmap.static_layer reads `/robot/map` (octomap 2D projection — octomap traces LiDAR hits regardless of z, so bridge tops project DOWN to occupied) instead of `/robot/traversability_grid` (CNN-fused, has bridge override) | Switched static_layer `map_topic` from `/robot_b/map` to `/robot_b/traversability_grid` in [nav2_go2_full_stack.yaml](src/go2w/go2w_config/config/nav/nav2_go2_full_stack.yaml). Bridges still lethal. | **Not it.** Nav2 was already going to do the right thing once trav_grid is right — but trav_grid was wrong upstream. |
+| **elevation_mapping_cupy itself ingests bridge-top points and writes z=3-4m to the cells beneath them. CNN then sees those cells as either uniform-high (correctly classified free) or as edges (incorrectly classified lethal due to half-bridge half-no-data patches at bridge boundaries).** Simplest fix: cap `max_height_range` so bridge points never enter the map. | [elevation_mapping.yaml](src/collaborative_exploration/trav_cost_filters/config/elevation_mapping.yaml): `max_height_range: 5.0 → 1.7` (sensor sits at z≈0.3m, 1.7m above sensor = z≈2.0m world). Also lowered `ramped_height_range_b: 2.5 → 1.7` for the slant-range gate. | **✓ FIX. Verified in sim.** Bridges cleared in `trav_fused`. |
+
+### Conclusion
+
+The CNN was correctly classifying every patch type it could possibly see. The bug was that **bridges were entering the elevation map at all**, polluting the input regardless of how good the model got. The fix sits one level upstream from where we were looking, and is a one-line YAML change — but it took eliminating four other plausible suspects (CNN training, patch size, downstream elevation_cost, Nav2 static_layer source) to know that.
+
+A second secondary fix shipped along the way:
+- **Nav2 global_costmap static_layer** now reads `/robot_b/traversability_grid` instead of `/robot_b/map`. The cnn-fused trav layer with bridge override is strictly more correct than octomap's 2D z-collapsed projection for planning, even if the bridge issue happens to be solved upstream now.
+
+### Other touch-ups this afternoon
+
+- **`scripts/real/flatten_floor_height.py`** removed by user during a roll-back iteration (not on the current path anyway; we ended up with the cleaner `strip_floor_with_patchwork.py → ransac-tiled` mode for any future cleanup needs, and `scans_v4_sparse.obj` as the actual sim asset).
+- **`build_trav_dataset.py --patch-stride N`** added during the hypothesis hunt and left dormant. Use the default (stride 1, 7×7 at 0.10 m = 0.70 m FoV) for production fine-tunes — the wide-context variant degraded val_mse without solving the bridge issue. CNN architecture would also have to scale dilations via `traversability_filter.py` to deploy a stride>1 model, which we did not do.
+- **Simple 3D ramp demo** runs unchanged via `./scripts/launch/nav_test_3d_explore.sh` (demo_ramp.xml default) or `nav_test_3d_explore_go2.sh` (Menagerie Go2 body). With today's `max_height_range: 1.7` change, demo_ramp is unaffected (its tallest features are well under 2m) but ops2 bridges should clear.
+
 ## Active state (2026-05-18) — ops2 trav-CNN fine-tune end-to-end + spawn bug + Nav2 tightening
 
 End-to-end: built the offline label-generation → 7×7 patch extraction → CNN fine-tune → sim-test pipeline for elevation_mapping_cupy's 120-param traversability filter. The sim now spawns at (0,0), uses fine-tuned weights by default, drives autonomous exploration across the ops2 scene, and goes ~15m down the main corridor in 90s.

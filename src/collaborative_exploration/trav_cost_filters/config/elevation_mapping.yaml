@@ -29,17 +29,15 @@
     resolution: 0.10
 
     # Mid-360 specifics: range up to ~30m but useful traversal info ≤ 15m.
-    # max_height_range (above sensor) suppresses ceiling-like points; ramped
-    # bounds reject far-field points that come back at sharp incidence.
-    # Permissive value — the structural overhang fix lives downstream in
-    # grid_map_to_occupancy_grid via the upper_bound layer (toggle: param
-    # upper_bound_clearance_enabled).
-    max_height_range: 5.0
-    # Ramped height gate: |Δz_base| ≤ a·r + b − c. Old (0.3/1.0/0.2) capped
-    # at 1.4 m at 2 m range → 2 m demo_ramp wall tops were rejected → no
-    # LETHAL in trav grid. Widened so 2 m walls survive close-up.
+    # max_height_range (above sensor) suppresses ceiling-like points so
+    # overhead bridges / awnings never enter the elevation map (the simple
+    # fix that worked, after upper_bound_clearance + elevation_cost tuning
+    # downstream all proved ineffective). Sensor sits at robot z≈0.3m;
+    # max_height_range=1.7 → only points up to z≈2.0m world accepted.
+    max_height_range: 1.7
+    # Ramped height gate: |Δz_base| ≤ a·r + b − c.
     ramped_height_range_a: 0.5
-    ramped_height_range_b: 2.5
+    ramped_height_range_b: 1.7
     ramped_height_range_c: 0.2
     min_valid_distance: 0.30                # match nvblox geometric blind zone
 

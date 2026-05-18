@@ -91,8 +91,12 @@ global_costmap:
       plugins: ["static_layer", "inflation_layer"]
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
-        # Subscribe to our octomap-published /robot_b/map.
-        map_topic: /robot_b/map
+        # 2026-05-18: switched from /robot_b/map (octomap projection — bridges
+        # show as obstacles because octomap traces LiDAR hits regardless of
+        # height) to /robot_b/traversability_grid (CNN+ramp_safe+bridge-override
+        # fused trav layer). The trav grid correctly clears overhead-only
+        # geometry.
+        map_topic: /robot_b/traversability_grid
         map_subscribe_transient_local: true
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
