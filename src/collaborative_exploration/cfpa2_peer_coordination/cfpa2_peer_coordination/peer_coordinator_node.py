@@ -1031,16 +1031,25 @@ class PeerCoordinatorNode(Node):
             self.peer_claims[msg.requester_id] = list(msg.requester_claims)
             self._last_successful_interaction_ns = self.get_clock().now().nanoseconds
 
-        log_fn = self.get_logger().info if accepted else self.get_logger().warn
-        log_fn(
-            f"NegotiationRequest {'accepted' if accepted else 'rejected'} | "
-            f"request_id={msg.request_id}; "
-            f"from={msg.requester_id}; "
-            f"requester_claims={len(msg.requester_claims)}; "
-            f"responder_claims={len(msg.responder_claims)}; "
-            f"reason='{reason}'"
-        )
-
+        if accepted:
+            self.get_logger().info(
+                "NegotiationRequest accepted | "
+                f"request_id={msg.request_id}; "
+                f"from={msg.requester_id}; "
+                f"requester_claims={len(msg.requester_claims)}; "
+                f"responder_claims={len(msg.responder_claims)}; "
+                f"reason='{reason}'"
+            )
+        else:
+            self.get_logger().warn(
+                "NegotiationRequest rejected | "
+                f"request_id={msg.request_id}; "
+                f"from={msg.requester_id}; "
+                f"requester_claims={len(msg.requester_claims)}; "
+                f"responder_claims={len(msg.responder_claims)}; "
+                f"reason='{reason}'"
+            )
+            
         self.get_logger().info(
             f"NegotiationResponse sent | "
             f"request_id={msg.request_id}; "
