@@ -74,6 +74,19 @@ NEGOTIATION_QOS = QoSProfile(
     depth=10,   
 )
 
+# Negotiation state machine states for the requester role
+REQUESTER_IDLE = "IDLE"
+REQUESTER_REQUESTING = "REQUESTING"
+
+# Negotiation responder outcomes / reject reasons
+ACCEPT_REASON = "accepted"
+REJECT_CROSSING_LOST = "crossing_lost"  # simultaneous request collision; this robot lost the deterministic tie-break
+REJECT_LOCAL_SOLVE_MISMATCH = "local_solve_mismatch"  # proposal differs from responder's local MDVRP solve
+REJECT_CLAIM_OVERLAP = "claim_overlap"  # proposed responder claims partially overlap existing committed own claims
+REJECT_FRONTIER_UNKNOWN_LOCALLY = "frontier_unknown_locally"  # proposal references a frontier not observed by responder
+REJECT_PROTOCOL_ERROR = "protocol_error"  # malformed well-addressed request
+REJECT_NO_LOCAL_EXPECTED_PROPOSAL = "no_local_expected_proposal"  # responder lacks enough local state to compute an expected proposal
+
 @dataclass
 class PeerInfo:
     """Tracks per-peer state for the local coordinator.
@@ -85,10 +98,6 @@ class PeerInfo:
     last_state: PeerState | None = None
     last_received_ns: int = 0
     was_fresh: bool = False
-
-# Negotiation state machine states for the requester role
-REQUESTER_IDLE = "IDLE"
-REQUESTER_REQUESTING = "REQUESTING"    
 
 @dataclass
 class RequesterState:
@@ -722,21 +731,214 @@ class PeerCoordinatorNode(Node):
                 "Dropped own claim(s) due to deterministic peer conflict resolution | "
                 f"dropped={dropped}; details={dropped_details}"
             )
+            
+    # Functions for negotiation chunk C: responder validation + accept/reject
+    def _claims_match_within_tolerance(self, a: list[ClaimedFrontier], b: list[ClaimedFrontier]) -> bool:
+        """Return True if two claim lists refer to the same 2D frontier set.
 
-    def _claim_point_key(self, claim: ClaimedFrontier) -> tuple[float, float]:
-        """Rounded 2D key for comparing claim sets without order sensitivity."""
-        return(
-            round(float(claim.position.x), 3),
-            round(float(claim.position.y), 3),
+        Uses FRONTIER_MATCH_TOLERANCE rather than mm-rounded equality, so independently generated requester/responder proposals can still match despite small floating point or projection differences.
+        """
+        if len(a) != len(b):
+            return False
+
+        # copy b to a mutable list so we can mark off matches without modifying the original
+        unmatched_b = list(b)
+
+        for claim_a in a:
+            point_a = point_msg_to_tuple(claim_a.position)
+            matched_idx: int | None = None
+
+            for idx, claim_b in enumerate(unmatched_b):
+                point_b = point_msg_to_tuple(claim_b.position)
+                if self._same_frontier_position(point_a, point_b):
+                    matched_idx = idx
+                    break
+
+            if matched_idx is None:
+                return False  # claim_a has no match in b, so sets don't match
+
+            unmatched_b.pop(matched_idx)  # remove matched claim from consideration
+
+        return True  # all claims in a have a match in b, and lengths are equal, so sets match
+
+    def _claim_position_known_locally(self, claim: ClaimedFrontier) -> bool:
+        """Return True if a claim position matches one of this robot's local frontiers."""
+        claim_point = point_msg_to_tuple(claim.position)
+
+        for frontier in self.local_frontiers:
+            if self._same_frontier_position(claim_point, frontier):
+                return True # claim matches a currently observed local frontier
+
+        return False  # claim does not match any currently observed local frontier
+
+    def _responder_local_resolve(self, msg: NegotiationRequest) -> tuple[list[ClaimedFrontier], list[ClaimedFrontier]] | None:
+        """Re-run MDVRP locally from the responder's view.
+
+        Returns expected (requester_claims, responder_claims), or None if this
+        robot cannot form a local expected proposal.
+        """
+        if self._latest_pose is None:
+            self.get_logger().debug(
+                "Responder validation cannot re-solve: no local odom yet"
+            )
+            return None
+
+        if not self._peer_is_fresh(msg.requester_id):
+            self.get_logger().debug(
+                "Responder validation cannot re-solve: requester heartbeat stale | "
+                f"requester_id={msg.requester_id}"
+            )
+            return None
+
+        if not self.local_frontiers:
+            self.get_logger().debug(
+                "Responder validation cannot re-solve: no local frontiers"
+            )
+            return None
+
+        info = self.peer_info.get(msg.requester_id)
+        if info is None or info.last_state is None:
+            self.get_logger().debug(
+                "Responder validation cannot re-solve: no requester PeerState | "
+                f"requester_id={msg.requester_id}"
+            )
+            return None
+
+        robot_poses: dict[str, Point3] = {
+            self.robot_id: pose_msg_to_tuple(self._latest_pose),
+            msg.requester_id: pose_msg_to_tuple(info.last_state.pose)
+        }
+
+        assignment = solve_frontier_assignment(
+            robot_poses=robot_poses,
+            candidate_frontiers=list(self.local_frontiers),
+            time_limit_sec=self.mdvrp_time_limit_sec,
+            span_cost_coefficient=self.mdvrp_span_cost_coefficient,
         )
 
-    def _claim_sets_equivalent(
-        self, 
-        a: list[ClaimedFrontier], 
-        b: list[ClaimedFrontier],
-    ) -> bool:
-        """Return True if two claim lists refer to the same 2D frontier set."""
-        return {self._claim_point_key(c) for c in a} == {self._claim_point_key(c) for c in b}
+        requester_points = assignment.get(msg.requester_id, [])
+        responder_points = assignment.get(self.robot_id, [])
+
+        expected_requester_claims = [
+            self._point3_to_claim_for(point, claimed_by=msg.requester_id)
+            for point in requester_points
+        ]
+        expected_responder_claims = [
+            self._point3_to_claim_for(point, claimed_by=self.robot_id)
+            for point in responder_points
+        ]
+
+        if not expected_requester_claims and not expected_responder_claims:
+            return None
+        
+        return expected_requester_claims, expected_responder_claims
+
+    # Validator function (Chunk C)
+    def _validate_negotiation_request(self, msg: NegotiationRequest) -> tuple[bool, str]:
+        """Validate an incoming negotiation request.
+
+        Protocol-level addressing/version checks are handled before this method.
+        This method decides whether a well-addressed request should be accepted.
+        """
+        # 1. Crossing resolution
+        own_requester_state = self.requester_states.get(msg.requester_id)
+        if (own_requester_state is not None and own_requester_state.state == REQUESTER_REQUESTING):
+            if self.robot_id < msg.requester_id:
+                # Lexicographically smaller robot_id wins the crossing
+                self.get_logger().info(
+                    "Crossing negotiation detected; keeping own request and rejecting incoming | "
+                    f"incoming_request_id={msg.request_id}; "
+                    f"own_request_id={own_requester_state.in_flight_request_id}; "
+                    f"this_robot={self.robot_id}; "
+                    f"requester={msg.requester_id}"
+                )
+                return False, REJECT_CROSSING_LOST  
+            
+            # Lose crossing. Cancel own in-flight request, then evaluate incoming
+            cancelled_request_id = own_requester_state.in_flight_request_id
+            self.requester_states[msg.requester_id] = RequesterState()  # reset requester
+            self.get_logger().info(
+                "Crossing negotiation detected; cancelling own request and evaluating incoming | "
+                f"cancelled_request_id={cancelled_request_id}; "
+                f"incoming_request_id={msg.request_id}; "
+                f"this_robot={self.robot_id}; "
+                f"requester={msg.requester_id}"
+            )
+
+        # 2. claimed_by sanity
+        for claim in msg.requester_claims:
+            if claim.claimed_by != msg.requester_id:
+                self.get_logger().warn(
+                    "NegotiationRequest has requester claim assigned to wrong robot | "
+                    f"request_id={msg.request_id}; "
+                    f"claim.claimed_by={claim.claimed_by}; "
+                    f"expected={msg.requester_id}"
+                )
+                return False, REJECT_PROTOCOL_ERROR
+
+        for claim in msg.responder_claims:
+            if claim.claimed_by != self.robot_id:
+                self.get_logger().warn(
+                    "NegotiationRequest has responder claim assigned to wrong robot | "
+                    f"request_id={msg.request_id}; "
+                    f"claim.claimed_by={claim.claimed_by}; "
+                    f"expected={self.robot_id}"
+                )
+                return False, REJECT_PROTOCOL_ERROR
+
+        # 3. frontier_unknown_locally
+        for claim in list(msg.requester_claims) + list(msg.responder_claims):
+            if not self._claim_position_known_locally(claim):
+                claim_point = point_msg_to_tuple(claim.position)
+                self.get_logger().warn(
+                    "NegotiationRequest references frontier unknown locally | "
+                    f"request_id={msg.request_id}; "
+                    f"claim=({claim_point[0]:.2f}, {claim_point[1]:.2f}); "
+                    f"claimed_by={claim.claimed_by}"
+                )
+                return False, REJECT_FRONTIER_UNKNOWN_LOCALLY
+
+        # 4. claim_overlap
+        # Re-committing exactly the same responder claim set is allowed
+        if not self._claims_match_within_tolerance(list(msg.responder_claims), self.own_claims):
+            for proposed in msg.responder_claims:
+                proposed_point = point_msg_to_tuple(proposed.position)
+
+                for existing in self.own_claims:
+                    existing_point = point_msg_to_tuple(existing.position)
+
+                    if self._same_frontier_position(proposed_point, existing_point):
+                        self.get_logger().warn(
+                            "NegotiationRequest overlaps existing responder claim | "
+                            f"request_id={msg.request_id}; "
+                            f"overlap=({proposed_point[0]:.2f}, {proposed_point[1]:.2f})"
+                        )
+                        return False, REJECT_CLAIM_OVERLAP
+
+        # 5.. local_solve_mismatch
+        local_resolve = self._responder_local_resolve(msg)
+        if local_resolve is None:
+            return False, REJECT_NO_LOCAL_EXPECTED_PROPOSAL
+
+        expected_requester_claims, expected_responder_claims = local_resolve
+
+        requester_matches = self._claims_match_within_tolerance(list(msg.requester_claims), expected_requester_claims)
+        
+        responder_matches = self._claims_match_within_tolerance(list(msg.responder_claims), expected_responder_claims)
+
+        if not requester_matches or not responder_matches:
+            self.get_logger().warn(
+                "NegotiationRequest rejected: local MDVRP solve mismatch | "
+                f"request_id={msg.request_id}; "
+                f"requester_claims={len(msg.requester_claims)} "
+                f"expected_requester_claims={len(expected_requester_claims)}; "
+                f"responder_claims={len(msg.responder_claims)} "
+                f"expected_responder_claims={len(expected_responder_claims)}"
+            )
+            return False, REJECT_LOCAL_SOLVE_MISMATCH
+
+        # Passed all checks, accept request
+        return True, ACCEPT_REASON  
 
     # Helper functions for frontier matching 
     def _frontier_blocked_by_peer_claim(self, frontier: Point3) -> bool:
@@ -893,53 +1095,50 @@ class PeerCoordinatorNode(Node):
             )
             return
 
-        # Chunk B temporary responder behaviour: accept well-formed requests and commit the responder side
-        # Full responder validation and anti-conflict checks come in Chunk C
+        # Chunk C responder behaviour
+        accepted, reason = self._validate_negotiation_request(msg)
+
         response = NegotiationResponse()
         response.header = self._make_header()
         response.request_id = msg.request_id
         response.requester_id = msg.requester_id
         response.responder_id = self.robot_id
         response.response_stamp = self.get_clock().now().to_msg()
-        response.accepted = True
-        response.reason = "chunk_b_temporary_accept"
-        response.accepted_requester_claims = list(msg.requester_claims)
-        response.accepted_responder_claims = list(msg.responder_claims)
-
-        for claim in msg.responder_claims:
-            if claim.claimed_by != self.robot_id:
-                self.get_logger().warn(
-                    "Rejecting NegotiationRequest with responder claim assigned to wrong robot | "
-                    f"request_id={msg.request_id}; "
-                    f"claim.claimed_by={claim.claimed_by}; "
-                    f"this_robot={self.robot_id}"
-                )
-                return
-        
+        response.accepted = accepted
+        response.reason = reason
         response.responder_last_interaction_attempt_stamp = self._ns_to_time_msg(self._last_interaction_attempt_ns)
         response.protocol_version = PROTOCOL_VERSION
 
-        # Send accept before committing locally.
-        # This preserves the intended ordering for the temporary Chunk B responder: requester sees the response before responder mutates committed state.
-        self.peer_response_pubs[msg.requester_id].publish(response)
-        self.own_claims = list(msg.responder_claims)
-        self._last_successful_interaction_ns = self.get_clock().now().nanoseconds
+        if accepted:
+            response.accepted_requester_claims = list(msg.requester_claims)
+            response.accepted_responder_claims = list(msg.responder_claims)
+        else:
+            response.accepted_requester_claims = []
+            response.accepted_responder_claims = []
 
-        self.get_logger().info(
-            f"NegotiationRequest received | "
-            f"request_id={msg.request_id} "
-            f"requester_id={msg.requester_id} "
-            f"responder_id={msg.responder_id} "
-            f"requester_claims={len(msg.requester_claims)} "
-            f"responder_claims={len(msg.responder_claims)}"
+        # Publish BEFORE local commit
+        self.peer_response_pubs[msg.requester_id].publish(response)
+
+        if accepted:
+            self.own_claims = list(msg.responder_claims)
+            self._last_successful_interaction_ns = self.get_clock().now().nanoseconds
+
+        log_fn = self.get_logger().info if accepted else self.get_logger().warn
+        log_fn(
+            f"NegotiationRequest {'accepted' if accepted else 'rejected'} | "
+            f"request_id={msg.request_id}; "
+            f"from={msg.requester_id}; "
+            f"requester_claims={len(msg.requester_claims)}; "
+            f"responder_claims={len(msg.responder_claims)}; "
+            f"reason='{reason}'"
         )
 
         self.get_logger().info(
             f"NegotiationResponse sent | "
             f"request_id={msg.request_id}; "
             f"to={msg.requester_id}; "
-            f"accepted={response.accepted}; "
-            f"reason='{response.reason}'"
+            f"accepted={accepted}; "
+            f"reason='{reason}'"
         )
 
     def _negotiation_response_received(self, msg: NegotiationResponse) -> None:
@@ -997,6 +1196,25 @@ class PeerCoordinatorNode(Node):
         now_ns = self.get_clock().now().nanoseconds
 
         if msg.accepted:
+            if not self._claims_match_within_tolerance(list(msg.accepted_requester_claims), state.proposed_own_claims) or not self._claims_match_within_tolerance(list(msg.accepted_responder_claims), state.proposed_peer_claims):
+                state.consecutive_rejects += 1
+
+                self.get_logger().warn(
+                    "Ignoring accepted NegotiationResponse because accepted claims "
+                    "do not match in-flight proposal | "
+                    f"request_id={msg.request_id}; "
+                    f"peer_id={msg.responder_id}"
+                    f"consecutive_rejects={state.consecutive_rejects}"
+                )
+
+                state.state = REQUESTER_IDLE
+                state.in_flight_request_id = None
+                state.request_sent_ns = 0
+                state.proposed_own_claims = []
+                state.proposed_peer_claims = []
+                state.backoff_until_ns = now_ns + int(self.request_reject_backoff_sec * 1e9)
+                return
+
             self.own_claims = list(msg.accepted_requester_claims)
 
             state.state = REQUESTER_IDLE
@@ -1039,8 +1257,7 @@ class PeerCoordinatorNode(Node):
     def _tick_requester_state(self, *, fresh_peers: list[str], candidate_frontiers: list[Point3]) -> None:
         """Drive requester-side negotiation state machines.
 
-        Chunk B implements only requester-side behaviour:
-        IDLE -> REQUESTING -> IDLE on accept/reject/timeout.
+        Implements requester-side; responder side in Chunk C
         """
         if not self.enable_negotiation_requests:
             return
@@ -1092,7 +1309,7 @@ class PeerCoordinatorNode(Node):
             proposed_own_claims, proposed_peer_claims = proposal
 
             # Avoid repeatedly negotiating the same already-committed allocation
-            if self._claim_sets_equivalent(proposed_own_claims, self.own_claims) and self._claim_sets_equivalent(proposed_peer_claims, self.peer_claims.get(peer_id, [])):
+            if self._claims_match_within_tolerance(proposed_own_claims, self.own_claims) and self._claims_match_within_tolerance(proposed_peer_claims, self.peer_claims.get(peer_id, [])):
                 continue
 
             request_id = self._next_request_id()
