@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  CycloneDDS config — desktop side of the Orin Nano HIL link.
+
+  Binds DDS to enp10s0 (motherboard NIC, direct cable to Jetson at
+  192.168.55.49). Peer list includes BOTH ends so discovery works
+  without multicast (point-to-point cable doesn't route mDNS multicast
+  through any switch).
+
+  Use:
+    export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+    export CYCLONEDDS_URI=file://$(pwd)/scripts/real/cyclonedds_orin_nano_desktop.xml
+
+  IMPORTANT: ParticipantIndex=auto + MaxAutoParticipantIndex=200 prevents
+  port-collision when multiple ros2 processes start in quick succession.
+-->
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain id="any">
+    <General>
+      <Interfaces>
+        <NetworkInterface name="enp10s0" priority="default" multicast="true" />
+      </Interfaces>
+      <AllowMulticast>false</AllowMulticast>
+    </General>
+    <Discovery>
+      <Peers>
+        <Peer address="192.168.55.1"/>
+        <Peer address="192.168.55.49"/>
+      </Peers>
+      <ParticipantIndex>auto</ParticipantIndex>
+      <MaxAutoParticipantIndex>200</MaxAutoParticipantIndex>
+    </Discovery>
+  </Domain>
+</CycloneDDS>

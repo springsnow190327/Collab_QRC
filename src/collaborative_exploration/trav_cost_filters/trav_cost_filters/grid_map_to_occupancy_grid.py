@@ -280,10 +280,10 @@ class GridMapToOccupancyGrid(Node):
 
     def _on_map(self, msg: GridMap) -> None:
         if self.traversability_layer not in msg.layers:
-            self.get_logger().warn_throttle(
-                self.get_clock(), 5000,
+            self.get_logger().warn(
                 f"layer '{self.traversability_layer}' not in GridMap; "
-                f"available: {list(msg.layers)}"
+                f"available: {list(msg.layers)}",
+                throttle_duration_sec=5.0,
             )
             return
 
@@ -298,9 +298,9 @@ class GridMapToOccupancyGrid(Node):
 
         data_float = np.array(msg.data[layer_idx].data, dtype=np.float32)
         if data_float.size != n_cells:
-            self.get_logger().warn_throttle(
-                self.get_clock(), 5000,
-                f"size mismatch: data={data_float.size} expected={n_cells}"
+            self.get_logger().warn(
+                f"size mismatch: data={data_float.size} expected={n_cells}",
+                throttle_duration_sec=5.0,
             )
             return
 
@@ -538,10 +538,10 @@ class GridMapToOccupancyGrid(Node):
                 Time(),
             )
         except TransformException as exc:
-            self.get_logger().warn_throttle(
-                self.get_clock(), 5000,
+            self.get_logger().warn(
                 f"robot footprint seed skipped: cannot transform "
                 f"{occ.header.frame_id} <- {self.robot_frame}: {exc}",
+                throttle_duration_sec=5.0,
             )
             return
 

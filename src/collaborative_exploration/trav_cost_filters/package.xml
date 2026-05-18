@@ -17,11 +17,14 @@
   <depend>grid_map_filters</depend>
   <depend>filters</depend>
 
-  <!-- Python deps for grid_map_to_occupancy_grid adapter -->
+  <!-- C++ deps for grid_map_to_occupancy_grid_cpp -->
+  <depend>nav_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>geometry_msgs</depend>
+
+  <!-- Python deps for grid_map_to_occupancy_grid adapter (Python fallback) -->
   <exec_depend>rclpy</exec_depend>
-  <exec_depend>tf2_ros</exec_depend>
-  <exec_depend>geometry_msgs</exec_depend>
-  <exec_depend>nav_msgs</exec_depend>
   <exec_depend>std_msgs</exec_depend>
 
   <!-- Runtime deps -->
