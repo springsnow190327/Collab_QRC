@@ -309,6 +309,22 @@ When a robot accepts an incoming NegotiationRequest, it updates its own `own_cla
 
 This is correctness-preserving but produces extra protocol traffic. Chunk D will eliminate it by caching `msg.requester_claims` into `self.peer_claims[msg.requester_id]` at the moment of accept, rather than waiting for the next heartbeat.
 
+### Peer-claim cache on accept
+When a robot accepts a NegotiationRequest (responder side) or receives an accepted NegotiationResponse (requester side), both sides of the agreed allocation are cached immediately into local state, rather than waiting for the next PeerState heartbeat to propagate the peer's commitment.
+
+Specifically:
+- Responder accept caches `msg.requester_claims` into `peer_claims[msg.requester_id]` alongside the `own_claims = list(msg.responder_claims)` commit.
+- Requester accept caches `msg.accepted_responder_claims` into `peer_claims[msg.responder_id]` alongside the `own_claims = list(msg.accepted_requester_claims)` commit.
+
+Without this cache, the requester-side suppression check in `_tick_requester_state` would briefly see a stale `peer_claims` entry during the heartbeat-lag window (up to ~500 ms at `peer_state_rate_hz = 2.0`) and fire a redundant request that the peer would immediately accept. The redundant exchange was correctness-preserving but produced spurious protocol traffic and made test logs harder to read.
+
+The PeerState heartbeat still updates `peer_claims` in `_peer_state_received` for normal heartbeat-driven propagation; the cache fix is an early-write that closes the lag window. Stale-heartbeat overwrite of fresher cached state is not a concern in practice because by the time the peer's heartbeat arrives, the peer has itself committed the same allocation, so the heartbeat-carried claims match the cache.
+
+### Commit invariant
+Following the Chunk D cleanup, `own_claims` is committed only via negotiated accept — either on the responder side
+(`_negotiation_request_received`) or the requester side (`_negotiation_response_received`). The earlier interim
+`_generate_mdvrp_own_claims` path used during Chunks A–C for testing the heartbeat/claim/conflict pipeline before negotiation existed has been removed entirely. The parameter `enable_negotiation_requests` remains as a debug switch: when False, the node participates in PeerState heartbeats and serves as a responder but does not initiate or commit claims of its own.
+
 ## Status
 - [X] Verify centralisation in cfpa2_coordinator_node.py
 - [X] Audit map_merge_utils.py for centralised assumptions
@@ -318,17 +334,18 @@ This is correctness-preserving but produces extra protocol traffic. Chunk D will
 - [X] Peer state freshness tracking (timeout detection)
 - [X] Log peer-stale events
 - [X] Bonus: real-pose ingestion from `/odom/nav`
-- [ ] Pairwise frontier negotiation (request/response protocol)
+- [X] Pairwise frontier negotiation (request/response protocol)
   - [X] Chunk A: request/response inbox wiring
   - [X] Chunk B: requester state machine
   - [X] Chunk C: responder validation + accept/reject
-  - [ ] Chunk D: replace interim MDVRP auto-claim path
+  - [X] Chunk D: replace interim MDVRP auto-claim path
 - [X] Claim management: storage, expiry, and peer-claim blocking implemented/tested
 - [X] Frontier management: local frontier ingestion from CFPA2 MarkerArray and peer-claim filtering implemented
 - [X] MDVRP-generated own-claim proposal
 - [X] Claim conflict resolution rule implemented/tested
 - [X] Frontier filter output (so single_robot_node respects claims)
 - [ ] Peer map subscriber + overlay_map fusion - being implemented by Haichen 13/05/2026.  My work will integrate with his merged-map interface once topic name, message type and freshness semantics are confirmed.
-- [ ] Integration with existing single_robot_node
+- [X] Integration with existing single_robot_node
+      Single-robot CFPA2 now subscribes to /<ns>/cfpa2_peer_coordination/blocked_frontiers and filters peer-claimed frontier goals with fail-open stale-message behaviour. Re-checked against latest upstream single_robot_node after ramp-ascent and 3D frontier changes.
 - [ ] Comms-cut survival demo
 
