@@ -176,6 +176,66 @@ int launchPathAlignCritic(
   const uint8_t * path_pts_valid_device,
   float       * costs_device);
 
+// ── ObstaclesCritic ──────────────────────────────────────────────────────
+// CPU body (obstacles_critic.cpp):
+//   For each (b, t):
+//     pose_cost = costAtPose(x, y, yaw)   ← single-cell OR footprint Bresenham
+//     if pose_cost < 1: continue           (free space)
+//     if pose_cost in {LETHAL, NO_INFO with tracking_unknown}: collide; break
+//     dist = distanceToObstacle(pose_cost)
+//     if dist < collision_margin:   traj_cost   += margin - dist
+//     else if !near_goal:           repulsive   += inflation_radius - dist
+//   raw[b]       = collide ? collision_cost : traj_cost
+//   repulsive[b] = (accumulated repulsion across non-collision pre-break t)
+//   cost[b]     += pow(critical * raw + repulsion * repulsive / T, power)
+//
+// First-pass implementation handles the consider_footprint=false branch
+// (single-cell cost lookup). The early-break semantics are preserved on
+// GPU: an atomicMin finds the first colliding t per trajectory, then
+// repulsion contributions from t >= first_collision are masked off.
+//
+// Footprint Bresenham (consider_footprint=true) follows in a sibling
+// commit; for that mode the host pre-uploads the footprint polygon
+// vertices and the kernel rotates+rasterizes per pose.
+struct CostmapInfo
+{
+  unsigned int size_x;
+  unsigned int size_y;
+  float origin_x;
+  float origin_y;
+  float resolution;
+};
+
+struct ObstaclesConfig
+{
+  unsigned int batch_size;
+  unsigned int time_steps;
+  int          power;                       // cost_power yaml
+  float        critical_weight;             // critical_weight yaml
+  float        repulsion_weight;            // repulsion_weight yaml
+  float        collision_cost;              // collision_cost yaml
+  float        collision_margin_distance;   // collision_margin_distance yaml
+  float        inflation_radius;            // from InflationLayer
+  float        inflation_scale_factor;      // from InflationLayer
+  float        circumscribed_radius;        // costmap->getInscribedRadius()
+  float        possibly_inscribed_cost;     // findCircumscribedCost(...)
+  bool         tracking_unknown;            // costmap_ros->getLayeredCostmap()->isTrackingUnknown()
+  bool         near_goal;                   // host-side check
+  bool         consider_footprint;          // toggle footprint vs single-cell
+  // Footprint polygon (only used when consider_footprint=true). Pre-rotated
+  // host-side once per cycle; the kernel just rasterizes at each pose.
+  // Pass nullptr / 0 when consider_footprint=false.
+};
+
+int launchObstaclesCritic(
+  const ObstaclesConfig & cfg,
+  const float * traj_x_device,
+  const float * traj_y_device,
+  const float * traj_yaws_device,
+  const uint8_t * costmap_device,
+  CostmapInfo costmap_info,
+  float       * costs_device);
+
 }  // namespace nav_algo_mppi_cuda
 
 #endif  // NAV_ALGO_MPPI_CUDA__CRITICS_CUH_

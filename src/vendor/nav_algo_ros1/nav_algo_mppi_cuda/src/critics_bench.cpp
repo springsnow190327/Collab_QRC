@@ -245,6 +245,75 @@ void cpuPathAlignCritic(
   }
 }
 
+// ── ObstaclesCritic CPU reference (no-footprint mode) ───────────────────
+bool world_to_map_cpu(
+  const nav_algo_mppi_cuda::CostmapInfo & cm, float wx, float wy,
+  unsigned int & mx, unsigned int & my)
+{
+  if (wx < cm.origin_x || wy < cm.origin_y) return false;
+  mx = static_cast<unsigned int>((wx - cm.origin_x) / cm.resolution);
+  my = static_cast<unsigned int>((wy - cm.origin_y) / cm.resolution);
+  return mx < cm.size_x && my < cm.size_y;
+}
+
+float distance_to_obstacle_cpu(
+  float pose_cost, float scale, float circ_r, bool using_footprint)
+{
+  float d = (scale * circ_r - std::log(pose_cost) + std::log(253.0f)) / scale;
+  if (!using_footprint) d -= circ_r;
+  return d;
+}
+
+bool in_collision_cpu(float cost, bool track_unknown)
+{
+  if (cost >= 254.0f && cost <= 254.5f) return true;
+  if (cost >= 254.5f && track_unknown) return true;
+  return false;
+}
+
+void cpuObstaclesCritic(
+  unsigned int B, unsigned int T,
+  const nav_algo_mppi_cuda::ObstaclesConfig & cfg,
+  const std::vector<float> & traj_x,
+  const std::vector<float> & traj_y,
+  const std::vector<uint8_t> & costmap,
+  const nav_algo_mppi_cuda::CostmapInfo & cm_info,
+  std::vector<float> & costs)
+{
+  for (unsigned int b = 0; b < B; ++b) {
+    float traj_cost = 0.0f;
+    float repulsive = 0.0f;
+    bool collide = false;
+    for (unsigned int t = 0; t < T; ++t) {
+      unsigned int mx, my;
+      float pose_cost = 255.0f;
+      if (world_to_map_cpu(cm_info, traj_x[b * T + t], traj_y[b * T + t], mx, my)) {
+        pose_cost = static_cast<float>(costmap[my * cm_info.size_x + mx]);
+      }
+      if (pose_cost < 1.0f) continue;
+      if (in_collision_cpu(pose_cost, cfg.tracking_unknown)) {
+        collide = true;
+        break;  // CPU early break — matches GPU's first_collide_t gating
+      }
+      if (cfg.inflation_radius == 0.0f || cfg.inflation_scale_factor == 0.0f) continue;
+      const float dist = distance_to_obstacle_cpu(
+        pose_cost, cfg.inflation_scale_factor, cfg.circumscribed_radius,
+        cfg.consider_footprint);
+      if (dist < cfg.collision_margin_distance) {
+        traj_cost += cfg.collision_margin_distance - dist;
+      } else if (!cfg.near_goal) {
+        repulsive += cfg.inflation_radius - dist;
+      }
+    }
+    const float raw = collide ? cfg.collision_cost : traj_cost;
+    double cost = static_cast<double>(cfg.critical_weight) * raw
+                + static_cast<double>(cfg.repulsion_weight)
+                  * (repulsive / static_cast<double>(T));
+    if (cfg.power != 1) cost = std::pow(cost, static_cast<double>(cfg.power));
+    costs[b] += static_cast<float>(cost);
+  }
+}
+
 void checkCuda(cudaError_t e, const char * msg)
 {
   if (e != cudaSuccess) {
@@ -536,6 +605,86 @@ int main()
     if (!pass) total_fail++;
 
     cudaFree(d_Px); cudaFree(d_Py); cudaFree(d_Pyaw); cudaFree(d_pid); cudaFree(d_pv);
+  }
+
+  // ── ObstaclesCritic ─────────────────────────────────────────────────────
+  // Synthetic 100×100 costmap @ 0.10 m / cell (10 m × 10 m, origin at -5,-5).
+  // Mostly free; sprinkle a few LETHAL cells + inflation ramp around them.
+  {
+    const unsigned int W = 100, H = 100;
+    nav_algo_mppi_cuda::CostmapInfo cm_info{W, H, -5.0f, -5.0f, 0.10f};
+    std::vector<uint8_t> costmap(W * H, 0);
+    // 3 LETHAL cells at (50,50), (60,55), (40,45) + simple decay halo.
+    auto seed_lethal = [&](unsigned cx, unsigned cy) {
+      for (int dy = -8; dy <= 8; ++dy) {
+        for (int dx = -8; dx <= 8; ++dx) {
+          int x = static_cast<int>(cx) + dx;
+          int y = static_cast<int>(cy) + dy;
+          if (x < 0 || y < 0 || x >= static_cast<int>(W) || y >= static_cast<int>(H)) continue;
+          const float r = std::sqrt(static_cast<float>(dx * dx + dy * dy));
+          uint8_t v = 0;
+          if (r < 0.5f)      v = 254;             // lethal
+          else if (r < 3.0f) v = static_cast<uint8_t>(253.0f * std::exp(-0.3f * r));
+          costmap[y * W + x] = std::max(costmap[y * W + x], v);
+        }
+      }
+    };
+    seed_lethal(50, 50);
+    seed_lethal(60, 55);
+    seed_lethal(40, 45);
+
+    nav_algo_mppi_cuda::ObstaclesConfig cfg{};
+    cfg.batch_size               = B;
+    cfg.time_steps               = T;
+    cfg.power                    = 1;
+    cfg.critical_weight          = 20.0f;
+    cfg.repulsion_weight         = 3.0f;
+    cfg.collision_cost           = 10000.0f;
+    cfg.collision_margin_distance = 0.05f;
+    cfg.inflation_radius         = 0.20f;
+    cfg.inflation_scale_factor   = 5.0f;
+    cfg.circumscribed_radius     = 0.20f;
+    cfg.possibly_inscribed_cost  = 100.0f;
+    cfg.tracking_unknown         = true;
+    cfg.near_goal                = false;
+    cfg.consider_footprint       = false;
+
+    uint8_t * d_costmap;
+    checkCuda(cudaMalloc(&d_costmap, W * H * sizeof(uint8_t)), "alloc costmap");
+    checkCuda(cudaMemcpy(d_costmap, costmap.data(), W * H * sizeof(uint8_t),
+                         cudaMemcpyHostToDevice), "H2D costmap");
+
+    std::vector<float> cpu_costs(B, 0.0f);
+    auto t0 = std::chrono::steady_clock::now();
+    cpuObstaclesCritic(B, T, cfg, traj_x, traj_y, costmap, cm_info, cpu_costs);
+    auto t1 = std::chrono::steady_clock::now();
+    double cpu_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+    std::vector<double> ms_runs;
+    for (int run = 0; run < 6; ++run) {
+      checkCuda(cudaMemset(d_costs, 0, bytes_costs), "rezero");
+      auto g0 = std::chrono::steady_clock::now();
+      int rc = nav_algo_mppi_cuda::launchObstaclesCritic(
+        cfg, d_traj_x, d_traj_y, d_traj_yaws, d_costmap, cm_info, d_costs);
+      auto g1 = std::chrono::steady_clock::now();
+      if (rc != 0) { std::fprintf(stderr, "Obstacles launch failed: %d\n", rc); total_fail++; break; }
+      if (run > 0) ms_runs.push_back(std::chrono::duration<double, std::milli>(g1 - g0).count());
+    }
+    std::sort(ms_runs.begin(), ms_runs.end());
+    double gpu_ms = ms_runs.empty() ? 1.0 : ms_runs[ms_runs.size() / 2];
+
+    std::vector<float> gpu_costs(B);
+    checkCuda(cudaMemcpy(gpu_costs.data(), d_costs, bytes_costs, cudaMemcpyDeviceToHost), "D2H costs");
+    float d = maxAbsDiff(cpu_costs, gpu_costs);
+    // Looser tolerance for Obstacles: collision_cost=10000 amplifies any
+    // single-cell quantization difference around the lethal edge. 1e-2
+    // (absolute) is plenty given that costs are O(10000) when collide.
+    const float TOL = 1e-2f;
+    bool pass = d < TOL;
+    std::printf("ObstaclesCritic        CPU %.3f ms | GPU %.3f ms | %5.1f× | max|Δ| %.3e | %s\n",
+                cpu_ms, gpu_ms, cpu_ms / gpu_ms, d, pass ? "PASS" : "FAIL");
+    if (!pass) total_fail++;
+    cudaFree(d_costmap);
   }
 
   cudaFree(d_traj_x); cudaFree(d_traj_y); cudaFree(d_traj_yaws);

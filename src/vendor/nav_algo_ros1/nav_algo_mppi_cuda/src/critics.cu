@@ -165,6 +165,118 @@ __global__ void constraintCriticKernel(
   }
 }
 
+// ── ObstaclesCritic kernel (no-footprint mode) ───────────────────────────
+// Constants from costmap_2d/cost_values.h (and our compat alias):
+//   FREE_SPACE                  = 0
+//   INSCRIBED_INFLATED_OBSTACLE = 253
+//   LETHAL_OBSTACLE             = 254
+//   NO_INFORMATION              = 255
+__device__ inline bool worldToMapGpu(
+  const CostmapInfo & cm, float wx, float wy, unsigned int & mx, unsigned int & my)
+{
+  if (wx < cm.origin_x || wy < cm.origin_y) return false;
+  mx = static_cast<unsigned int>((wx - cm.origin_x) / cm.resolution);
+  my = static_cast<unsigned int>((wy - cm.origin_y) / cm.resolution);
+  return mx < cm.size_x && my < cm.size_y;
+}
+
+__device__ inline float distanceToObstacleGpu(
+  float pose_cost, float scale_factor, float min_radius,
+  float circumscribed_radius, bool using_footprint)
+{
+  float dist = (scale_factor * min_radius - logf(pose_cost) + logf(253.0f)) / scale_factor;
+  if (!using_footprint) {
+    dist -= circumscribed_radius;
+  }
+  return dist;
+}
+
+__device__ inline bool inCollisionGpu(float cost, bool tracking_unknown)
+{
+  // LETHAL_OBSTACLE = 254. NO_INFORMATION (255) blocks only when tracking
+  // unknown space (Nav2 default in our yaml: track_unknown_space=true → so
+  // 255 is treated as lethal).
+  if (cost >= 254.0f && cost <= 254.5f) return true;
+  if (cost >= 254.5f && tracking_unknown) return true;
+  return false;
+}
+
+__global__ void obstaclesCriticKernel(
+  unsigned int B, unsigned int T,
+  ObstaclesConfig cfg,
+  const float * __restrict__ traj_x,
+  const float * __restrict__ traj_y,
+  const float * __restrict__ traj_yaws,
+  const uint8_t * __restrict__ costmap,
+  CostmapInfo cm_info,
+  float * __restrict__ costs)
+{
+  const unsigned int b = blockIdx.x;
+  const unsigned int t = threadIdx.x;
+  if (b >= B) return;
+  const bool active = (t < T);
+
+  // ── Phase 1: per-thread cost-at-pose + decide collision / margin / repulsion
+  float pose_cost = 0.0f;
+  bool  local_collide = false;
+  float local_traj_cost = 0.0f;
+  float local_repulsive = 0.0f;
+
+  if (active) {
+    const unsigned int idx = b * T + t;
+    const float x = traj_x[idx];
+    const float y = traj_y[idx];
+    // For now, single-cell lookup. Footprint Bresenham landed in a follow-up.
+    unsigned int mx, my;
+    if (worldToMapGpu(cm_info, x, y, mx, my)) {
+      pose_cost = static_cast<float>(costmap[my * cm_info.size_x + mx]);
+    } else {
+      pose_cost = 255.0f;  // out-of-bounds → NO_INFORMATION
+    }
+    (void)traj_yaws;  // unused without footprint
+
+    if (pose_cost >= 1.0f) {
+      if (inCollisionGpu(pose_cost, cfg.tracking_unknown)) {
+        local_collide = true;
+      } else if (cfg.inflation_radius > 0.0f && cfg.inflation_scale_factor > 0.0f) {
+        const float dist = distanceToObstacleGpu(
+          pose_cost, cfg.inflation_scale_factor, cfg.circumscribed_radius,
+          cfg.circumscribed_radius, /*using_footprint=*/cfg.consider_footprint);
+        if (dist < cfg.collision_margin_distance) {
+          local_traj_cost = cfg.collision_margin_distance - dist;
+        } else if (!cfg.near_goal) {
+          local_repulsive = cfg.inflation_radius - dist;
+        }
+      }
+    }
+  }
+
+  // ── Phase 2: first-collision-t via atomicMin → mask later contributions
+  __shared__ int first_collide_t;
+  if (t == 0) first_collide_t = static_cast<int>(T);
+  __syncthreads();
+  if (local_collide) atomicMin(&first_collide_t, static_cast<int>(t));
+  __syncthreads();
+
+  const bool gate = (static_cast<int>(t) < first_collide_t);
+  const float traj_cost_masked = gate ? local_traj_cost : 0.0f;
+  const float repulsive_masked = gate ? local_repulsive : 0.0f;
+
+  __shared__ typename BlockReduceFloat::TempStorage sum_tc;
+  __shared__ typename BlockReduceFloat::TempStorage sum_rp;
+  const float total_traj_cost = BlockReduceFloat(sum_tc).Sum(traj_cost_masked);
+  const float total_repulsive = BlockReduceFloat(sum_rp).Sum(repulsive_masked);
+
+  if (t == 0) {
+    const bool collide_any = (first_collide_t < static_cast<int>(T));
+    const float raw = collide_any ? cfg.collision_cost : total_traj_cost;
+    const float repulsive_per_T = total_repulsive / static_cast<float>(T);
+    float cost = cfg.critical_weight * raw + cfg.repulsion_weight * repulsive_per_T;
+    if (cfg.power != 1) cost = powf(cost, static_cast<float>(cfg.power));
+    costs[b] += cost;
+  }
+}
+
 // ── PathAlignCritic kernel ──────────────────────────────────────────────
 // One block per trajectory, T threads. Threads with `p = t * stride` such
 // that p < T and (t*stride) % stride == 0 (i.e. t < T/stride) are active
@@ -458,6 +570,28 @@ int launchPathAngleCritic(
     traj_x_device, traj_y_device, traj_yaws_device,
     path_x, path_y,
     cfg.weight, cfg.power,
+    costs_device);
+
+  cudaError_t err = cudaPeekAtLastError();
+  if (err != cudaSuccess) return static_cast<int>(err);
+  return static_cast<int>(cudaDeviceSynchronize());
+}
+
+int launchObstaclesCritic(
+  const ObstaclesConfig & cfg,
+  const float * traj_x_device,
+  const float * traj_y_device,
+  const float * traj_yaws_device,
+  const uint8_t * costmap_device,
+  CostmapInfo costmap_info,
+  float       * costs_device)
+{
+  if (cfg.time_steps > kThreadsPerBlock) return cudaErrorInvalidConfiguration;
+
+  obstaclesCriticKernel<<<cfg.batch_size, kThreadsPerBlock>>>(
+    cfg.batch_size, cfg.time_steps, cfg,
+    traj_x_device, traj_y_device, traj_yaws_device,
+    costmap_device, costmap_info,
     costs_device);
 
   cudaError_t err = cudaPeekAtLastError();
