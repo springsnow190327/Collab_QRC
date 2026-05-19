@@ -191,6 +191,90 @@ __device__ inline float distanceToObstacleGpu(
   return dist;
 }
 
+// ── Footprint Bresenham helpers ──────────────────────────────────────────
+// Mirror of nav2_costmap_2d::FootprintCollisionChecker::lineCost +
+// pointCost, but operating on a __device__ costmap buffer.
+__device__ inline float pointCostGpu(
+  const uint8_t * cm, const CostmapInfo & info, int x, int y)
+{
+  if (x < 0 || y < 0 || x >= static_cast<int>(info.size_x) ||
+      y >= static_cast<int>(info.size_y))
+  {
+    return 254.0f;  // LETHAL — matches CPU's lineCost early-exit semantics
+  }
+  return static_cast<float>(cm[y * info.size_x + x]);
+}
+
+__device__ inline float lineCostGpu(
+  const uint8_t * cm, const CostmapInfo & info, int x0, int y0, int x1, int y1)
+{
+  // Bresenham line cell rasterisation (Wikipedia variant — same cell set as
+  // Nav2's LineIterator, traced verbatim in the FootprintCollisionChecker
+  // CPU port). Returns the max cell cost along the line.
+  int dx  =  abs(x1 - x0);
+  int dy  = -abs(y1 - y0);
+  int sx  = x0 < x1 ? 1 : -1;
+  int sy  = y0 < y1 ? 1 : -1;
+  int err = dx + dy;
+  float line_cost = 0.0f;
+  while (true) {
+    const float pc = pointCostGpu(cm, info, x0, y0);
+    if (pc == 254.0f) return pc;  // early-exit at LETHAL
+    if (pc > line_cost) line_cost = pc;
+    if (x0 == x1 && y0 == y1) break;
+    int e2 = 2 * err;
+    if (e2 >= dy) { err += dy; x0 += sx; }
+    if (e2 <= dx) { err += dx; y0 += sy; }
+  }
+  return line_cost;
+}
+
+// Footprint cost at pose (x, y, theta). Footprint is in robot frame; rotate
+// + translate to world, worldToMap each vertex, Bresenham each edge plus
+// the closing segment, return max cost. Matches FootprintCollisionChecker::
+// footprintCostAtPose in nav_algo_core/compat.hpp.
+__device__ inline float footprintCostAtPoseGpu(
+  const float * fp_x, const float * fp_y, unsigned int fp_n,
+  float pose_x, float pose_y, float pose_theta,
+  const uint8_t * cm, const CostmapInfo & info)
+{
+  if (fp_n < 2 || fp_x == nullptr || fp_y == nullptr) return 0.0f;
+  const float c = cosf(pose_theta);
+  const float s = sinf(pose_theta);
+
+  // First vertex (cache for closing edge).
+  unsigned int x_first = 0, y_first = 0;
+  {
+    const float wx = pose_x + fp_x[0] * c - fp_y[0] * s;
+    const float wy = pose_y + fp_x[0] * s + fp_y[0] * c;
+    if (!worldToMapGpu(info, wx, wy, x_first, y_first)) return 254.0f;
+  }
+
+  float fp_cost = 0.0f;
+  unsigned int x_prev = x_first, y_prev = y_first;
+  for (unsigned int i = 1; i < fp_n; ++i) {
+    const float wx = pose_x + fp_x[i] * c - fp_y[i] * s;
+    const float wy = pose_y + fp_x[i] * s + fp_y[i] * c;
+    unsigned int x_curr, y_curr;
+    if (!worldToMapGpu(info, wx, wy, x_curr, y_curr)) return 254.0f;
+    const float lc = lineCostGpu(
+      cm, info,
+      static_cast<int>(x_prev), static_cast<int>(y_prev),
+      static_cast<int>(x_curr), static_cast<int>(y_curr));
+    if (lc == 254.0f) return lc;
+    if (lc > fp_cost) fp_cost = lc;
+    x_prev = x_curr;
+    y_prev = y_curr;
+  }
+  // Closing edge (last → first).
+  const float closing = lineCostGpu(
+    cm, info,
+    static_cast<int>(x_prev),  static_cast<int>(y_prev),
+    static_cast<int>(x_first), static_cast<int>(y_first));
+  if (closing > fp_cost) fp_cost = closing;
+  return fp_cost;
+}
+
 __device__ inline bool inCollisionGpu(float cost, bool tracking_unknown)
 {
   // LETHAL_OBSTACLE = 254. NO_INFORMATION (255) blocks only when tracking
@@ -209,6 +293,9 @@ __global__ void obstaclesCriticKernel(
   const float * __restrict__ traj_yaws,
   const uint8_t * __restrict__ costmap,
   CostmapInfo cm_info,
+  const float * __restrict__ fp_x,
+  const float * __restrict__ fp_y,
+  unsigned int fp_n,
   float * __restrict__ costs)
 {
   const unsigned int b = blockIdx.x;
@@ -217,23 +304,41 @@ __global__ void obstaclesCriticKernel(
   const bool active = (t < T);
 
   // ── Phase 1: per-thread cost-at-pose + decide collision / margin / repulsion
+  // Direct port of ObstaclesCritic::costAtPose (obstacles_critic.cpp):
+  //   1. Single-cell pointCost first (OOB → NO_INFORMATION = 255).
+  //   2. If consider_footprint AND single-cell ≥ possibly_inscribed_cost,
+  //      escalate to footprintCostAtPose. The single-cell early-out skips
+  //      the Bresenham work for the vast majority of free-space poses.
   float pose_cost = 0.0f;
+  bool  using_footprint = false;
   bool  local_collide = false;
   float local_traj_cost = 0.0f;
   float local_repulsive = 0.0f;
 
   if (active) {
     const unsigned int idx = b * T + t;
-    const float x = traj_x[idx];
-    const float y = traj_y[idx];
-    // For now, single-cell lookup. Footprint Bresenham landed in a follow-up.
+    const float x   = traj_x[idx];
+    const float y   = traj_y[idx];
+    const float yaw = traj_yaws[idx];
+
     unsigned int mx, my;
     if (worldToMapGpu(cm_info, x, y, mx, my)) {
       pose_cost = static_cast<float>(costmap[my * cm_info.size_x + mx]);
     } else {
-      pose_cost = 255.0f;  // out-of-bounds → NO_INFORMATION
+      pose_cost = 255.0f;
     }
-    (void)traj_yaws;  // unused without footprint
+
+    // Footprint escalation (matches CPU: cost ≥ possibly_inscribed_cost OR
+    // possibly_inscribed_cost < 1, the latter being the "no inflation
+    // layer" sentinel).
+    if (cfg.consider_footprint && fp_n >= 2 &&
+        (pose_cost >= cfg.possibly_inscribed_cost ||
+         cfg.possibly_inscribed_cost < 1.0f))
+    {
+      pose_cost = footprintCostAtPoseGpu(
+        fp_x, fp_y, fp_n, x, y, yaw, costmap, cm_info);
+      using_footprint = true;
+    }
 
     if (pose_cost >= 1.0f) {
       if (inCollisionGpu(pose_cost, cfg.tracking_unknown)) {
@@ -241,7 +346,7 @@ __global__ void obstaclesCriticKernel(
       } else if (cfg.inflation_radius > 0.0f && cfg.inflation_scale_factor > 0.0f) {
         const float dist = distanceToObstacleGpu(
           pose_cost, cfg.inflation_scale_factor, cfg.circumscribed_radius,
-          cfg.circumscribed_radius, /*using_footprint=*/cfg.consider_footprint);
+          cfg.circumscribed_radius, using_footprint);
         if (dist < cfg.collision_margin_distance) {
           local_traj_cost = cfg.collision_margin_distance - dist;
         } else if (!cfg.near_goal) {
@@ -584,6 +689,9 @@ int launchObstaclesCritic(
   const float * traj_yaws_device,
   const uint8_t * costmap_device,
   CostmapInfo costmap_info,
+  const float * footprint_x_device,
+  const float * footprint_y_device,
+  unsigned int  footprint_n,
   float       * costs_device)
 {
   if (cfg.time_steps > kThreadsPerBlock) return cudaErrorInvalidConfiguration;
@@ -592,6 +700,7 @@ int launchObstaclesCritic(
     cfg.batch_size, cfg.time_steps, cfg,
     traj_x_device, traj_y_device, traj_yaws_device,
     costmap_device, costmap_info,
+    footprint_x_device, footprint_y_device, footprint_n,
     costs_device);
 
   cudaError_t err = cudaPeekAtLastError();

@@ -227,6 +227,9 @@ struct ObstaclesConfig
   // Pass nullptr / 0 when consider_footprint=false.
 };
 
+// Footprint polygon (robot frame). Pass nullptr / 0 when consider_footprint
+// is false. Typical Go2W rectangle: 4 vertices. Larger polygons are fine,
+// kernel iterates over edges sequentially.
 int launchObstaclesCritic(
   const ObstaclesConfig & cfg,
   const float * traj_x_device,
@@ -234,6 +237,9 @@ int launchObstaclesCritic(
   const float * traj_yaws_device,
   const uint8_t * costmap_device,
   CostmapInfo costmap_info,
+  const float * footprint_x_device,    // nullable if !consider_footprint
+  const float * footprint_y_device,    // nullable if !consider_footprint
+  unsigned int  footprint_n,
   float       * costs_device);
 
 }  // namespace nav_algo_mppi_cuda
