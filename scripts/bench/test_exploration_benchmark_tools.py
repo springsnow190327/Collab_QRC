@@ -88,12 +88,28 @@ class BenchmarkAggregationTests(unittest.TestCase):
                 ("robot_b", 95.0, 25.0),
             ):
                 (trial_dir / f"{ns}.json").write_text(json.dumps({
+                    "duration_target_sec": 600.0,
+                    "elapsed_sec": 600.0,
+                    "started_at_unix": 1000.0,
+                    "ended_at_unix": 1600.0,
                     "coverage": {
                         "explored_area_m2": area,
                         "coverage_ratio_of_scene": area / 384.0,
                     },
-                    "progress": {"distance_travelled_m": distance},
-                    "safety": {"wall_contact_count": 0, "tipped_over": False},
+                    "progress": {
+                        "distance_travelled_m": distance,
+                        "tipped_over": ns == "robot_b",
+                        "degraded_tilt": {"entry_count": 1 if ns == "robot_b" else 0},
+                    },
+                    "slam": {
+                        "trans_error_mean_m": 0.1 if ns == "robot_a" else 0.2,
+                        "trans_error_final_m": 0.15 if ns == "robot_a" else 0.25,
+                    },
+                    "safety": {
+                        "wall_contact_count": 0,
+                        "obstacle_contact_count": 2 if ns == "robot_b" else 0,
+                        "ever_touched": ns == "robot_b",
+                    },
                     "outcome": "completed",
                 }))
 
@@ -102,6 +118,7 @@ class BenchmarkAggregationTests(unittest.TestCase):
                     f,
                     fieldnames=[
                         "t_wall",
+                        "t_sim",
                         "global_explored_area_m2",
                         "global_coverage_ratio",
                         "overlap_pct",
@@ -109,11 +126,23 @@ class BenchmarkAggregationTests(unittest.TestCase):
                 )
                 writer.writeheader()
                 writer.writerow({
-                    "t_wall": "600.0",
+                    "t_wall": "0.0",
+                    "t_sim": "10.0",
+                    "global_explored_area_m2": "96.0",
+                    "global_coverage_ratio": "0.25",
+                    "overlap_pct": "10.0",
+                })
+                writer.writerow({
+                    "t_wall": "300.0",
+                    "t_sim": "310.0",
                     "global_explored_area_m2": "190.0",
                     "global_coverage_ratio": "0.4947916667",
                     "overlap_pct": "13.0",
                 })
+            (trial_dir / "exploration_events_demo.log").write_text(
+                "[00:00:01.000 +----ms] PLAN_RETURNED: ns=robot_a planner=ComputePathToPose t=20ms ok\n"
+                "[00:00:02.000 +1000ms] PLAN_FAILED: ns=robot_b planner=ComputePathToPose t=40ms fail\n"
+            )
 
             records = collect_trial_records(Path(tmp))
             summary = summarise_records(records)
@@ -124,6 +153,16 @@ class BenchmarkAggregationTests(unittest.TestCase):
             self.assertAlmostEqual(summary[key]["global_coverage_ratio_mean"], 0.4947916667)
             self.assertAlmostEqual(summary[key]["robot_a_distance_m_mean"], 31.0)
             self.assertAlmostEqual(summary[key]["robot_b_distance_m_mean"], 25.0)
+            self.assertAlmostEqual(summary[key]["real_time_factor_mean"], 1.0)
+            self.assertAlmostEqual(summary[key]["time_to_coverage_25pct_sec_mean"], 0.0)
+            self.assertAlmostEqual(summary[key]["coverage_50pct_reach_rate"], 0.0)
+            self.assertAlmostEqual(summary[key]["robot_b_obstacle_contacts_mean"], 2.0)
+            self.assertAlmostEqual(summary[key]["robot_b_ever_touched_rate"], 1.0)
+            self.assertAlmostEqual(summary[key]["robot_b_tipped_over_rate"], 1.0)
+            self.assertAlmostEqual(summary[key]["robot_b_degraded_tilt_rate"], 1.0)
+            self.assertAlmostEqual(summary[key]["robot_a_slam_trans_error_mean_m_mean"], 0.1)
+            self.assertAlmostEqual(summary[key]["nav2_plan_ms_mean"], 20.0)
+            self.assertAlmostEqual(summary[key]["nav2_plan_success_rate"], 0.5)
 
 
 class MTARECommonExecutorTests(unittest.TestCase):
