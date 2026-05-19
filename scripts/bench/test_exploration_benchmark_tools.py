@@ -146,6 +146,7 @@ class BaselineWrapperTests(unittest.TestCase):
     def test_benchmark_runner_defaults_to_formal_three_planner_matrix(self) -> None:
         runner = ROOT / "scripts" / "bench" / "benchmark_exploration_planners.sh"
         text = runner.read_text()
+        self.assertIn('NUM_TRIALS="${NUM_TRIALS:-3}"', text)
         self.assertIn('PLANNERS="${PLANNERS:-cfpa2 gbplanner2 mtare}"', text)
         self.assertIn("Allowed: cfpa2 gbplanner2 mtare", text)
         self.assertIn("gbplanner3 is intentionally excluded", text)

@@ -68,7 +68,7 @@ Full matrix:
 ./scripts/bench/benchmark_exploration_planners.sh
 ```
 
-Default full budget is `600 sim-seconds x 10 trials` for each
+Default full budget is `600 sim-seconds x 3 trials` for each
 `env/planner`.  Results are written to:
 
 ```text

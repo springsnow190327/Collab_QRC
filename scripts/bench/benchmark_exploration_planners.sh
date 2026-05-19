@@ -4,7 +4,7 @@
 # Default matrix:
 #   envs     : demo3_mixed + generated rooms/corridors mazes
 #   planners : cfpa2 gbplanner2 mtare
-#   trials   : 10
+#   trials   : 3
 #   duration : 600 sim-seconds
 #
 # External planner hooks:
@@ -18,7 +18,7 @@
 # is built, otherwise the local autonomous fallback.
 set -u -o pipefail
 
-NUM_TRIALS="${NUM_TRIALS:-10}"
+NUM_TRIALS="${NUM_TRIALS:-3}"
 DURATION_SEC="${DURATION_SEC:-600}"
 SESSION_TIME_SOURCE="${SESSION_TIME_SOURCE:-sim}"
 OUT_DIR="${OUT_DIR:-/tmp/exploration_bench/$(date +%Y%m%d_%H%M%S)}"
