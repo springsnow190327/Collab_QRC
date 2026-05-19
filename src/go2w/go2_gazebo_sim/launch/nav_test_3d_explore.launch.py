@@ -60,6 +60,11 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("rviz", default_value="true"),
         DeclareLaunchArgument("gui", default_value="true"),
         DeclareLaunchArgument(
+            "cfpa2_executable_suffix",
+            default_value="",
+            description="Suffix for cfpa2_single_robot_node ('_cpp' = pure C++).",
+        ),
+        DeclareLaunchArgument(
             "explore", default_value="true",
             description="true: CFPA2 autonomous frontier exploration. "
                         "false: CFPA2 disabled; drive manually by clicking "
@@ -137,6 +142,7 @@ def generate_launch_description() -> LaunchDescription:
             "rviz": LaunchConfiguration("rviz"),
             "gui":  LaunchConfiguration("gui"),
             "explore": LaunchConfiguration("explore"),
+            "cfpa2_executable_suffix": LaunchConfiguration("cfpa2_executable_suffix"),
             "nav_costmap_mode": LaunchConfiguration("nav_costmap_mode"),
             "has_wheels": LaunchConfiguration("has_wheels"),
             # A verified ramp viewpoint means the Go2W should climb with

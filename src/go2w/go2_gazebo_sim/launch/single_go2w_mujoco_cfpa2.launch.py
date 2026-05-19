@@ -700,6 +700,7 @@ def _launch_setup(context):
             "cfpa2_w_c": cfpa2_w_c,
             "cfpa2_w_momentum": cfpa2_w_momentum,
             "cfpa2_min_utility": cfpa2_min_utility,
+            "cfpa2_executable_suffix": _get(context, "cfpa2_executable_suffix"),
         }
         if cfpa2_switch_hysteresis:
             nav_args["cfpa2_switch_hysteresis"] = cfpa2_switch_hysteresis
@@ -831,6 +832,12 @@ def generate_launch_description():
             DeclareLaunchArgument("map_frame", default_value="world"),
             DeclareLaunchArgument("waypoint_input_suffix", default_value="/way_point_coord"),
             DeclareLaunchArgument("cfpa2_goal_topic_suffix", default_value="/way_point_coord"),
+            DeclareLaunchArgument(
+                "cfpa2_executable_suffix",
+                default_value="",
+                description="Suffix appended to cfpa2_single_robot_node "
+                            "(use '_cpp' for the pure-C++ rclcpp port).",
+            ),
             DeclareLaunchArgument("cfpa2_switch_hysteresis", default_value=""),
             DeclareLaunchArgument("max_linear_speed", default_value=""),
             DeclareLaunchArgument("require_settle_before_motion", default_value=""),

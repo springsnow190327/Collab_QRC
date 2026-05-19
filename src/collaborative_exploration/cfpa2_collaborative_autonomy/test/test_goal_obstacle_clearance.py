@@ -27,8 +27,6 @@ def _node():
     node.last_goal = {}
     node.odoms = {}
     node.odom_velocity_xy = {}
-    node.ig_dimension = "2d"
-    node.voxels_3d = {}
     node._adaptive_exploration_gain_radius_cells = 4
     node.cfpa2_w_ig = 1.0
     node.cfpa2_w_c = 0.3

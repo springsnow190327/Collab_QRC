@@ -104,9 +104,11 @@ rsync_to_jetson  src/vendor/elevation_mapping_cupy/sensor_processing        src/
 # ── Collab autonomy ───────────────────────────────────────────────────
 echo ""
 echo "── collaborative_exploration/ ──"
-rsync_to_jetson  src/collaborative_exploration/cfpa2_collaborative_autonomy   src/collaborative_exploration/
-rsync_to_jetson  src/collaborative_exploration/trav_cost_filters               src/collaborative_exploration/
-rsync_to_jetson  src/collaborative_exploration/slam_backend_adapters           src/collaborative_exploration/
+rsync_to_jetson  src/collaborative_exploration/cfpa2_collaborative_autonomy     src/collaborative_exploration/
+rsync_to_jetson  src/collaborative_exploration/cfpa2_peer_coordination           src/collaborative_exploration/
+rsync_to_jetson  src/collaborative_exploration/cfpa2_peer_coordination_msgs      src/collaborative_exploration/
+rsync_to_jetson  src/collaborative_exploration/trav_cost_filters                 src/collaborative_exploration/
+rsync_to_jetson  src/collaborative_exploration/slam_backend_adapters             src/collaborative_exploration/
 
 # ── Configs needed onboard ────────────────────────────────────────────
 echo ""
@@ -138,7 +140,7 @@ if [[ "$DO_BUILD" == "true" && "$DRY_RUN" != "true" ]]; then
     source /opt/ros/humble/setup.bash
     cd ${JETSON_WS}
     colcon build --symlink-install \
-      --packages-up-to elevation_mapping_cupy cfpa2_collaborative_autonomy trav_cost_filters point_lio \
+      --packages-up-to elevation_mapping_cupy cfpa2_collaborative_autonomy cfpa2_peer_coordination trav_cost_filters point_lio \
       --cmake-args -DCMAKE_BUILD_TYPE=Release \
       2>&1 | tail -40
   "

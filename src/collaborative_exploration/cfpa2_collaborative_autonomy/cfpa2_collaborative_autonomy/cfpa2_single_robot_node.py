@@ -14,8 +14,6 @@ from std_msgs.msg import String
 from geometry_msgs.msg import PoseArray
 
 from .cfpa2_coordinator_node import CFPA2Coordinator
-from .cluster_tracker import ClusterTracker
-from .frontier_3d import extract_3d_frontiers, project_to_traversability_goal
 
 # Must match FRONTIER_MATCH_TOLERANCE in cfpa2_peer_coordination/peer_coordinator_node.py
 _PEER_BLOCKED_MATCH_TOLERANCE = 0.5  # meters
@@ -42,37 +40,6 @@ class CFPA2SingleRobotNode(CFPA2Coordinator):
         # logged so the operator can see what's happening at a glance.
         self.declare_parameter("verbose_logs", False)
         self.verbose_logs = bool(self.get_parameter("verbose_logs").value)
-        self.declare_parameter("frontier_3d_min_unknown_volume_m3", 1.0)
-        self.declare_parameter("frontier_3d_min_frontier_voxels", 50)
-        self.declare_parameter("frontier_3d_border_margin_cells", 3)
-        self.declare_parameter("frontier_3d_geodesic_voronoi", False)
-        self.declare_parameter("frontier_3d_goal_search_radius_m", 2.0)
-        # Z-band filter for "actionable" unknown voxels. Default [-0.2, 1.5] m:
-        # covers from just below floor up to platform-top + small clearance.
-        # Air above 1.5 m is non-actionable for a ground robot (Mid-360 at
-        # z≈0.4 can't carve those voxels free), so excluding them stops the
-        # planner from chasing phantom clusters.
-        self.declare_parameter("frontier_3d_z_band_min_m", -0.2)
-        self.declare_parameter("frontier_3d_z_band_max_m",  1.5)
-        self.frontier_3d_min_unknown_volume_m3 = max(
-            0.0, float(self.get_parameter("frontier_3d_min_unknown_volume_m3").value)
-        )
-        self.frontier_3d_min_frontier_voxels = max(
-            1, int(self.get_parameter("frontier_3d_min_frontier_voxels").value)
-        )
-        self.frontier_3d_border_margin_cells = max(
-            0, int(self.get_parameter("frontier_3d_border_margin_cells").value)
-        )
-        self.frontier_3d_geodesic_voronoi = bool(
-            self.get_parameter("frontier_3d_geodesic_voronoi").value
-        )
-        self.frontier_3d_goal_search_radius_m = max(
-            0.1, float(self.get_parameter("frontier_3d_goal_search_radius_m").value)
-        )
-        self.frontier_3d_z_band_min_m = float(
-            self.get_parameter("frontier_3d_z_band_min_m").value)
-        self.frontier_3d_z_band_max_m = float(
-            self.get_parameter("frontier_3d_z_band_max_m").value)
 
         if len(self.namespaces) != 1:
             raise ValueError(
@@ -197,41 +164,6 @@ class CFPA2SingleRobotNode(CFPA2Coordinator):
         self.create_subscription(
             String, f"/{ns}/exploration_complete",
             self._on_exploration_complete, 10)
-        self._last_3d_frontier_warn_ns = 0
-
-        # Cross-frame frontier-cluster tracker. Without this, every tick
-        # re-extracts clusters from scratch and CFPA2 cannot tell whether
-        # the SAME cluster has been tried-and-failed before. Result is a
-        # whack-a-mole loop where the robot reaches a cluster's projection,
-        # the cluster's volume doesn't shrink (e.g. it lives in air voxels
-        # above a ramp that Mid-360 can't probe), and the same goal is
-        # re-issued forever. The tracker bookkeeps each cluster's volume
-        # trajectory + how many goal attempts it's seen, and exposes a
-        # ``non_actionable`` flag that CFPA2 uses to skip dead-end clusters.
-        # Bumped from 3 → 8 and 30 → 90: with z-band filter the cluster
-        # really IS shrinkable when robot reaches the right vantage, but
-        # the cluster centroid projects to "ramp base" for many cycles
-        # before the robot actually climbs the ramp and starts shrinking
-        # the on-ramp UNK voxels. Giving up after 3 blacklists × 14 s = 42 s
-        # is way too aggressive — the robot needs more rope.
-        self.declare_parameter("cluster_track_max_attempts", 8)
-        self.declare_parameter("cluster_track_stale_after_sec", 90.0)
-        self.declare_parameter("cluster_track_shrink_pct", 0.05)
-        self.declare_parameter("cluster_track_overlap_thresh", 0.30)
-        self._cluster_tracker = ClusterTracker(
-            match_overlap_thresh=float(
-                self.get_parameter("cluster_track_overlap_thresh").value),
-            shrink_thresh_pct=float(
-                self.get_parameter("cluster_track_shrink_pct").value),
-            stale_after_sec=float(
-                self.get_parameter("cluster_track_stale_after_sec").value),
-            max_attempts=int(
-                self.get_parameter("cluster_track_max_attempts").value),
-        )
-        # Map goal world_xy → tracker_id so record_attempt can be called
-        # when a goal is finally published downstream.
-        self._goal_to_tracker_id: dict[tuple[float, float], int] = {}
-
         # Peer-claim filter input from cfpa2_peer_coordination
         # Fail-open: if no message arrives, normal single-robot CFPA2 runs unchanged
         self._peer_blocked_frontiers: list[tuple[float, float]] = []
@@ -422,32 +354,6 @@ class CFPA2SingleRobotNode(CFPA2Coordinator):
         self._status_pub.publish(msg)
         self.get_logger().info(f"[exploration_status] {status}")
 
-    def _on_reached_blacklist(self, ns: str, goal: tuple[float, float]) -> None:
-        """Called from coordinator when a goal is reach-blacklisted.
-
-        Increments the relevant ClusterTracker's attempt_count so the
-        ``non_actionable`` flag can fire after max_attempts blacklists
-        with no volume shrink in between.
-        """
-        tid = self._cluster_tracker.record_attempt(goal)
-        # Unconditional log — we need to see whether the hook fires at all
-        # and whether attempts actually accumulate on the right tracker.
-        if tid is not None:
-            snap = dict(
-                (t[0], (t[1], t[2], t[3]))
-                for t in self._cluster_tracker.debug_snapshot()
-            )
-            vol, att, since = snap.get(tid, (-1.0, -1, -1.0))
-            self.get_logger().warn(
-                f"[cluster_track] blacklist credited tracker id={tid} "
-                f"attempts={att} last_vol={vol:.1f}m³ since_shrink={since:.1f}s"
-            )
-        else:
-            self.get_logger().warn(
-                f"[cluster_track] blacklist NOT credited (no tracker matched goal "
-                f"{goal}); trackers={len(self._cluster_tracker._tracked)}"
-            )
-
     def _on_exploration_complete(self, msg: String) -> None:
         if self._paused:
             return
@@ -462,157 +368,7 @@ class CFPA2SingleRobotNode(CFPA2Coordinator):
     def _extract_frontiers_with_scores(
         self, ns: str, planning_map: OccupancyGrid, now_ns: int
     ) -> tuple[list[tuple[float, float]], dict[tuple[float, float], float]]:
-        if self.ig_dimension != "3d":
-            return self._extract_frontiers(planning_map), {}
-
-        voxel_entry = self.voxels_3d.get(ns)
-        if voxel_entry is None:
-            if now_ns - self._last_3d_frontier_warn_ns > int(2e9):
-                self.get_logger().warn(
-                    f"[{ns}] ig_dimension=3d but no voxels_3d cached yet; "
-                    "falling back to 2D frontier extraction."
-                )
-                self._last_3d_frontier_warn_ns = now_ns
-            return self._extract_frontiers(planning_map), {}
-
-        w = int(planning_map.info.width)
-        h = int(planning_map.info.height)
-        if w <= 0 or h <= 0 or len(planning_map.data) != w * h:
-            if now_ns - self._last_3d_frontier_warn_ns > int(2e9):
-                self.get_logger().warn(
-                    f"[{ns}] planning_map malformed ({w}x{h}, len={len(planning_map.data)}); "
-                    "falling back to 2D frontier extraction."
-                )
-                self._last_3d_frontier_warn_ns = now_ns
-            return self._extract_frontiers(planning_map), {}
-
-        vs, ox, oy, oz, _nx, _ny, _nz, voxel_data = voxel_entry
-        trav_grid = np.array(planning_map.data, dtype=np.int8).reshape(h, w)
-        clearance_cells = int(
-            np.ceil(self.cfpa2_frontier_obstacle_clearance_m / max(1e-6, float(planning_map.info.resolution)))
-        )
-        # Robot xy for "farthest frontier voxel" centroid selection — without
-        # it, ring-shaped frontiers have their mean centroid AT the robot,
-        # making the goal = current pose = no exploration.
-        robot_xy_for_frontier: Optional[tuple[float, float]] = None
-        if ns in self.odoms:
-            od = self.odoms[ns]
-            robot_xy_for_frontier = (
-                float(od.pose.pose.position.x),
-                float(od.pose.pose.position.y),
-            )
-        clusters = extract_3d_frontiers(
-            voxel_data=voxel_data,
-            voxel_size_m=vs,
-            origin_xyz=(ox, oy, oz),
-            min_unknown_volume_m3=self.frontier_3d_min_unknown_volume_m3,
-            min_frontier_voxels=self.frontier_3d_min_frontier_voxels,
-            border_margin_cells=self.frontier_3d_border_margin_cells,
-            geodesic_voronoi=self.frontier_3d_geodesic_voronoi,
-            free_value=self.free_value,
-            unknown_value=self.unknown_value,
-            z_band_min_m=self.frontier_3d_z_band_min_m,
-            z_band_max_m=self.frontier_3d_z_band_max_m,
-            robot_xy=robot_xy_for_frontier,
-        )
-
-        # Dynamic cross-frame tracking: match new clusters to existing
-        # trackers via WORLD-coord AABB overlap (voxels_3d is robot-centric
-        # so voxel-index AABBs would drift; tracker converts to world
-        # internally using the origin we pass here), accumulate volume
-        # history and attempt counts. Skip any cluster the tracker says is
-        # non_actionable (max_attempts hit + no volume shrink for
-        # stale_after_sec) — these are dead ends (e.g. unknown voxels in
-        # robot-unobservable air above a ramp).
-        tracked = self._cluster_tracker.update(
-            clusters, voxel_origin_xyz=(ox, oy, oz), voxel_size_m=vs)
-        actionable = [tf for tf in tracked if not tf.non_actionable]
-        if len(tracked) != len(actionable) and self.verbose_logs:
-            dead_ids = [tf.tracked_id for tf in tracked if tf.non_actionable]
-            self.get_logger().info(
-                f"[{ns}] cluster tracker dropped {len(dead_ids)} non-actionable: "
-                f"ids={dead_ids[:5]}{'...' if len(dead_ids) > 5 else ''}"
-            )
-        # Re-key the working set so the rest of the function still loops on
-        # raw Frontier3DCluster objects, but only the actionable ones.
-        clusters_keep: list = [tf.cluster for tf in actionable]
-        # Remember tracker id for each cluster centroid so record_attempt can
-        # credit the right tracker when a goal is finally published.
-        cluster_to_tracker_id: dict[tuple[float, float], int] = {
-            (tf.cluster.centroid_world[0], tf.cluster.centroid_world[1]): tf.tracked_id
-            for tf in actionable
-        }
-
-        raw_goals: list[tuple[float, float]] = []
-        goal_scores_by_key: dict[tuple[int, int], float] = {}
-        goal_by_key: dict[tuple[int, int], tuple[float, float]] = {}
-        goal_tracker_by_key: dict[tuple[int, int], int] = {}
-        for cluster in clusters_keep:
-            goal = project_to_traversability_goal(
-                centroid_xyz=cluster.centroid_world,
-                trav_grid=trav_grid,
-                trav_resolution_m=float(planning_map.info.resolution),
-                trav_origin_xy=(
-                    float(planning_map.info.origin.position.x),
-                    float(planning_map.info.origin.position.y),
-                ),
-                search_radius_m=self.frontier_3d_goal_search_radius_m,
-                free_value=self.free_value,
-            )
-            if goal is None:
-                continue
-            grid_goal = self._world_to_grid(planning_map, goal[0], goal[1])
-            if grid_goal is None:
-                continue
-            if not self._has_frontier_obstacle_clearance(
-                planning_map.data,
-                grid_goal[0],
-                grid_goal[1],
-                w,
-                h,
-                clearance_cells,
-            ):
-                continue
-            key = self._goal_key(goal)
-            score = float(cluster.unknown_volume_m3)
-            prev = goal_scores_by_key.get(key)
-            if prev is not None and prev >= score:
-                continue
-            goal_scores_by_key[key] = score
-            goal_by_key[key] = goal
-            tid = cluster_to_tracker_id.get(
-                (cluster.centroid_world[0], cluster.centroid_world[1]))
-            if tid is not None:
-                goal_tracker_by_key[key] = tid
-
-        if goal_by_key:
-            raw_goals = list(goal_by_key.values())
-        # Stash the goal→tracker_id mapping for record_attempt() at publish time.
-        self._goal_to_tracker_id = {
-            goal_by_key[k]: goal_tracker_by_key[k]
-            for k in goal_tracker_by_key
-        }
-
-        # _filter_dead_frontiers checks that each goal has ≥N UNKNOWN cells
-        # within a 2D radius — designed for 2D mode where goals are AT a
-        # FREE/UNKNOWN boundary in the trav_grid. In 3D mode the goal is the
-        # ground-projection of a 3D cluster centroid, which lies INSIDE the
-        # FREE area (especially after the Mid-360 blind-zone fill in
-        # mapper_node — 3 m disk of forced FREE around the robot). All
-        # neighbours are FREE → live_n = 0 → frontier dropped → CFPA2 reports
-        # no_frontiers despite the 3D extractor finding clusters. Skip the
-        # filter in 3D mode; 3D's own min_unknown_volume_m3 + min_frontier_voxels
-        # already gate against trivial clusters.
-        if self.ig_dimension == "3d":
-            targets = raw_goals
-        else:
-            targets = self._filter_dead_frontiers(raw_goals, planning_map)
-        goal_scores = {
-            goal: goal_scores_by_key[self._goal_key(goal)]
-            for goal in targets
-            if self._goal_key(goal) in goal_scores_by_key
-        }
-        return targets, goal_scores
+        return self._extract_frontiers(planning_map), {}
 
     def _cfpa2_single_utility_from_info_gain(
         self,
@@ -689,9 +445,7 @@ class CFPA2SingleRobotNode(CFPA2Coordinator):
                 )
             return False
 
-        # 2D matching is intentional: frontier_3d extraction returns volumes
-        # in 3D, but goals navigate to 2D ground positions. The peer protocol
-        # only carries 2D claim positions.
+        # 2D matching: peer protocol only carries 2D claim positions.
         gx, gy = goal
         for bx, by in self._peer_blocked_frontiers:
             if math.hypot(gx - bx, gy - by) <= _PEER_BLOCKED_MATCH_TOLERANCE:

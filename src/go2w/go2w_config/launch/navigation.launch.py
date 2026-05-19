@@ -131,10 +131,14 @@ def _setup(context):
 
     explore_flag = _as_bool(_get(context, "explore"))
     if explore_flag:
+        # Default is the Python entry point; pass cfpa2_executable_suffix:=_cpp
+        # to swap in the pure-C++ rclcpp Node (Phase B). Two binaries are
+        # installed side-by-side so flipping this arg is the only diff.
+        cfpa2_exec_suffix = _get(context, "cfpa2_executable_suffix").strip()
         actions.append(
             Node(
                 package="cfpa2_collaborative_autonomy",
-                executable="cfpa2_single_robot_node",
+                executable=f"cfpa2_single_robot_node{cfpa2_exec_suffix}",
                 name="cfpa2_single_robot",
                 parameters=[cfpa2_config, cfpa2_params],
                 ros_arguments=log_info,
@@ -851,6 +855,13 @@ def generate_launch_description():
             DeclareLaunchArgument("cfpa2_min_utility", default_value="-0.5"),
             DeclareLaunchArgument("cfpa2_switch_hysteresis", default_value=""),
             DeclareLaunchArgument("cfpa2_goal_topic_suffix", default_value="/way_point_coord"),
+            DeclareLaunchArgument(
+                "cfpa2_executable_suffix",
+                default_value="",
+                description="Append to cfpa2_single_robot_node when launching; "
+                            "pass '_cpp' to run the pure-C++ rclcpp node, leave "
+                            "empty for the Python entry point (default).",
+            ),
             DeclareLaunchArgument("max_linear_speed", default_value=""),
             DeclareLaunchArgument("require_settle_before_motion", default_value=""),
             DeclareLaunchArgument("nav_map_topic", default_value=""),

@@ -2,15 +2,11 @@
   ros__parameters:
     publish_rate: 2.0
     nav_status_topic_suffix: /nav_status
-    use_shared_map: false
     # Use Nav2's inflated global costmap for frontier extraction and BFS
     # reachability. The raw OctoMap projection marks narrow obstacle-corner
     # routes as reachable even when the controller's inflated footprint is
     # already in lethal space, which lets CFPA2 assign corner-scraping goals.
     planning_map_topic_suffix: /global_costmap/costmap
-    shared_map_topic: /disco_slam/global_map
-    shared_map_wait_sec: 8.0
-    shared_map_local_patch_radius_m: 2.5
     goal_topic_suffix: /way_point_coord
     marker_frame_override: world
     frontier_stride: 2
