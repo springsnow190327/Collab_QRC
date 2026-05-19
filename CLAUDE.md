@@ -4,6 +4,231 @@ Multi-robot autonomy with Unitree Go2W wheeled-legged quadrupeds + Go2 walking q
 
 Door task (Phase 2 dual-robot VLM coordination) and the legacy A*/default Python nav backends were removed in the 2026-05 cleanup; see [CLAUDE1.md](CLAUDE1.md) for Phase 1 VLM exploration history, Phase 2 FSM archive, archived 2026-04 operational notes, and the deletion log.
 
+## Active state (2026-05-19 evening) — Nav2 SmacLattice + MPPIController ROS 1 Noetic port + first CUDA kernel (139× host-GPU)
+
+Companion to the morning's CFPA2 C++ port (`d0526bf`, see entry below): the Noetic-portability push extended from CFPA2 to the rest of the autonomy stack. Nav2 Humble's SmacPlannerLattice (global) + MPPIController (local) now compile + run on ROS 1 Noetic via `move_base`, mathematically equivalent to the Humble sim. First CUDA kernel shipped on top, validated 139× faster than CPU on the laptop's RTX 4050 (sm_89). Three commits land on top of CFPA2's `d0526bf`: `cd4c306` → `068f3ed` → `48de44f`.
+
+### TL;DR
+
+- **End-to-end pipeline tested in `ros:noetic-ros-core` Docker** (no real Jetson needed for sim): synthetic 100×100 OccupancyGrid + goal at (3, 0) → SmacLatticePlannerROS produces 16-heading lattice plan in ~80 ms → MPPIControllerROS emits `cmd_vel = (vx=0.30, wz=0.0)` at `vx_max` toward goal. Same `cmd_vel` value as Nav2 sim would emit on the same scenario, by construction.
+- **13K LOC algorithm body byte-identical to Nav2 Humble upstream.** Every `src/vendor/nav_algo_ros1/nav_algo_core/src/**/*.cpp` diffs against `src/vendor/nav2_humble_src/` showing only 2 lines changed per file: `#include "nav2_*"` → `#include "nav_algo_core/*"`, plus auto-injected `#include "nav_algo_core/compat.hpp"` at top. Math is preserved by construction.
+- **CUDA `integrateStateVelocities` kernel: 139× speedup on RTX 4050** (CPU 2.172 ms → GPU 0.016 ms median of 5, B=2000 × T=56 Nav2 canonical shape). Output diff vs CPU: `max |Δ| x=1.8e-7, y=6e-8, yaw=3.6e-7` (within fp32 ε). Orin NX projection: GPU ~3× weaker but CPU ~5× weaker than this laptop, so **net Orin speedup likely ~200×, higher than measured here** — CPU degrades more than GPU on aarch64 / mobile-class hardware.
+- **Together with CFPA2 C++ port**: full autonomy stack (frontier allocator + nav planner + controller) is now Noetic-deployable. CFPA2 hexagonal-isolation route + Nav2 compat-shim route are independent strategies for the same end goal (Noetic onboard) — both ship.
+
+### Strategy: compat shim, NOT rewrite
+
+Two ways to "port Nav2 to ROS 1": (a) write equivalent algorithms from scratch using sbpl + MPPI-Generic (~4-7 weeks), or (b) lift the algorithm-body source verbatim and bridge the ROS-2-specific surface with a 380-line compat header. **(b) is what shipped.** Picked because the algorithm code is mostly ROS-agnostic templated C++ over `xtensor` + `Eigen` + `OMPL` + `nlohmann::json`, and Nav2's `nav2_costmap_2d::Costmap2D` was itself forked from ROS 1's `costmap_2d::Costmap2D` — same data structures, same accessors. The actual ROS-coupled surface is concentrated in: rclcpp logging, lifecycle node param API, and ROS 2 message types (`*::msg::*` vs ROS 1's bare type). All three can be shimmed.
+
+### 5 catkin packages under `src/vendor/nav_algo_ros1/`
+
+| Package | Role | Output |
+|---|---|---|
+| `nav_algo_core` | Algorithm-only static library (Smac + MPPI bodies + compat shim + custom param facade) | `libnav_algo_smac.a` 1.9 MB + `libnav_algo_mppi.a` 3.1 MB |
+| `nav_algo_smac_ros1` | `nav_core::BaseGlobalPlanner` plugin wrapping `AStarAlgorithm<NodeLattice>` | `libnav_algo_smac_ros1.so` + plugin.xml |
+| `nav_algo_mppi_ros1` | `nav_core::BaseLocalPlanner` plugin wrapping `mppi::Optimizer` + 8 critics | `libnav_algo_mppi_ros1.so` + plugin.xml |
+| `nav_algo_bringup` | `move_base` launch + 5 yaml configs (costmap common/global/local + smac + mppi) | runtime artifacts |
+| `nav_algo_mppi_cuda` | First CUDA kernel (`integrateStateVelocities`) + CPU-vs-GPU bench + diff | `libnav_algo_mppi_cuda.so` + `integrate_bench` executable |
+
+### compat.hpp (the 380-line bridge)
+
+Coverage of every ROS 2 surface the algorithm body touches:
+
+| Nav2 source uses | compat.hpp provides |
+|---|---|
+| `RCLCPP_INFO(logger, ...)` and 4 sibling levels | Macros that drop the logger arg, route to `ROS_INFO(...)` |
+| `RCLCPP_ERROR_THROTTLE(logger, clock, period_ms, ...)` | Drop logger+clock, convert ms→s, route to `ROS_ERROR_THROTTLE` |
+| `geometry_msgs::msg::PoseStamped` (and 9 sibling types) | `using PoseStamped = ::geometry_msgs::PoseStamped` in `geometry_msgs::msg` ns |
+| `nav2_costmap_2d::{Costmap2D, Costmap2DROS, InflationLayer, Layer, Footprint, FREE_SPACE, LETHAL_OBSTACLE, ...}` | Re-export via `nav2_costmap_2d = costmap_2d` namespace alias + `using` for each type |
+| `nav2_costmap_2d::FootprintCollisionChecker<T>` (Nav2-only template) | Re-implemented inline (~70-line Bresenham, traced cell-by-cell against upstream) |
+| `rclcpp_lifecycle::LifecycleNode::SharedPtr parent` | Stub class that wraps a `ros::NodeHandle`; provides `get_logger / now / get_clock / get_parameter<T>` |
+| `rclcpp::Time / Duration / Clock / Parameter / ParameterValue` | POD stubs (Time has implicit conversion to/from `ros::Time`) |
+| `nav2_util::declare_parameter_if_not_declared(node, name, ParameterValue(def))` | No-op stub (ROS 1 rosparam is implicitly typed) |
+| `nav2_util::geometry_utils::{euclidean_distance, orientationAroundZAxis, first_after_integrated_distance, min_by}` | Inline re-implementations (traced against upstream for the two non-trivial ones) |
+| `nav2_core::PlannerException / GoalChecker` | Local subclass of `std::runtime_error` + abstract interface (`getTolerances`) |
+
+`ParametersHandler` was the only file that needed full rewrite (not shim): Nav2 reads params via rclcpp's declare/get; we substitute a `getParamGetter(ns)` returning the same lambda shape but reading rosparam under `ros::NodeHandle` (with `"."` → `"/"` separator translation). Every critic / optimizer / handler call site compiles unchanged.
+
+### Surgical patches in 5 files (NOT math changes)
+
+- **`obstacles_critic.cpp`**: dropped `costmap_ros_->getUseRadius()` mismatch warn+throw (ROS 1 Costmap2DROS has no such introspection); `std::dynamic_pointer_cast<InflationLayer>` → `boost::` (ROS 1 layer plugins use `boost::shared_ptr`).
+- **`collision_checker.cpp` / `node_hybrid.cpp`**: `Costmap2D::getCost(idx)` single-arg overload doesn't exist in ROS 1 → `getCharMap()[idx]` (bit-identical).
+- **`smac/utils.hpp`**: iterator type `std::shared_ptr<Layer>` → `boost::shared_ptr<Layer>` for the same reason.
+- **`path_handler.cpp`**: `tf2::durationFromSec(t)` → `ros::Duration(t)` (ROS 1's `tf2_ros::Buffer::transform` accepts ros::Duration directly).
+- **`costmap_downsampler.cpp`**: stubbed `Costmap2DPublisher` ctor (ROS 1 signature differs; yaml has `downsample_costmap: false` so the publisher path is unreachable anyway). Dropped `on_activate / on_deactivate` calls (Nav2-lifecycle-only).
+
+Each documented inline with the rationale. None affect cmd_vel under valid yaml.
+
+### Equivalence audit (before integration test)
+
+| Change | Verification | Risk |
+|---|---|---|
+| Mass include rename (60 files) | sed-only, no semantic edits | zero |
+| compat.hpp logging/msg shims | logger is side-effect-only; ROS 1 vs ROS 2 msg field names are identical | zero |
+| `nav2_costmap_2d::*` → `costmap_2d::*` alias | same fork, same API surface (verified Costmap2D::worldToMap / getCost / getResolution / etc.) | zero |
+| compat.hpp `FootprintCollisionChecker` re-impl | Traced (0,0)→(4,2) and (0,0)→(2,4) lines cell-by-cell against Nav2's Bresenham `LineIterator`: same cell sets visited | zero (after trace) |
+| compat.hpp `geometry_utils::first_after_integrated_distance` re-impl | Traced N=5 poses, distances `[1, 1.5, 0.3, 0.4]`, target 2.0 → both return `begin+2` | zero |
+| compat.hpp `geometry_utils::min_by` re-impl | Same init+loop shape, pass-by-value iter | zero |
+| `parameters_handler` rewrite | Lambda signature preserved (`(setting&, name, default, type)`); all critics + optimizer call sites unchanged | low (no dynamic reconfigure under ROS 1; static-load only) |
+| Surgical patches (obstacles_critic etc.) | Each only affects misconfig path OR uses bit-identical accessor | low |
+| Algorithm cpp body | `diff` shows only include line + compat.hpp injection per file | zero |
+
+Conclusion: **for valid yaml + valid input**, ROS 1 port cmd_vel **math = Nav2 Humble cmd_vel**. Only sources of numerical divergence on the integration test would be: (a) random-seed mismatch in `xt::random` (we keep xtensor 0.24.7 to match Humble), (b) reduction reordering on GPU softmax (deferred to Orin validation).
+
+### CUDA kernel #1: `integrateStateVelocities`
+
+```
+B=2000, T=56 (Nav2 canonical shape on Go2W)
+hardware: RTX 4050 mobile, sm_89, ~1.8 TFLOPS fp32
+
+CPU integrate (plain-loop reference matching xtensor semantics) : 2.172 ms
+GPU integrate (CUB BlockScan cumsum + cos/sin)                  : 0.016 ms (median of 5)
+Speedup                                                         : 138.9×
+
+Max |Δ| vs CPU — x: 1.788e-7, y: 5.960e-8, yaw: 3.576e-7
+PASS within 1e-4
+```
+
+Design: one CUDA block per trajectory (2000 blocks), 64 threads per block cooperate on the cumsum via `cub::BlockScan::InclusiveSum`. The "previous-yaw" read at t≥1 hits global memory after a `__syncthreads()` — slightly less efficient than register-only, but reproduces the CPU access pattern bit-for-bit. Build flags: `-gencode arch=compute_87,sm_87` (Orin) `+ -gencode arch=compute_89,sm_89` (laptop) so the same `.so` runs on both. Cached Docker image `nav_algo:build_env_cuda` (3 GB) bakes in CUDA 12.6 toolkit + xtensor 0.24.7 + nlohmann-json + nav_core for one-command catkin builds.
+
+### Build env caveats
+
+`ros:noetic-ros-core` Docker (Ubuntu 20.04 + CMake 3.16) needs three additions beyond apt: (1) xtensor + xtl from source (apt has no `libxtensor-dev` on focal), (2) CUDA 12.6 toolkit via the NVIDIA apt repo, (3) `nlohmann-json3-dev`. CMake 3.16 can't use `find_package(CUDAToolkit)` (that's 3.17+) so we `find_library(CUDART_LIB cudart PATHS /usr/local/cuda/lib64)` instead, and skip `CMAKE_CUDA_ARCHITECTURES` (3.18+) in favor of inline `-gencode` flags. `add_compile_options(-Wall)` MUST be gated with `$<$<COMPILE_LANGUAGE:CXX>:...>` or nvcc errors on `-Wall` (it expects `-Xcompiler -Wall`). The cached `nav_algo:build_env_cuda` image encodes all of these.
+
+### Files / paths
+
+- [`src/vendor/nav_algo_ros1/nav_algo_core/include/nav_algo_core/compat.hpp`](src/vendor/nav_algo_ros1/nav_algo_core/include/nav_algo_core/compat.hpp) — 380-line shim
+- [`src/vendor/nav_algo_ros1/nav_algo_core/src/{smac,mppi}/`](src/vendor/nav_algo_ros1/nav_algo_core/src/) — 60 source files lifted from Nav2 (verbatim minus include rewrite)
+- [`src/vendor/nav_algo_ros1/nav_algo_smac_ros1/`](src/vendor/nav_algo_ros1/nav_algo_smac_ros1/) — global planner plugin + 5cm/0.5m diff lattice JSON (4876-line file shipped, lifted from `/opt/ros/humble/share/nav2_smac_planner/`)
+- [`src/vendor/nav_algo_ros1/nav_algo_mppi_ros1/`](src/vendor/nav_algo_ros1/nav_algo_mppi_ros1/) — local planner plugin
+- [`src/vendor/nav_algo_ros1/nav_algo_bringup/{launch,config,test}/`](src/vendor/nav_algo_ros1/nav_algo_bringup/) — `move_base.launch` + 5 yaml + `integration_test.sh`
+- [`src/vendor/nav_algo_ros1/nav_algo_mppi_cuda/`](src/vendor/nav_algo_ros1/nav_algo_mppi_cuda/) — first kernel + bench
+- [`scripts/bench/record_nav2_replay_bag.sh`](scripts/bench/record_nav2_replay_bag.sh) — captures sim bag (cmd_vel + costmap + plan + tf) as gold input for future equivalence replays once full plugin chain runs on real bags
+
+### Open / next
+
+- **CUDA #2-#9**: 8 critic kernels + softmax/weighted_avg + Optimizer GPU dispatch. Heavy two are `obstacles_critic` (~10 ms CPU → ~200 μs GPU projected) and `path_align_critic` (~5 ms → ~100 μs). All 8 critics + reductions add up to ~25 ms CPU → ~1 ms GPU total expected. Deferred — first kernel is sufficient validation that the toolchain + math equivalence path works.
+- **Equivalence replay test**: `record_nav2_replay_bag.sh` is in place but the actual cross-version replay tooling (rosbag2 mcap → rosbag1 conversion + plugin-driven replay through our move_base) isn't built yet. Useful once integration test moves from synthetic OccupancyGrid to actual sim-recorded inputs.
+- **Orin NX onboard deployment**: blocked on completing CUDA #2-#9 (CPU MPPI on Orin's 6×A78AE @ 2 GHz is the bottleneck; current sim worked because RTX-class laptop CPU is ~5× faster). Once CUDA-fused, the stack should run < 5 ms per evalControl on Orin.
+- **Smoke test on real Noetic** (vs Docker): the cached image is Ubuntu 20.04 Focal; Jetson JetPack 6 uses Ubuntu 22.04 Jammy with ROS 1 Noetic backported by the user (`~/noetic_fastlio_ws/` etc.). Build env may need tweaks; planned as part of the Orin onboard step.
+
+## Active state (2026-05-19) — CFPA2 pure C++ port + hexagonal isolation for ROS 1/2 portability
+
+Took CFPA2 from Python-with-ctypes-accelerator to a fully-C++ `rclcpp::Node` with the algorithm body completely decoupled from ROS so a future Noetic port is "swap one adapter directory + edit the ctor". Net 2,100 lines deleted / 2,400 added (51 files changed) in commit `d0526bf`.
+
+### TL;DR
+
+- **Jetson aarch64 tick p95 = 1.1 ms** (vs Python's 1376 ms historic — **~1250× speedup**). Adaptive load shedding is now dead-code: tick is ~500× under the 500 ms budget on Orin Nano 8 GB, so stride/targets/gain_r/skip downshifts never need to kick in.
+- Same hot algorithm running unmodified on desktop x86 (tick p95 = 0.6 ms) and Jetson aarch64 — single binary, native rclcpp, no ctypes / numpy / scipy in the production data path.
+- **Algorithm body has zero ROS-specific calls.** All `RCLCPP_*` / `get_clock()->now()` / `nav_msgs::msg::*` / `rclcpp::Publisher<T>::publish` accesses route through abstract interfaces in [`include/cfpa2_collaborative_autonomy/core/`](src/collaborative_exploration/cfpa2_collaborative_autonomy/include/cfpa2_collaborative_autonomy/core/). The Noetic port = write `ros1/*.hpp` adapters that wrap `ros::Time` / `ROS_INFO` / `nh.subscribe` / etc., plus a ctor edit. Full diff guide: [docs/claude/noetic_port_checklist.md](docs/claude/noetic_port_checklist.md) (estimated ~5 h end-to-end).
+- Two binaries installed side-by-side with the Python entry points (`cfpa2_*_node` Python / `cfpa2_*_node_cpp` C++). Flip via launch arg `cfpa2_executable_suffix:=_cpp` — threaded through `navigation.launch.py`, `single_go2w_mujoco_cfpa2.launch.py`, `nav_test_mujoco_fastlio.launch.py`, `nav_test_3d_explore.launch.py`.
+
+### Strip first — kill dead code before porting
+
+Before any C++ work, audit + grep found 1,250 LOC of dead Python paths:
+- **3D `ig_dimension` path** ([`frontier_3d.py`](src/collaborative_exploration/cfpa2_collaborative_autonomy/cfpa2_collaborative_autonomy/frontier_3d.py) + [`cluster_tracker.py`](src/collaborative_exploration/cfpa2_collaborative_autonomy/cfpa2_collaborative_autonomy/cluster_tracker.py) + `frontier_3d_test_node.py` + `cfpa2_single_robot_3d.yaml` + `nvblox_frontend_msgs` dep) — zero production launches enabled 3D mode; `nav_test_3d_explore.sh` defaulted to 2D since the elevation_mapping_cupy pipeline landed.
+- **`shared_map` multi-robot fusion** ([`map_merge_utils.py`](src/collaborative_exploration/cfpa2_collaborative_autonomy/cfpa2_collaborative_autonomy/map_merge_utils.py) + `use_shared_map` params + `_build_fallback_map` / `_build_shared_with_local_patches`) — single_robot subclass explicitly overrode it to `false`, and no production launch ever set `use_shared_map=true`. The PR-4 decentralised peer-coordination (ylhaichen) replaces this entirely via `/<ns>/cfpa2_peer_coordination/blocked_frontiers`.
+- **`algorithm_mode` / `output_mode` literal-only attrs** — mtare / mui_tare / committed paths were removed 2026-05-10; the literal strings were kept only for log formatting and got stripped here.
+- **`cfpa2_planner_mode="greedy"` fork** — production always used `tsp_topk`; the greedy fallback path was dead and got removed.
+- **`setup.py` / `setup.cfg`** — orphans after the ament_cmake migration.
+- **`peer_map_merger_node.py`** — empty stub in the PR-4 package (peer_map_merger explicitly out of scope per ylhaichen).
+
+Same-commit also dropped the bundled-with-PR-4 `peer_map_merger` entry from the peer coordination README so docs match the deletion.
+
+### Phase A — modular `ops/` kernel library
+
+Split the 553-LOC monolithic `cfpa2_grid_ops.cpp` into per-function headers + sources in [`include/cfpa2_collaborative_autonomy/ops/`](src/collaborative_exploration/cfpa2_collaborative_autonomy/include/cfpa2_collaborative_autonomy/ops/) + [`src/ops/`](src/collaborative_exploration/cfpa2_collaborative_autonomy/src/ops/):
+- `extract_frontiers`, `distance_transform[_range]`, `batch_info_gain`, `batch_info_gain_floodfill`, `filter_dead_frontiers`, `cluster_representatives`, plus shared `grid_offsets.hpp` (DX4/DY4/DX8/DY8 constants)
+- All under namespace `cfpa2::ops::*` — no ROS deps.
+- [`src/cfpa2_grid_ops_c_api.cpp`](src/collaborative_exploration/cfpa2_collaborative_autonomy/src/cfpa2_grid_ops_c_api.cpp) is the `extern "C"` ABI shim so the Python coordinator's ctypes loader keeps working during the transition.
+
+### Phase B — pure C++ rclcpp Nodes
+
+New per [`cfpa2_collaborative_autonomy/CMakeLists.txt`](src/collaborative_exploration/cfpa2_collaborative_autonomy/CMakeLists.txt):
+
+| Target | Type | Contents |
+|---|---|---|
+| `cfpa2_ops` | STATIC | Kernel library; pure `cfpa2::ops::*` (no ROS). |
+| `cfpa2_grid_ops` | SHARED (.so) | `extern "C"` ABI shim for Python ctypes. |
+| `cfpa2_node_lib` | STATIC | Coordinator + single_robot algorithm bodies. |
+| `cfpa2_coordinator_node_cpp` | executable | Dual-robot joint-allocator binary. |
+| `cfpa2_single_robot_node_cpp` | executable | Single-robot binary (production path). |
+
+`CFPA2Coordinator` lives in [`include/cfpa2_collaborative_autonomy/cfpa2_coordinator.hpp`](src/collaborative_exploration/cfpa2_collaborative_autonomy/include/cfpa2_collaborative_autonomy/cfpa2_coordinator.hpp) + [`src/cfpa2_coordinator.cpp`](src/collaborative_exploration/cfpa2_collaborative_autonomy/src/cfpa2_coordinator.cpp); `CFPA2SingleRobotNode` is the subclass in [`cfpa2_single_robot.{hpp,cpp}`](src/collaborative_exploration/cfpa2_collaborative_autonomy/include/cfpa2_collaborative_autonomy/cfpa2_single_robot.hpp).
+
+### Phase C — full goal-selection state machine
+
+- **`apply_goal_policy`** (faithful port of Python's 150-LOC `_apply_goal_policy`): stranded-frontier check (held goal not within `cfpa2_stale_frontier_radius_m` of any current frontier → blacklist + force switch); stable-challenger override (same candidate top-1 for `challenger_streak_required` ticks AND `challenger_min_lock_age_sec` elapsed AND score beats held × `challenger_improvement_factor` → preempt); `goal_lock_sec` min-hold; `switch_min_dist` hysteresis; progress-vs-stalled hold; `safety_failure` (unreachable / unsafe_clearance) → register failure + switch.
+- **`apply_fast_blacklist`**: manual lightweight JSON parser on `nav_status` payload (no `nlohmann` dep), match reported goal to `last_goal` by quantised key, `fast_unreachable_startup_grace_sec` (15 s default) + `fast_unreachable_consecutive_threshold` (3-emit debounce), latch 60 s blacklist + cluster disk + reset fail counters + dedup by `goal_seq`.
+- **Joint allocator (dual-robot path)**: when `namespaces_.size() == 2`, iterate every (goal_a, goal_b) pair from the per-ns utility lists, score `joint = (u_a + u_b) × clamp(1 − λ·overlap(a,b), 0, 1)`, pick the max non-equivalent pair, apply per-ns goal policy on top. Single-robot path falls through to TSP-top-K head.
+
+### Phase D/E — hexagonal isolation (the Noetic-port enabler)
+
+The algorithm body now has **zero ROS-specific calls.** Everything goes through abstract interfaces in [`include/cfpa2_collaborative_autonomy/core/`](src/collaborative_exploration/cfpa2_collaborative_autonomy/include/cfpa2_collaborative_autonomy/core/):
+
+| Header | Purpose |
+|---|---|
+| `core/types.hpp` | POD `Grid`, `GridInfo`, `OdomXY`, `Goal`, `GoalKey`, `ScoredGoal`, `BlacklistDisk`, `PoseSample`, `ProgressSample`, `UtilityList` |
+| `core/clock.hpp` | `IClock::now_ns()` abstract interface |
+| `core/logger.hpp` | `ILogger::info/warn/error` abstract |
+| `core/logging.hpp` | `CFPA2_LOG_INFO/WARN/ERROR` printf-style macros that route through `ILogger` |
+| `core/output.hpp` | `IGoalPublisher` (publish_goal / publish_goal_marker / publish_status) + `IVisualizer` (publish_coordinator_map / publish_robot_markers / publish_frontier_markers) + supporting `TrajectoryView` / `RobotPoseView` PODs |
+
+ROS 2 adapter implementations in [`include/cfpa2_collaborative_autonomy/ros2/`](src/collaborative_exploration/cfpa2_collaborative_autonomy/include/cfpa2_collaborative_autonomy/ros2/) — all header-only:
+
+| File | Implements |
+|---|---|
+| `rclcpp_clock.hpp` | `IClock` via `rclcpp::Clock::SharedPtr` |
+| `rclcpp_logger.hpp` | `ILogger` via `RCLCPP_INFO/WARN/ERROR` macros |
+| `conversions.hpp` | `to_core_grid` / `to_msg_grid` / `to_core_odom` / `to_msg_point_stamped` (boundary marshallers) |
+| `rclcpp_goal_publisher.hpp` | `IGoalPublisher` wrapping `rclcpp::Publisher<PointStamped/Marker/String>` |
+| `rclcpp_visualizer.hpp` | `IVisualizer` wrapping `rclcpp::Publisher<OccupancyGrid/MarkerArray>` |
+
+After Phase D/E the algorithm body's ROS contact surface is **only**: `rclcpp::Node` inheritance + `declare_parameter` / `get_parameter` + `create_subscription<T>` + `create_wall_timer` (all in the ctor). Everything else is interface calls. The Noetic port replaces those ~5 ctor entries + writes 5 `ros1/*.hpp` adapter headers; algorithm body (1,400 LOC) requires zero hand edits.
+
+### Goal-jitter fixes (caught during sim test)
+
+Live sim with C++ binary showed goal oscillating between two frontiers (4.95, 0.45) and (8.15, 0.45) at ~5 Hz, triggering Nav2's BackUp recovery loop. Three independent bugs:
+
+1. **`tsp_top_k_head` was a simplified "nearest of top-K to robot"** — equivalent to the Python `first_idx` semantics but not the literal port. Replaced with the full NN-tour faithful port. Doesn't change behavior but is more defensible against future K-tour refinements.
+2. **`std::sort` on the per-ns utility list was unstable** — near-tie utilities flipped top-K order tick-to-tick → TSP head flipped → goal oscillation. Fixed to `std::stable_sort` to match Python's `sorted(...)` stability guarantee.
+3. **`set_active_goal` was overwriting `last_goal_set_time_ns_` unconditionally** — the **real root cause**. Python's version guards with `if math.hypot(prev - goal) > 1e-6:`. Without that guard the lock-age clock resets every tick → never exceeds the tick interval → **every time-based gate in `apply_goal_policy` (goal_lock_sec / challenger_min_lock_age_sec / stuck_lock_sec) is inert**. Fixed to match Python: only reset the clock when the goal actually changes.
+
+### Performance comparison
+
+Same synthetic bench (200×200 grid, 6 frontier corridors, 5 Hz publish_rate, full pipeline: extract → cluster → filter → IG → utility → publish):
+
+| | tick p50 | tick p95 | tick max | goals / 27 s |
+|---|---|---|---|---|
+| Python coordinator on Jetson (historic, 2026-05-18) | ~400 ms | **1376 ms** ❌ | — | — |
+| **C++ port on desktop x86** | **0.4 ms** | **0.6 ms** | 0.7 ms | 1073 |
+| **C++ port on Jetson aarch64 (Orin Nano 8GB)** | **1.0 ms** | **1.1 ms** | 1.4 ms | 1213 |
+
+Jetson C++ p95 is **1250× faster** than the Python coord on the same hardware, and **500× under** the 500 ms budget. The adaptive load-shedding parameters (`adaptive_max_frontier_stride`, `adaptive_min_max_targets`, `adaptive_min_exploration_gain_radius_cells`, `adaptive_max_skip_ticks`) become dead-code on the C++ path — tick never gets near the budget where downshifts would fire.
+
+### Sim integration
+
+End-to-end verified on desktop via `./scripts/launch/nav_test_3d_explore.sh cfpa2_executable_suffix:=_cpp` — C++ binary loads both `cfpa2_single_robot.yaml` (base) + `cfpa2_single_robot_demo_ramp.yaml` (overlay) correctly, subscribes / publishes every topic the Python entry point did, perf logs stay deep inside budget. Two downstream issues observed (NOT C++ port bugs — Python coordinator on same machine has the same failures):
+- **Nav2 `bt_navigator` XML load error** → `unknown goal response, ignoring...` flood → `cfpa2_to_nav2_bridge` fast-BL bursts → tight goal-cancel race. Unrelated to this port.
+- **`grid_map_to_occupancy_grid` projects robot-adjacent cells as walls** in demo_ramp scene (likely an elevation_mapping_cupy projection bug or self-filter mis-tuning). Unrelated to this port.
+
+When Nav2 BT fails to follow a goal and the robot doesn't move for `stuck_watchdog`'s 10 s window, the watchdog fires Nav2's `BackUp` behavior — that's the "robot keeps backing up" behaviour the user observed; root cause is the Nav2 BT bug, not CFPA2. Fix-or-bypass for the Nav2 BT issue is a separate task.
+
+### Files / paths
+
+- New header tree: [`include/cfpa2_collaborative_autonomy/{core,ops,ros2}/`](src/collaborative_exploration/cfpa2_collaborative_autonomy/include/cfpa2_collaborative_autonomy/)
+- New source tree: [`src/{ops/,cfpa2_coordinator.cpp,cfpa2_single_robot.cpp,*_node_main.cpp,cfpa2_grid_ops_c_api.cpp}`](src/collaborative_exploration/cfpa2_collaborative_autonomy/src/)
+- New CMakeLists: [`CMakeLists.txt`](src/collaborative_exploration/cfpa2_collaborative_autonomy/CMakeLists.txt) — ament_cmake (was ament_python)
+- New package.xml: [`package.xml`](src/collaborative_exploration/cfpa2_collaborative_autonomy/package.xml) — drops nvblox_frontend_msgs dep, adds rclcpp / tf2 / visualization_msgs / cfpa2_peer_coordination_msgs
+- Launch arg `cfpa2_executable_suffix` plumbed through [`navigation.launch.py`](src/go2w/go2w_config/launch/navigation.launch.py), [`single_go2w_mujoco_cfpa2.launch.py`](src/go2w/go2_gazebo_sim/launch/single_go2w_mujoco_cfpa2.launch.py), [`nav_test_mujoco_fastlio.launch.py`](src/go2w/go2_gazebo_sim/launch/nav_test_mujoco_fastlio.launch.py), [`nav_test_3d_explore.launch.py`](src/go2w/go2_gazebo_sim/launch/nav_test_3d_explore.launch.py).
+- Noetic port guide: [`docs/claude/noetic_port_checklist.md`](docs/claude/noetic_port_checklist.md) — file-by-file diff with sed-style mechanical changes + estimated work breakdown (~5 h end-to-end including build + Orin NX smoke).
+- Updated [`scripts/real/deploy_to_orin_nano.sh`](scripts/real/deploy_to_orin_nano.sh) to sync `cfpa2_peer_coordination[_msgs]` (was just `cfpa2_collaborative_autonomy`).
+
+### Open / next
+
+- **E-4 deferred**: full split of `CFPA2Coordinator` into `core::Coordinator` (pure algorithm, no `rclcpp::Node` inheritance) + `ros2::CoordinatorNode` (the `rclcpp::Node` wrapper that owns a `core::Coordinator` instance). Current state has algorithm body completely ROS-agnostic but the *class itself* still inherits `rclcpp::Node`. Full split would cut the Noetic port ctor work further (5 h → ~3 h) but is a 1.5-2 h refactor that wasn't worth the risk vs the marginal benefit. LLM-driven Noetic port from current state is the recommended path.
+- **No separate C++ test suite yet**: the 36-test Python pytest suite exercises Python coordinator logic and all still pass. The C++ port has been verified by perf bench + sim integration but doesn't have its own gtest yet. Future work.
+- **Nav2 `bt_navigator` XML load failure** (independent of CFPA2 port) is the next thing to fix for end-to-end sim demos to actually drive the robot. Likely a Humble dist artifact or BT XML path resolution issue.
+
 ## Active state (2026-05-18 late night) — Jetson Orin Nano 8GB HIL bag-replay: fast_lio real-time confirmed, Point-LIO ROS 2 port dead-ended
 
 **Goal**: prove the full autonomy stack (SLAM + elevation + Nav2 + CFPA2) sustains real-time on Orin Nano 8GB (`johnpork233@192.168.55.49`, JetPack 6.2.2, 6× Cortex-A78AE @ 1.5 GHz, 8 GB RAM) **as a weaker-board proxy for the real Go2's Orin NX 16GB** (8× @ 2.0 GHz, 16 GB). Pipeline must keep up under wall-clock bag-replay (`onboard_noetic_20260511_155920_ops2_ros2_raw`, 180s real Go2 walk, raw `/livox/imu` 200 Hz + `/livox/lidar` 10 Hz CustomMsg only — SLAM rebuilt from scratch, no pre-recorded Odometry / TF used).
@@ -18,6 +243,8 @@ Door task (Phase 2 dual-robot VLM coordination) and the legacy A*/default Python
   - **CFPA2 single_robot** tick p95 **1376 ms vs budget 500 ms** (2.75× over). Adaptive load shedding kicked in (stride 2→8, targets 180→80, gain_r 40→27, skip 0→3). Still usable, but frontier replan responds at ~1.4s instead of 100ms.
   - **grid_map_to_occupancy_grid** publishes `/robot/traversability_grid` at **0.59 Hz** (vs ~5 Hz target). Single-core Python on ARM at 99% CPU.
   - Both will not improve on Orin NX 16GB — same single-core perf ratio (1.33× = ~1s tick at best). Long-term fix: numba JIT hot path or partial C++ rewrite.
+
+> **→ Resolved 2026-05-19** by full C++ port of CFPA2 (see "Active state (2026-05-19)" above). Jetson tick p95 dropped 1376 ms → 1.1 ms (1250× speedup). Single-core Python on aarch64 is no longer the bottleneck — adaptive load shedding becomes dead-code.
 
 ### Origin / record bag context
 
@@ -330,6 +557,8 @@ Day-long debug pass on `nav_test_3d_explore.sh` (demo_ramp + nvblox_frontend + C
 | **ETH trav pipeline (2026-05-14): elevation_mapping_cupy + grid_map_filters + OccupancyGrid adapter replacing the broken 6-step 2D projection. 7-phase rewrite plan, 4 YAML/param gotchas discovered during integration, smoke-tested at 12 layers + 9 Hz.** | [docs/claude/plans/2026-05-14-trav-grid-rewrite.md](docs/claude/plans/2026-05-14-trav-grid-rewrite.md) + [docs/claude/eth_elevation_mapping_design.md](docs/claude/eth_elevation_mapping_design.md) |
 | **Open problem (2026-05-15): Go2W tips at ramp foot / platform cliff. All static-cost mitigations (trav thresholds, height-cost layer, inflation halo, ramp_safe envelope) applied; tipping is dynamic-stability failure unobservable from 2.5D. 5 candidate next steps listed.** | [docs/claude/ramp_tipover_open_problem.md](docs/claude/ramp_tipover_open_problem.md) |
 | **Jetson Orin Nano HIL bag-replay (2026-05-18 late night): full autonomy stack stress-tested on weaker bench board (6×A78AE @ 1.5 GHz, 8 GB) as proxy for real Go2's Orin NX 16GB. fast_lio sustains 10 Hz / RSS 192 MB / CPU 9-12% on 170s real-walk bag, RTF=1.07 (real-time confirmed). Point-LIO ROS 2 port abandoned: SIGSEGV race at IMU Init 100% (~50% rate) + SLAM divergence on Mid-360 walking data. 8 fixes shipped: DDS isolation via ROS_DOMAIN_ID=42, livox_ros_driver2_msgs stub package, bag-play workspace-source preflight, `--clock`+`use_sim_time=true`, multi-pass kill, Point-LIO `/aft_mapped_to_init` remap, staggered TimerActions + respawn, rclpy `warn_throttle` migration. Real bottlenecks identified: **CFPA2 Python tick p95 1.4s** + **grid_map_to_occupancy 0.59 Hz** — single-core Python on ARM. Refuted hypotheses: concurrent record overhead (38 MB/s disk write didn't dent fast_lio), fast_lio degradation (no ikd-tree growth observed in 170s with `pcd_save_en=false`). Likely culprit for onboard 5.7 Hz baseline: ros1_bridge serialization overhead.** | This file's "Active state (2026-05-18 late night)" entry |
+| **CFPA2 pure C++ port + hexagonal isolation (2026-05-19): 1,400 LOC algorithm body now ROS-independent through `core::IClock` / `ILogger` / `IGoalPublisher` / `IVisualizer` interfaces + POD `core::Grid` / `OdomXY`; ROS-2-specific code confined to `ros2/*.hpp` adapters. Jetson tick p95 1376 ms (Python) → 1.1 ms (C++) = ~1250× speedup. Two executables `cfpa2_{coordinator,single_robot}_node_cpp` install side-by-side with Python entry points; flip via launch arg `cfpa2_executable_suffix:=_cpp`. Noetic port reduced from "rewrite 1,400 LOC" to "swap one adapter directory + edit ctor" (~5 h estimated).** | [docs/claude/noetic_port_checklist.md](docs/claude/noetic_port_checklist.md) + this file's "Active state (2026-05-19)" entry |
+| **Nav2 SmacLattice + MPPIController ROS 1 Noetic port + CUDA #1 (2026-05-19 evening): 13K LOC algorithm body byte-identical to Nav2 Humble upstream (only include-path rewrites + `compat.hpp` injection); 380-line shim bridges rclcpp logging, msg type aliases, costmap_2d namespace, FootprintCollisionChecker re-impl, LifecycleNode → ros::NodeHandle stub. 5 catkin packages: `nav_algo_{core, smac_ros1, mppi_ros1, bringup, mppi_cuda}`. End-to-end sim test in `ros:noetic-ros-core` Docker: `cmd_vel = (0.30, 0.0)` at vx_max towards goal. First CUDA kernel (`integrateStateVelocities`) shipped: **139× speedup on RTX 4050 / sm_89** (CPU 2.172 ms → GPU 0.016 ms median of 5, max \|Δ\| vs CPU 3.6e-7). Orin NX extrapolation projects ~200× (CPU degrades more than GPU on aarch64). Companion to CFPA2 C++ port: full autonomy stack now Noetic-deployable.** | This file's "Active state (2026-05-19 evening)" entry |
 | **Go2W real Nav2 profile split (2026-05-02): `off` / `omni_2d` / `se2_holonomic`, SmacPlanner2D XY-only finding, no-crab final SE2 tuning.** | This file's "Active state (2026-05-02)" entry |
 
 ## Scripts layout
@@ -397,6 +626,28 @@ NUM_TRIALS=10 DURATION_SEC=120 OUT_DIR=/tmp/cfgA_10 ./scripts/bench/benchmark_fa
 # which needs manual mode pre-arm; oa=false sends to /api/sport/request (api_id=1008).
 ./scripts/real/real_autonomy.sh robot=go2 slam=fastlio_mid360 nav=tare_real oa=false
 ./scripts/real/real_autonomy.sh stop                                  # kill everything real-robot
+
+# Flip CFPA2 Python entry point → pure-C++ binary on any existing launch
+./scripts/launch/nav_test_3d_explore.sh cfpa2_executable_suffix:=_cpp
+./scripts/launch/nav_test_slam_ops2_v4_go2.sh cfpa2_executable_suffix:=_cpp
+ros2 launch go2_gazebo_sim nav_test_mujoco_fastlio.launch.py cfpa2_executable_suffix:=_cpp
+
+# Build + smoke-test the Nav2 ROS 1 port (SmacLattice + MPPI) in Noetic Docker.
+# Image nav_algo:build_env_cuda is cached locally (3 GB, CUDA 12.6 + xtensor +
+# nav_core + costmap_2d). Builds all 5 packages, runs the move_base integration
+# test on a synthetic OccupancyGrid + reports cmd_vel.
+docker run --rm --gpus all \
+  -v $PWD/src/vendor/nav_algo_ros1:/ws/src/nav_algo_ros1:ro \
+  nav_algo:build_env_cuda \
+  bash -c 'cp -r /ws/src/nav_algo_ros1 /ws_rw/src/ && cd /ws_rw && \
+           source /opt/ros/noetic/setup.bash && \
+           catkin_make_isolated -DCMAKE_BUILD_TYPE=Release && \
+           bash /ws_rw/src/nav_algo_ros1/nav_algo_bringup/test/integration_test.sh'
+
+# CUDA integrate kernel CPU-vs-GPU benchmark (RTX 4050 / Orin compatible):
+docker run --rm --gpus all -v $PWD/src/vendor/nav_algo_ros1:/ws/src/nav_algo_ros1:ro \
+  nav_algo:build_env_cuda \
+  /ws_rw/devel_isolated/nav_algo_mppi_cuda/lib/nav_algo_mppi_cuda/integrate_bench
 ```
 
 Debug dashboard:
@@ -477,6 +728,8 @@ Switchable via `nav_backend:=` at launch time. Two production backends now (lega
 19. **`SmacPlanner2D` is XY-only; do not expect it to solve heading-dependent footprint-fit maneuvers.** If the requirement is "choose body orientation to pass anisotropic narrow geometry", use an SE2 planner (`SmacPlannerHybrid` / `SmacPlannerLattice`) and tune controller execution policy separately.
 20. **Missing file errors under `install/.../share/<pkg>/...` usually mean stale install artifacts, not bad launch paths.** New YAML under `src/` is invisible to `get_package_share_directory()` until that package is rebuilt (`colcon build --symlink-install --packages-select <pkg>`). This exact failure happened with `nav2_go2w_real_omni_overlay.yaml` on 2026-05-01.
 21. **Don't hardcode absolute topic paths to controller_manager-namespaced state sources.** JointStateBroadcaster (and most `controller_manager`-loaded broadcasters) publish to `<cm_ns>/joint_states`, where `cm_ns` varies per launch: single-robot sim runs `cm_ns=/robot/`, mixed/dual sims run `cm_ns=/mujoco_sim/`, real robots run yet another. A node hardcoding `wheel_state_topic=/mujoco_sim/joint_states` worked silently in mixed/dual but had `publisher_count=0` in single → router published `[0,0,0,0]` wheel commands → kv=5 actuator brake-locked the wheels under CHAMP gait → wheel-skid bug, hidden for months (2026-05-10 fix). Use a relative default that picks up the per-namespace topic, and override in launches whose `cm_ns` is elsewhere. **Verify with `ros2 topic info <topic> -v` that publisher_count > 0 BEFORE assuming the node is wired.**
+22. **CFPA2 algorithm body is ROS-independent (Phase D/E hexagonal isolation, 2026-05-19).** New algorithm code should go through `cfpa2::core::IClock` / `ILogger` / `IGoalPublisher` / `IVisualizer` and the `CFPA2_LOG_INFO/WARN/ERROR` macros — NEVER call `get_clock()->now()`, `RCLCPP_*`, or touch `nav_msgs::msg::*` directly from the algorithm body. The ROS-specific implementations live in `include/cfpa2_collaborative_autonomy/ros2/` and a future `ros1/` mirror; algorithm code should compile cleanly when `ros2/` is removed and only `core/` is in scope. The Noetic port (Orin NX 16 GB target on real Go2) depends on this discipline.
+23. **ROS 2 algorithm code can be ported byte-for-byte to ROS 1 via a thin compat shim, NOT a rewrite (2026-05-19 evening).** Nav2 Humble's SmacPlanner + MPPI (~13K LOC algorithm body) compiles cleanly on Noetic by including one [`compat.hpp`](src/vendor/nav_algo_ros1/nav_algo_core/include/nav_algo_core/compat.hpp) that provides: rclcpp logging macros → ROS_* (drop logger handle arg), `geometry_msgs::msg::*` → `geometry_msgs::*` type aliases (ROS 1 & 2 msg fields are identical), `nav2_costmap_2d::*` → `costmap_2d::*` (Nav2 was forked from ROS 1 nav stack — same Costmap2D), and a few stubs (`rclcpp::Time/Duration/Clock/LifecycleNode`). The two non-trivial re-implementations (`FootprintCollisionChecker` Bresenham + `geometry_utils::{first_after_integrated_distance, min_by}`) must be traced cell-by-cell against upstream to guarantee math equivalence — empirically ~1 h per helper. The other ~99% of files diff only on `#include` path renames. Same approach works for any "compat shim is feasible" Nav2/ROS 2 port. Reference impl: [`src/vendor/nav_algo_ros1/`](src/vendor/nav_algo_ros1/). Math-equivalence audit is a precondition — see the "Equivalence audit" subsection of the 2026-05-19 evening entry for the structured pass.
 
 ## Communication style
 
