@@ -172,6 +172,79 @@ void cpuPathAngleCritic(
   }
 }
 
+// findClosestPathPt CPU reference (matches utils.hpp).
+inline int find_closest_path_pt_cpu(
+  const std::vector<float> & dists, float target, int init = 0)
+{
+  auto begin = dists.begin() + init;
+  auto end   = dists.end();
+  auto iter  = std::lower_bound(begin, end, target);
+  if (iter == begin) return 0;
+  if (iter == end) return static_cast<int>(dists.size() - 1);
+  if (target - *(iter - 1) < *iter - target) {
+    return static_cast<int>((iter - 1) - dists.begin());
+  }
+  return static_cast<int>(iter - dists.begin());
+}
+
+// ── PathAlignCritic CPU reference ────────────────────────────────────────
+// Mirrors path_align_critic.cpp inner loop (the score()). All gates
+// (within_position_goal_tolerance, offset_from_furthest, invalid_ctr
+// over max_path_occupancy_ratio) are host-side; this body only runs the
+// per-trajectory residual sum.
+void cpuPathAlignCritic(
+  unsigned int B, unsigned int T,
+  unsigned int path_segments_count,
+  unsigned int stride,
+  bool use_path_orientations,
+  const std::vector<float> & traj_x,
+  const std::vector<float> & traj_y,
+  const std::vector<float> & traj_yaws,
+  const std::vector<float> & P_x,
+  const std::vector<float> & P_y,
+  const std::vector<float> & P_yaw,
+  const std::vector<float> & path_int_dist,
+  const std::vector<uint8_t> & path_pts_valid,
+  float weight, int power,
+  std::vector<float> & costs)
+{
+  for (unsigned int b = 0; b < B; ++b) {
+    float traj_integrated_distance = 0.0f;
+    float summed_path_dist = 0.0f;
+    int num_samples = 0;
+    int path_pt = 0;
+    for (unsigned int p = stride; p < T; p += stride) {
+      const float dx_t = traj_x[b * T + p] - traj_x[b * T + (p - stride)];
+      const float dy_t = traj_y[b * T + p] - traj_y[b * T + (p - stride)];
+      traj_integrated_distance += std::sqrt(dx_t * dx_t + dy_t * dy_t);
+      // CPU passes prev path_pt as init for monotonic walk; for our test
+      // dists are strictly increasing so init=0 gives the same answer.
+      path_pt = find_closest_path_pt_cpu(path_int_dist, traj_integrated_distance, 0);
+      if (static_cast<unsigned int>(path_pt) >= path_segments_count) {
+        path_pt = static_cast<int>(path_segments_count) - 1;
+      }
+      if (path_pts_valid[path_pt] != 0) {
+        const float dx = P_x[path_pt] - traj_x[b * T + p];
+        const float dy = P_y[path_pt] - traj_y[b * T + p];
+        float r2 = dx * dx + dy * dy;
+        if (use_path_orientations) {
+          const float dyaw = normalize_angle_cpu(P_yaw[path_pt] - traj_yaws[b * T + p]);
+          r2 += dyaw * dyaw;
+        }
+        summed_path_dist += std::sqrt(r2);
+        num_samples += 1;
+      }
+    }
+    float mean = 0.0f;
+    if (num_samples > 0) {
+      mean = summed_path_dist / static_cast<float>(num_samples);
+    }
+    double cost = mean * weight;
+    if (power != 1) cost = std::pow(cost, static_cast<double>(power));
+    costs[b] += static_cast<float>(cost);
+  }
+}
+
 void checkCuda(cudaError_t e, const char * msg)
 {
   if (e != cudaSuccess) {
@@ -395,6 +468,74 @@ int main()
             cfg, d_traj_x, d_traj_y, d_traj_yaws, path_x, path_y, d_costs);
         },
         weight, power)) total_fail++;
+  }
+
+  // ── PathAlignCritic ─────────────────────────────────────────────────────
+  {
+    // Synthetic path: 50 points on a straight line at y=1.5, x=0..4.9 (step
+    // 0.1). All points valid. Integrated distances = 0, 0.1, 0.2, ...
+    const unsigned int P = 50;
+    std::vector<float> P_x(P), P_y(P), P_yaw(P), path_int_dist(P);
+    std::vector<uint8_t> path_pts_valid(P, 1);
+    for (unsigned int i = 0; i < P; ++i) {
+      P_x[i] = static_cast<float>(i) * 0.1f;
+      P_y[i] = 1.5f;
+      P_yaw[i] = 0.0f;
+      path_int_dist[i] = static_cast<float>(i) * 0.1f;
+    }
+    const unsigned int path_segments_count = P;
+    const unsigned int stride = 4;
+    const float weight = 14.0f;
+    const int power = 1;
+    const bool use_path_orientations = false;
+
+    float *d_Px, *d_Py, *d_Pyaw, *d_pid;
+    uint8_t *d_pv;
+    checkCuda(cudaMalloc(&d_Px,  P * sizeof(float)),   "alloc Px");
+    checkCuda(cudaMalloc(&d_Py,  P * sizeof(float)),   "alloc Py");
+    checkCuda(cudaMalloc(&d_Pyaw, P * sizeof(float)),  "alloc Pyaw");
+    checkCuda(cudaMalloc(&d_pid, P * sizeof(float)),   "alloc pid");
+    checkCuda(cudaMalloc(&d_pv,  P * sizeof(uint8_t)), "alloc pv");
+    checkCuda(cudaMemcpy(d_Px,  P_x.data(),   P * sizeof(float),   cudaMemcpyHostToDevice), "H2D Px");
+    checkCuda(cudaMemcpy(d_Py,  P_y.data(),   P * sizeof(float),   cudaMemcpyHostToDevice), "H2D Py");
+    checkCuda(cudaMemcpy(d_Pyaw, P_yaw.data(), P * sizeof(float),  cudaMemcpyHostToDevice), "H2D Pyaw");
+    checkCuda(cudaMemcpy(d_pid, path_int_dist.data(), P * sizeof(float), cudaMemcpyHostToDevice), "H2D pid");
+    checkCuda(cudaMemcpy(d_pv,  path_pts_valid.data(), P * sizeof(uint8_t), cudaMemcpyHostToDevice), "H2D pv");
+
+    std::vector<float> cpu_costs(B, 0.0f);
+    auto t0 = std::chrono::steady_clock::now();
+    cpuPathAlignCritic(B, T, path_segments_count, stride, use_path_orientations,
+                       traj_x, traj_y, traj_yaws, P_x, P_y, P_yaw,
+                       path_int_dist, path_pts_valid, weight, power, cpu_costs);
+    auto t1 = std::chrono::steady_clock::now();
+    double cpu_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+    nav_algo_mppi_cuda::PathAlignConfig cfg{
+      B, T, path_segments_count, stride, power, weight, use_path_orientations};
+    std::vector<double> ms_runs;
+    for (int run = 0; run < 6; ++run) {
+      checkCuda(cudaMemset(d_costs, 0, bytes_costs), "rezero");
+      auto g0 = std::chrono::steady_clock::now();
+      int rc = nav_algo_mppi_cuda::launchPathAlignCritic(
+        cfg, d_traj_x, d_traj_y, d_traj_yaws,
+        d_Px, d_Py, d_Pyaw, d_pid, d_pv, d_costs);
+      auto g1 = std::chrono::steady_clock::now();
+      if (rc != 0) { std::fprintf(stderr, "PathAlign launch failed: %d\n", rc); total_fail++; break; }
+      if (run > 0) ms_runs.push_back(std::chrono::duration<double, std::milli>(g1 - g0).count());
+    }
+    std::sort(ms_runs.begin(), ms_runs.end());
+    double gpu_ms = ms_runs.empty() ? 1.0 : ms_runs[ms_runs.size() / 2];
+
+    std::vector<float> gpu_costs(B);
+    checkCuda(cudaMemcpy(gpu_costs.data(), d_costs, bytes_costs, cudaMemcpyDeviceToHost),
+              "D2H costs");
+    float d = maxAbsDiff(cpu_costs, gpu_costs);
+    bool pass = d < 1e-4f;
+    std::printf("PathAlignCritic        CPU %.3f ms | GPU %.3f ms | %5.1f× | max|Δ| %.3e | %s\n",
+                cpu_ms, gpu_ms, cpu_ms / gpu_ms, d, pass ? "PASS" : "FAIL");
+    if (!pass) total_fail++;
+
+    cudaFree(d_Px); cudaFree(d_Py); cudaFree(d_Pyaw); cudaFree(d_pid); cudaFree(d_pv);
   }
 
   cudaFree(d_traj_x); cudaFree(d_traj_y); cudaFree(d_traj_yaws);

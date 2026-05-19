@@ -165,6 +165,112 @@ __global__ void constraintCriticKernel(
   }
 }
 
+// ── PathAlignCritic kernel ──────────────────────────────────────────────
+// One block per trajectory, T threads. Threads with `p = t * stride` such
+// that p < T and (t*stride) % stride == 0 (i.e. t < T/stride) are active
+// and each handles one stride point.
+//
+// To match the CPU's mono-monotonic accumulation of traj_integrated_distance,
+// each thread computes its own prefix sum over j = 1 .. t (own loop). For
+// stride=4 T=56 → 14 active threads, max j = 14 → 196 sequential mults per
+// thread = trivial.
+//
+// findClosestPathPt mirrors std::lower_bound + nearer-of-iter/iter-1 logic.
+__device__ inline int findClosestPathPtGpu(
+  const float * dists, int n, float target)
+{
+  // lower_bound: first idx where dists[idx] >= target.
+  int lo = 0, hi = n;
+  while (lo < hi) {
+    int mid = (lo + hi) >> 1;
+    if (dists[mid] < target) lo = mid + 1;
+    else hi = mid;
+  }
+  if (lo == 0) return 0;  // matches CPU's "iter == begin + init → 0"
+  if (lo == n) return n - 1;
+  // Pick closer of lo and lo-1
+  const float d_lo = dists[lo]     - target;
+  const float d_hi = target - dists[lo - 1];
+  return (d_hi < d_lo) ? lo - 1 : lo;
+}
+
+__global__ void pathAlignCriticKernel(
+  unsigned int B, unsigned int T,
+  unsigned int path_segments_count,
+  unsigned int stride,
+  bool use_path_orientations,
+  const float * __restrict__ traj_x,
+  const float * __restrict__ traj_y,
+  const float * __restrict__ traj_yaws,
+  const float * __restrict__ P_x,
+  const float * __restrict__ P_y,
+  const float * __restrict__ P_yaw,
+  const float * __restrict__ path_int_dist,
+  const uint8_t * __restrict__ path_pts_valid,
+  float weight, int power,
+  float * __restrict__ costs)
+{
+  const unsigned int b = blockIdx.x;
+  const unsigned int t = threadIdx.x;
+  if (b >= B) return;
+
+  // Active iff this thread maps to a valid stride point p = (t+1)*stride < T.
+  // Matches the CPU loop bound `p = stride; p < T; p += stride`, i.e.
+  //   thread 0 → p=stride, thread 1 → p=2*stride, ...
+  const unsigned int p = (t + 1) * stride;
+  const bool active = (p < T) && (stride > 0);
+
+  float local_sum   = 0.0f;
+  int   local_count = 0;
+
+  if (active) {
+    // Compute traj_integrated_distance up to stride point (t+1).
+    // CPU sums dist(p_{j*stride}, p_{(j-1)*stride}) for j = 1..(t+1).
+    float td = 0.0f;
+    for (unsigned int j = 1; j <= (t + 1); ++j) {
+      const unsigned int pj  = j * stride;
+      const unsigned int pjm = (j - 1) * stride;
+      const float dx = traj_x[b * T + pj]  - traj_x[b * T + pjm];
+      const float dy = traj_y[b * T + pj]  - traj_y[b * T + pjm];
+      td += sqrtf(dx * dx + dy * dy);
+    }
+
+    // Find matching path point.
+    const int path_pt = findClosestPathPtGpu(
+      path_int_dist, static_cast<int>(path_segments_count), td);
+
+    if (path_pts_valid[path_pt] != 0) {
+      const float dx = P_x[path_pt] - traj_x[b * T + p];
+      const float dy = P_y[path_pt] - traj_y[b * T + p];
+      float r2 = dx * dx + dy * dy;
+      if (use_path_orientations && traj_yaws != nullptr && P_yaw != nullptr) {
+        const float dyaw =
+          shortestAngularDistance(traj_yaws[b * T + p], P_yaw[path_pt]);
+        r2 += dyaw * dyaw;
+      }
+      local_sum   = sqrtf(r2);
+      local_count = 1;
+    }
+  }
+
+  // Block reductions.
+  __shared__ typename BlockReduceFloat::TempStorage sum_tmp;
+  using BlockReduceInt = cub::BlockReduce<int, kThreadsPerBlock>;
+  __shared__ typename BlockReduceInt::TempStorage cnt_tmp;
+  const float total_sum = BlockReduceFloat(sum_tmp).Sum(local_sum);
+  const int   total_cnt = BlockReduceInt(cnt_tmp).Sum(local_count);
+
+  if (t == 0) {
+    float mean = 0.0f;
+    if (total_cnt > 0) {
+      mean = total_sum / static_cast<float>(total_cnt);
+    }
+    float cost = mean * weight;
+    if (power != 1) cost = powf(cost, static_cast<float>(power));
+    costs[b] += cost;
+  }
+}
+
 // ── PathFollowCritic kernel ──────────────────────────────────────────────
 // Uses only last trajectory column (t = T-1). One thread per block.
 __global__ void pathFollowCriticKernel(
@@ -351,6 +457,36 @@ int launchPathAngleCritic(
     cfg.batch_size, cfg.time_steps,
     traj_x_device, traj_y_device, traj_yaws_device,
     path_x, path_y,
+    cfg.weight, cfg.power,
+    costs_device);
+
+  cudaError_t err = cudaPeekAtLastError();
+  if (err != cudaSuccess) return static_cast<int>(err);
+  return static_cast<int>(cudaDeviceSynchronize());
+}
+
+int launchPathAlignCritic(
+  const PathAlignConfig & cfg,
+  const float * traj_x_device,
+  const float * traj_y_device,
+  const float * traj_yaws_device,
+  const float * path_x_device,
+  const float * path_y_device,
+  const float * path_yaws_device,
+  const float * path_int_dist_device,
+  const uint8_t * path_pts_valid_device,
+  float       * costs_device)
+{
+  if (cfg.time_steps > kThreadsPerBlock) return cudaErrorInvalidConfiguration;
+
+  pathAlignCriticKernel<<<cfg.batch_size, kThreadsPerBlock>>>(
+    cfg.batch_size, cfg.time_steps,
+    cfg.path_segments_count,
+    cfg.trajectory_point_step,
+    cfg.use_path_orientations,
+    traj_x_device, traj_y_device, traj_yaws_device,
+    path_x_device, path_y_device, path_yaws_device,
+    path_int_dist_device, path_pts_valid_device,
     cfg.weight, cfg.power,
     costs_device);
 

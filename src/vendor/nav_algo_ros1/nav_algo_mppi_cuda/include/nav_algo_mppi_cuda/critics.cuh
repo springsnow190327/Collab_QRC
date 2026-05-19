@@ -130,6 +130,52 @@ int launchPathAngleCritic(
   float         path_y,
   float       * costs_device);
 
+// ── PathAlignCritic ──────────────────────────────────────────────────────
+// CPU body (path_align_critic.cpp): heaviest of the lot. Per trajectory,
+// walk at stride `trajectory_point_step` (yaml=4), sum trajectory length up
+// to each stride point, find the path point at matching integrated
+// distance (via lower_bound), and accumulate sqrt((T-P)²). cost[b] =
+// summed_dist / num_samples — average residual against the path.
+//
+// Inputs needed:
+//   traj_x, traj_y          (B×T)
+//   traj_yaws               (B×T, only when use_path_orientations=true; our
+//                            yaml has false so safe to pass nullptr)
+//   path_x, path_y, path_yaws (P,   first path_segments_count entries used)
+//   path_integrated_distances (P,  host-precomputed prefix sum of segment
+//                              lengths starting at index 0)
+//   path_pts_valid          (P,   uint8 bool: 1 = align here, 0 = skip)
+//
+// Host-side gates:
+//   - skip critic if within-position-goal-tolerance
+//   - skip critic if path_segments_count < offset_from_furthest
+//   - skip critic if invalid_count / segments_count > max_path_occupancy_ratio
+//
+// All those gates collapse to "host doesn't call launchPathAlignCritic" —
+// kernel body only runs when host has verified the critic should fire.
+struct PathAlignConfig
+{
+  unsigned int batch_size;
+  unsigned int time_steps;
+  unsigned int path_segments_count;   // active path range (1 to this exclusive)
+  unsigned int trajectory_point_step; // yaml default 4
+  int          power;
+  float        weight;
+  bool         use_path_orientations; // yaml default false
+};
+
+int launchPathAlignCritic(
+  const PathAlignConfig & cfg,
+  const float * traj_x_device,
+  const float * traj_y_device,
+  const float * traj_yaws_device,        // nullable if !use_path_orientations
+  const float * path_x_device,
+  const float * path_y_device,
+  const float * path_yaws_device,        // nullable if !use_path_orientations
+  const float * path_int_dist_device,
+  const uint8_t * path_pts_valid_device,
+  float       * costs_device);
+
 }  // namespace nav_algo_mppi_cuda
 
 #endif  // NAV_ALGO_MPPI_CUDA__CRITICS_CUH_
