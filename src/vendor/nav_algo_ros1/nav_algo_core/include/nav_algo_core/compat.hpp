@@ -481,6 +481,39 @@ namespace geometry_utils {
     q.w = std::cos(angle / 2.0);
     return q;
   }
+
+  // Walk forward from `begin` accumulating euclidean distance between
+  // consecutive poses; return iterator to the first pose where the
+  // accumulated distance exceeds `target_dist`, or `end` if never reached.
+  // Direct port of nav2_util::geometry_utils::first_after_integrated_distance.
+  template <typename Iter>
+  inline Iter first_after_integrated_distance(Iter begin, Iter end, double target_dist)
+  {
+    if (begin == end) {return end;}
+    double accumulated = 0.0;
+    Iter prev = begin;
+    for (Iter it = begin + 1; it != end; ++it) {
+      accumulated += euclidean_distance(*prev, *it);
+      if (accumulated > target_dist) {return it;}
+      prev = it;
+    }
+    return end;
+  }
+
+  // Return iterator to element in [begin, end) that minimizes key(*it).
+  // Port of nav2_util::geometry_utils::min_by.
+  template <typename Iter, typename Getter>
+  inline Iter min_by(Iter begin, Iter end, Getter key)
+  {
+    if (begin == end) {return end;}
+    auto lowest = key(*begin);
+    Iter result = begin;
+    for (Iter it = begin + 1; it != end; ++it) {
+      auto v = key(*it);
+      if (v < lowest) { lowest = v; result = it; }
+    }
+    return result;
+  }
 }  // namespace geometry_utils
 }  // namespace nav2_util
 

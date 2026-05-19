@@ -152,9 +152,12 @@ bool PathHandler::transformPose(
   }
 
   try {
+    // tf2::durationFromSec is ROS 2-only; in ROS 1 the tf2_ros::Buffer
+    // overload of transform() that takes a timeout accepts ros::Duration
+    // directly.
     tf_buffer_->transform(
       in_pose, out_pose, frame,
-      tf2::durationFromSec(transform_tolerance_));
+      ros::Duration(transform_tolerance_));
     out_pose.header.frame_id = frame;
     return true;
   } catch (tf2::TransformException & ex) {

@@ -64,7 +64,10 @@ include_directories(
 # constructor signature differs from ROS 1's Costmap2DPublisher. Re-include
 # once a ROS 1-native rewrite of the publisher path is added.
 file(GLOB SMAC_SRC CONFIGURE_DEPENDS src/smac/*.cpp)
-list(FILTER SMAC_SRC EXCLUDE REGEX ".*costmap_downsampler\\.cpp$")
+# costmap_downsampler is now in via stub of the ROS 1 Costmap2DPublisher
+# create-call (yaml has downsample_costmap=false so the publisher path is
+# never exercised; including the cpp provides the dtor symbol that
+# SmacPlannerLattice's unique_ptr member needs at link time).
 add_library(nav_algo_smac STATIC ${SMAC_SRC})
 target_link_libraries(nav_algo_smac
   ${catkin_LIBRARIES}
@@ -80,7 +83,8 @@ target_compile_options(nav_algo_smac PRIVATE -fPIC)
 file(GLOB MPPI_SRC CONFIGURE_DEPENDS
   src/mppi/*.cpp
   src/mppi/critics/*.cpp)
-list(FILTER MPPI_SRC EXCLUDE REGEX ".*path_handler\\.cpp$")
+# path_handler now in via geometry_utils::{first_after_integrated_distance,
+# min_by} ports in compat.hpp + ros::Duration replacement for tf2::durationFromSec.
 list(FILTER MPPI_SRC EXCLUDE REGEX ".*trajectory_visualizer\\.cpp$")
 add_library(nav_algo_mppi STATIC ${MPPI_SRC})
 target_link_libraries(nav_algo_mppi

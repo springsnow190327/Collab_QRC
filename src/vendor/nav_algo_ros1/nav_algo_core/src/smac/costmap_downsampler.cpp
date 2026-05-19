@@ -51,23 +51,31 @@ void CostmapDownsampler::on_configure(
     _downsampled_size_x, _downsampled_size_y, _downsampled_resolution,
     _costmap->getOriginX(), _costmap->getOriginY(), UNKNOWN);
 
-  if (!node.expired()) {
-    _downsampled_costmap_pub = std::make_unique<nav2_costmap_2d::Costmap2DPublisher>(
-      node, _downsampled_costmap.get(), global_frame, topic_name, false);
-  }
+  // ROS 1 costmap_2d::Costmap2DPublisher takes ros::NodeHandle* as its first
+  // argument (vs ROS 2's weak_ptr<LifecycleNode>). For our deployment yaml
+  // (downsample_costmap=false) this publisher is never actually populated
+  // because on_configure() of the downsampler is never invoked. Disabling
+  // construction keeps the symbol surface intact for unique_ptr destruction
+  // without dragging the ROS 2 publisher API into compat.
+  (void)node;
+  (void)global_frame;
+  (void)topic_name;
 }
 
 void CostmapDownsampler::on_activate()
 {
-  if (_downsampled_costmap_pub) {
-    _downsampled_costmap_pub->on_activate();
-  }
+  // ROS 1 costmap_2d::Costmap2DPublisher has no on_activate/on_deactivate
+  // lifecycle hooks (those were added by Nav2). Since publisher construction
+  // is stubbed for ROS 1, this pointer is always nullptr in our build and
+  // the call would be skipped anyway. Removed to keep the cpp compiling.
+  // if (_downsampled_costmap_pub) { _downsampled_costmap_pub->on_activate(); }
 }
 
 void CostmapDownsampler::on_deactivate()
 {
-  if (_downsampled_costmap_pub) {
-    _downsampled_costmap_pub->on_deactivate();
+  // See on_activate() note re: ROS 1 lifecycle.
+  if (false && _downsampled_costmap_pub) {
+    // _downsampled_costmap_pub->on_deactivate();
   }
 }
 

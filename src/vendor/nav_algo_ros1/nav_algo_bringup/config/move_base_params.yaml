@@ -1,0 +1,16 @@
+# move_base top-level config — picks our two plugins, sets frequencies
+# to match the Nav2 sim controller_frequency / planner expected_frequency.
+base_global_planner: "nav_algo_smac_ros1/SmacLatticePlannerROS"
+base_local_planner:  "nav_algo_mppi_ros1/MPPIControllerROS"
+
+planner_frequency: 1.0          # Nav2: expected_planner_frequency 1.0
+controller_frequency: 20.0      # Nav2: controller_frequency 20.0
+
+planner_patience: 5.0
+controller_patience: 5.0
+
+# We don't use ROS 1 default recoveries (clear costmaps, rotate). Nav2
+# uses BehaviorServer + BT recovery branches; under ROS 1 we lean on
+# stuck_watchdog / fast_lio_tf_adapter at the system level instead.
+recovery_behavior_enabled: false
+clearing_rotation_allowed: false

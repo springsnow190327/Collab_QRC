@@ -15,6 +15,17 @@
 #include "nav_algo_core/compat.hpp"
 #include "nav_algo_core/mppi/critic_manager.hpp"
 
+// Direct includes of the 8 ported critics (replacing Nav2's pluginlib-loaded
+// set). Order matters only at compile time, not at runtime.
+#include "nav_algo_core/mppi/critics/constraint_critic.hpp"
+#include "nav_algo_core/mppi/critics/goal_angle_critic.hpp"
+#include "nav_algo_core/mppi/critics/goal_critic.hpp"
+#include "nav_algo_core/mppi/critics/obstacles_critic.hpp"
+#include "nav_algo_core/mppi/critics/path_align_critic.hpp"
+#include "nav_algo_core/mppi/critics/path_angle_critic.hpp"
+#include "nav_algo_core/mppi/critics/path_follow_critic.hpp"
+#include "nav_algo_core/mppi/critics/prefer_forward_critic.hpp"
+
 namespace mppi
 {
 
@@ -42,21 +53,32 @@ void CriticManager::getParams()
 
 void CriticManager::loadCritics()
 {
-  if (!loader_) {
-    loader_ = std::make_unique<pluginlib::ClassLoader<critics::CriticFunction>>(
-      "nav2_mppi_controller", "mppi::critics::CriticFunction");
-  }
-
+  // Direct instantiation, replacing Nav2's pluginlib-based loadCritics().
+  // Under ROS 1 the critics live in a static lib (libnav_algo_mppi.a) with
+  // no pluginlib XML. Compile-time if-chain over the 8 critic types in the
+  // ported set keeps behaviour identical: same on_configure() signature,
+  // same parameter namespace, same cost evaluation order.
   critics_.clear();
   for (auto name : critic_names_) {
-    std::string fullname = getFullName(name);
-    auto instance = std::unique_ptr<critics::CriticFunction>(
-      loader_->createUnmanagedInstance(fullname));
+    std::unique_ptr<critics::CriticFunction> instance;
+    if      (name == "ConstraintCritic")    instance = std::make_unique<critics::ConstraintCritic>();
+    else if (name == "GoalCritic")          instance = std::make_unique<critics::GoalCritic>();
+    else if (name == "GoalAngleCritic")     instance = std::make_unique<critics::GoalAngleCritic>();
+    else if (name == "ObstaclesCritic")     instance = std::make_unique<critics::ObstaclesCritic>();
+    else if (name == "PathAlignCritic")     instance = std::make_unique<critics::PathAlignCritic>();
+    else if (name == "PathFollowCritic")    instance = std::make_unique<critics::PathFollowCritic>();
+    else if (name == "PathAngleCritic")     instance = std::make_unique<critics::PathAngleCritic>();
+    else if (name == "PreferForwardCritic") instance = std::make_unique<critics::PreferForwardCritic>();
+    else {
+      RCLCPP_WARN(logger_,
+        "Critic '%s' not in the static-linked set; skipping.", name.c_str());
+      continue;
+    }
     critics_.push_back(std::move(instance));
     critics_.back()->on_configure(
       parent_, name_, name_ + "." + name, costmap_ros_,
       parameters_handler_);
-    RCLCPP_INFO(logger_, "Critic loaded : %s", fullname.c_str());
+    RCLCPP_INFO(logger_, "Critic loaded : %s", name.c_str());
   }
 }
 
