@@ -18,6 +18,15 @@ find_package(catkin REQUIRED COMPONENTS
   angles
   nav_algo_core
 )
+
+# CUDA acceleration is opt-in. If nav_algo_mppi_cuda is in the workspace
+# (CUDA toolchain available), link it + define NAV_ALGO_MPPI_HAS_CUDA so
+# the plugin can instantiate a CudaBackend when use_cuda=true in yaml.
+find_package(nav_algo_mppi_cuda QUIET)
+if(nav_algo_mppi_cuda_FOUND)
+  message(STATUS "nav_algo_mppi_ros1: CUDA backend available, will be enabled at runtime if use_cuda=true.")
+  add_definitions(-DNAV_ALGO_MPPI_HAS_CUDA)
+endif()
 find_package(Eigen3 REQUIRED)
 
 # xtensor headers (installed under /usr/local/include by build_env).
@@ -46,6 +55,12 @@ add_library(${PROJECT_NAME}
 target_link_libraries(${PROJECT_NAME}
   ${catkin_LIBRARIES}
 )
+if(nav_algo_mppi_cuda_FOUND)
+  target_include_directories(${PROJECT_NAME} PRIVATE
+    ${nav_algo_mppi_cuda_INCLUDE_DIRS})
+  target_link_libraries(${PROJECT_NAME}
+    ${nav_algo_mppi_cuda_LIBRARIES})
+endif()
 
 install(TARGETS ${PROJECT_NAME}
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}

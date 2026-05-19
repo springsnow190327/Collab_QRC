@@ -74,9 +74,51 @@ void MPPIControllerROS::initialize(
   pnh.param<std::string>("odom_topic", odom_topic, "/odom");
   odom_sub_ = pnh.subscribe(odom_topic, 1, &MPPIControllerROS::odomCallback, this);
 
+  // ── Optional GPU acceleration via CudaBackend ───────────────────────────
+  // `use_cuda` param (plugin-private NS, default false). Backend buffer
+  // sizes pulled from the canonical Nav2 MPPI shape + costmap dimensions.
+  bool use_cuda = false;
+  pnh.param<bool>("use_cuda", use_cuda, false);
+
+#ifdef NAV_ALGO_MPPI_HAS_CUDA
+  if (use_cuda) {
+    nav_algo_mppi_cuda::CudaBackendConfig bcfg{};
+    bcfg.batch_size       = optimizer_.settings().batch_size;
+    bcfg.time_steps       = optimizer_.settings().time_steps;
+    bcfg.path_max_points  = 1024;
+    // Costmap on Nav2 sim is 200×200 (world-fixed); allow generous max so
+    // a re-rolled costmap fits without re-alloc.
+    bcfg.costmap_max_cells = 4 * 1024 * 1024;  // 4 M cells (~4 MB uint8)
+    bcfg.footprint_max_n  = 16;
+    cuda_backend_ = std::make_unique<nav_algo_mppi_cuda::CudaBackend>(bcfg);
+
+    // Upload the robot footprint from costmap_ros so ObstaclesCritic's
+    // footprint kernel can run.
+    std::vector<float> fp_x, fp_y;
+    for (const auto & p : costmap_ros_->getRobotFootprint()) {
+      fp_x.push_back(static_cast<float>(p.x));
+      fp_y.push_back(static_cast<float>(p.y));
+    }
+    if (!fp_x.empty()) {
+      cuda_backend_->setFootprint(fp_x, fp_y);
+    }
+    optimizer_.setCudaBackend(cuda_backend_.get());
+    ROS_INFO("MPPIControllerROS [%s] CUDA backend ENABLED "
+             "(B=%u T=%u footprint_n=%zu).",
+             name_.c_str(), bcfg.batch_size, bcfg.time_steps, fp_x.size());
+  }
+#else
+  if (use_cuda) {
+    ROS_WARN("MPPIControllerROS [%s] use_cuda=true requested but plugin "
+             "was built without NAV_ALGO_MPPI_HAS_CUDA. Falling back to CPU.",
+             name_.c_str());
+  }
+#endif
+
   ROS_INFO(
-    "MPPIControllerROS [%s] initialised. xy_tol=%.2f yaw_tol=%.2f odom=%s",
-    name_.c_str(), xy_goal_tolerance_, yaw_goal_tolerance_, odom_topic.c_str());
+    "MPPIControllerROS [%s] initialised. xy_tol=%.2f yaw_tol=%.2f odom=%s use_cuda=%s",
+    name_.c_str(), xy_goal_tolerance_, yaw_goal_tolerance_, odom_topic.c_str(),
+    use_cuda ? "true" : "false");
 
   initialized_ = true;
 }

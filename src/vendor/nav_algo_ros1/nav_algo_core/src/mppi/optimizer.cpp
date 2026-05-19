@@ -154,6 +154,17 @@ geometry_msgs::msg::TwistStamped Optimizer::evalControl(
 
 void Optimizer::optimize()
 {
+  // CUDA-accelerated path: skip the xtensor hot loop entirely and let the
+  // backend run integrate + critics + control-update on the GPU. Backend is
+  // responsible for filling state_/generated_trajectories_/costs_/
+  // control_sequence_ identically to the CPU body below, then calling (or
+  // inlining) applyControlSequenceConstraints. Iteration count is honoured
+  // inside backend->optimize() so the dispatch happens once per call.
+  if (cuda_backend_ != nullptr) {
+    cuda_backend_->optimize(*this);
+    return;
+  }
+
   for (size_t i = 0; i < settings_.iteration_count; ++i) {
     generateNoisedTrajectories();
     critic_manager_.evalTrajectoriesScores(critics_data_);

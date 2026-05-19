@@ -7,6 +7,14 @@ MPPIControllerROS:
   yaw_goal_tolerance:       3.14
   odom_topic:               /robot/odom/nav
 
+  # GPU acceleration — when true AND the plugin was compiled with
+  # NAV_ALGO_MPPI_HAS_CUDA, MPPI optimize() runs on CUDA via the
+  # nav_algo_mppi_cuda backend (~50-200× faster than xtensor CPU).
+  # CPU fallback retained: set false (or build without the CUDA pkg) to
+  # use the xtensor path. v1 backend: simplified host-side gates;
+  # full math-equivalence to Humble sim is a follow-up.
+  use_cuda:                 true
+
   # ---- Optimizer + DiffDrive ----
   time_steps:               56
   model_dt:                 0.05

@@ -54,12 +54,19 @@ add_library(${PROJECT_NAME} SHARED
   src/integrate.cu
   src/critics.cu
   src/control_update.cu
+  src/cuda_backend.cu
 )
 set_target_properties(${PROJECT_NAME} PROPERTIES
   CUDA_SEPARABLE_COMPILATION ON
   POSITION_INDEPENDENT_CODE  ON
 )
-target_link_libraries(${PROJECT_NAME} PRIVATE ${CUDART_LIB})
+# cuda_backend.cu calls Optimizer::generateNoisedTrajectoriesNoIntegrate
+# (inline, but it calls protected Optimizer::updateStateVelocities which
+# lives in libnav_algo_mppi.a from nav_algo_core). Whole-archive link so
+# the optimizer/critic translation units aren't dead-stripped.
+target_link_libraries(${PROJECT_NAME} PRIVATE
+  ${catkin_LIBRARIES}     # pulls in nav_algo_mppi + nav_algo_smac
+  ${CUDART_LIB})
 
 # Standalone benchmark — CPU reference vs GPU output diff + timing.
 add_executable(integrate_bench src/integrate_bench.cpp)

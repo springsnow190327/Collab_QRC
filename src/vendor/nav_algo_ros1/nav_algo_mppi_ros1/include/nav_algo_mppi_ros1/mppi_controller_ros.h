@@ -32,6 +32,10 @@
 #include "nav_algo_core/mppi/tools/path_handler.hpp"
 #include "nav_algo_core/mppi/tools/parameters_handler.hpp"
 
+#ifdef NAV_ALGO_MPPI_HAS_CUDA
+#include "nav_algo_mppi_cuda/cuda_backend.hpp"
+#endif
+
 namespace nav_algo_mppi_ros1
 {
 
@@ -104,6 +108,14 @@ private:
 
   // Pseudo-LifecycleNode so the optimizer can fetch params through our shim.
   std::shared_ptr<rclcpp_lifecycle::LifecycleNode> lc_node_;
+
+  // Optional GPU acceleration. When `use_cuda: true` in yaml AND the plugin
+  // was built with NAV_ALGO_MPPI_HAS_CUDA, a CudaBackend is allocated and
+  // wired into the optimizer's optimize() dispatch hook. Otherwise the
+  // xtensor CPU path runs unchanged.
+#ifdef NAV_ALGO_MPPI_HAS_CUDA
+  std::unique_ptr<nav_algo_mppi_cuda::CudaBackend> cuda_backend_;
+#endif
 
   bool initialized_{false};
 };

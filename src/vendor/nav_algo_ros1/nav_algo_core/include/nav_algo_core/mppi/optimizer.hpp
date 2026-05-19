@@ -34,6 +34,7 @@
 #include "nav_algo_core/mppi/tools/noise_generator.hpp"
 #include "nav_algo_core/mppi/tools/parameters_handler.hpp"
 #include "nav_algo_core/mppi/tools/utils.hpp"
+#include "nav_algo_core/mppi/cuda_backend.hpp"
 
 #ifdef __APPLE__
   #include "nav2_mppi_controller/tools/apple_utils.hpp"
@@ -113,6 +114,41 @@ public:
    * @brief Reset the optimization problem to initial conditions
    */
   void reset();
+
+  // ── CUDA backend injection ─────────────────────────────────────────────
+  // Optional GPU acceleration hook. When set (typically by the MPPI
+  // controller plugin reading a `use_cuda: true` yaml param), Optimizer::
+  // optimize() delegates the per-iteration body (generateNoisedTrajectories
+  // + evalTrajectoriesScores + updateControlSequence) to the backend.
+  // When null, the xtensor CPU path runs unchanged.
+  void setCudaBackend(ICudaBackend * backend) { cuda_backend_ = backend; }
+
+  // Accessors exposed for the CUDA backend implementation (and tests).
+  // The backend mirrors these to/from device buffers per optimize() call.
+  models::State            & state()               { return state_; }
+  models::ControlSequence  & control_sequence()    { return control_sequence_; }
+  models::Trajectories     & generated_trajectories() { return generated_trajectories_; }
+  models::Path             & path()                { return path_; }
+  xt::xtensor<float, 1>    & costs()               { return costs_; }
+  models::OptimizerSettings& settings()            { return settings_; }
+  CriticManager            & critic_manager()      { return critic_manager_; }
+  CriticData               & critics_data()        { return critics_data_; }
+  std::shared_ptr<MotionModel> & motion_model()    { return motion_model_; }
+  bool isHolonomicPublic() const { return motion_model_ ? motion_model_->isHolonomic() : false; }
+  void applyControlSequenceConstraintsPublic() { applyControlSequenceConstraints(); }
+
+  // Backend convenience: replicate generateNoisedTrajectories EXCEPT the
+  // CPU integrate step (the GPU does its own integrate kernel from state).
+  void generateNoisedTrajectoriesNoIntegrate()
+  {
+    noise_generator_.setNoisedControls(state_, control_sequence_);
+    noise_generator_.generateNextNoises();
+    updateStateVelocities(state_);
+  }
+  nav2_costmap_2d::Costmap2D * getCostmapForBackend() { return costmap_; }
+  std::shared_ptr<nav2_costmap_2d::Costmap2DROS> getCostmapRosForBackend() { return costmap_ros_; }
+  const std::string & getNameForBackend() const { return name_; }
+  ParametersHandler * getParametersHandler() const { return parameters_handler_; }
 
 protected:
   /**
@@ -249,6 +285,9 @@ protected:
   models::Trajectories generated_trajectories_;
   models::Path path_;
   xt::xtensor<float, 1> costs_;
+
+  // GPU backend hook — null when CUDA is disabled or not linked.
+  ICudaBackend * cuda_backend_{nullptr};
 
   CriticData critics_data_ =
   {state_, generated_trajectories_, path_, costs_, settings_.model_dt, false, nullptr, nullptr,
