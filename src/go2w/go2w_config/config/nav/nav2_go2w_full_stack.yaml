@@ -178,7 +178,7 @@ controller_server:
       # updateControlSequence) runs on the GPU via the nav_algo_mppi_cuda
       # backend. When `use_cuda: false`, the upstream xtensor CPU path runs
       # unchanged (graceful fallback when no GPU is present).
-      plugin: "nav2_mppi_controller_cuda_plugin/CudaMPPIController"
+      plugin: "nav2_mppi_controller_cuda_plugin::CudaMPPIController"
       use_cuda: true
       time_steps: 56
       model_dt: 0.05
