@@ -1,8 +1,8 @@
 <launch>
-  <!-- GBPlanner3 in Collab_QRC common-executor mode.
+  <!-- GBPlanner2/3 in Collab_QRC common-executor mode.
 
        This is intentionally a thin ROS1 launch wrapper around the upstream
-       GBPlanner3 nodes. MuJoCo, Fast-LIO, Nav2 MPPI, safety, and metrics stay
+       GBPlanner nodes. MuJoCo, Fast-LIO, Nav2 MPPI, safety, and metrics stay
        in the ROS2 Collab_QRC stack; this launch only runs the high-level
        autonomous exploration planner and PCI trajectory publisher. -->
   <arg name="rviz_en" default="false" />
@@ -10,10 +10,13 @@
   <arg name="robot_name" default="rmf" />
   <arg name="config_name" default="collab_qrc_go2" />
   <arg name="ele_map_enable" default="true" />
+  <arg name="gbplanner_version" default="gbplanner3" />
 
   <arg name="gbplanner_config_file" default="$(find robot_bringup)/config/ros1/gbplanner/$(arg config_name)/gbplanner_config.yaml" />
   <arg name="voxblox_config_file" default="$(find robot_bringup)/config/ros1/gbplanner/$(arg config_name)/voxblox_config.yaml" />
   <arg name="pci_file" default="$(find robot_bringup)/config/ros1/gbplanner/$(arg config_name)/planner_control_interface_config.yaml" />
+  <arg name="planner_server_name" default="gbplanner_ros" />
+  <arg name="planner_homing_server_name" default="gbplanner_ros_homing" />
   <arg name="manhole_config_file" default="$(find robot_bringup)/config/ros1/gbplanner/$(arg config_name)/manhole_detector.yaml"/>
   <arg name="elevation_map_config_file" default="$(find robot_bringup)/config/ros1/gbplanner/$(arg config_name)/elevation_mapping_config.yaml" if="$(arg ele_map_enable)"/>
   <arg name="elevation_map_config_file" default="" unless="$(arg ele_map_enable)"/>
@@ -35,8 +38,8 @@
   </node>
 
   <node pkg="pci_general" type="pci_general_ros_node" name="pci_general_ros_node" output="screen">
-    <remap from="planner_server" to="gbplanner_ros" />
-    <remap from="planner_homing_server" to="gbplanner_ros_homing" />
+    <remap from="planner_server" to="$(arg planner_server_name)" />
+    <remap from="planner_homing_server" to="$(arg planner_homing_server_name)" />
     <remap from="odometry" to="$(arg odometry_topic)"/>
     <remap from="command/trajectory" to="/$(arg robot_name)/command/trajectory"/>
     <remap from="/gbplanner_path" to="/$(arg robot_name)/gbplanner_path"/>

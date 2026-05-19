@@ -1,7 +1,7 @@
-# Dual-robot GBPlanner3 ↔ Collab_QRC common-executor integration.
+# Dual-robot GBPlanner2/3 ↔ Collab_QRC common-executor integration.
 #
 # Two isolated ROS 1 masters avoid TF-frame collisions between robot_a and
-# robot_b.  Each GBPlanner3 instance receives only one robot's odom/cloud/TF,
+# robot_b.  Each GBPlanner instance receives only one robot's odom/cloud/TF,
 # plans autonomously, and publishes trajectory/path on namespaced ROS2 topics:
 #   /robot_a/command/trajectory
 #   /robot_b/command/trajectory
@@ -138,12 +138,40 @@ services:
       source /opt/ros/noetic/setup.bash
       source /workspace/devel/setup.bash
       rosparam set /use_sim_time true
+      gbplanner_version="${GBPLANNER_VERSION:-gbplanner3}"
+      case "$${gbplanner_version}" in
+        gbplanner2)
+          gbplanner_config_file="/workspace/src/robot_bringup/config/ros1/gbplanner/collab_qrc_go2/gbplanner2_config.yaml"
+          planner_server_name="gbplanner"
+          planner_homing_server_name="gbplanner/homing"
+          planner_service_name="/gbplanner"
+          ;;
+        gbplanner3)
+          gbplanner_config_file="/workspace/src/robot_bringup/config/ros1/gbplanner/collab_qrc_go2/gbplanner_config.yaml"
+          planner_server_name="gbplanner_ros"
+          planner_homing_server_name="gbplanner_ros_homing"
+          planner_service_name="/gbplanner_ros"
+          ;;
+        *)
+          echo "Unsupported GBPLANNER_VERSION=$${gbplanner_version}" >&2
+          exit 2
+          ;;
+      esac
+      echo "Launching $${gbplanner_version} for robot_a"
       rosrun topic_tools relay /robot_a/tf /tf &
       python3 /workspace/src/robot_bringup/config/ros1/gbplanner/collab_qrc_go2/cloud_stamp_rewriter.py _source_topic:=/robot_a/cloud_registered_body _dest_topic:=/robot_a/lidar/points_downsampled _freespace_topic:=/robot_a/lidar/freespace_points &
       python3 /workspace/src/robot_bringup/config/ros1/gbplanner/collab_qrc_go2/odom_planning_height_adapter.py _source_topic:=/robot_a/odom/nav _dest_topic:=/robot_a/gbplanner/odom_planning _planning_z:=${GBPLANNER_PLANNING_Z:-0.15} &
       python3 /workspace/src/robot_bringup/config/ros1/gbplanner/collab_qrc_go2/publish_static_tfs.py _base_frame:=base_link _planning_base_frame:=base_link &
-      python3 /workspace/src/robot_bringup/config/ros1/gbplanner/collab_qrc_go2/start_automatic_planning.py --robot-label robot_a --odom-topic /robot_a/gbplanner/odom_planning --cloud-topic /robot_a/lidar/points_downsampled --warmup-sec 12.0 --repeat-sec ${GBPLANNER_REPLAN_PERIOD_SEC:-20.0} &
-      exec roslaunch /workspace/src/robot_bringup/config/ros1/gbplanner/collab_qrc_go2/gbplanner_common_executor.launch robot_name:=robot_a odometry_topic:=/robot_a/gbplanner/odom_planning config_name:=collab_qrc_go2 ele_map_enable:=false rviz_en:=false
+      executor_mode="${GBPLANNER_EXECUTOR_MODE:-}"
+      if [ -z "$${executor_mode}" ]; then
+        if [ "$${gbplanner_version}" = "gbplanner2" ]; then executor_mode="service_path"; else executor_mode="pci"; fi
+      fi
+      if [ "$${executor_mode}" = "service_path" ]; then
+        python3 /workspace/src/robot_bringup/config/ros1/gbplanner/collab_qrc_go2/gbplanner_service_path_executor.py --planner-label "$${gbplanner_version}" --robot-label robot_a --odom-topic /robot_a/gbplanner/odom_planning --cloud-topic /robot_a/lidar/points_downsampled --planner-service "$${planner_service_name}" --path-topic /robot_a/gbplanner_path --warmup-sec 12.0 --period-sec ${GBPLANNER_REPLAN_PERIOD_SEC:-20.0} --bound-modes "${GBPLANNER_BOUND_MODES:-0,1,2,4}" &
+      else
+        python3 /workspace/src/robot_bringup/config/ros1/gbplanner/collab_qrc_go2/start_automatic_planning.py --planner-label "$${gbplanner_version}" --robot-label robot_a --odom-topic /robot_a/gbplanner/odom_planning --cloud-topic /robot_a/lidar/points_downsampled --warmup-sec 12.0 --repeat-sec ${GBPLANNER_REPLAN_PERIOD_SEC:-20.0} &
+      fi
+      exec roslaunch /workspace/src/robot_bringup/config/ros1/gbplanner/collab_qrc_go2/gbplanner_common_executor.launch robot_name:=robot_a odometry_topic:=/robot_a/gbplanner/odom_planning config_name:=collab_qrc_go2 gbplanner_version:="$${gbplanner_version}" gbplanner_config_file:="$${gbplanner_config_file}" planner_server_name:="$${planner_server_name}" planner_homing_server_name:="$${planner_homing_server_name}" ele_map_enable:=false rviz_en:=false
       '
 
   ros1_launch_gbplanner_robot_b:
@@ -165,12 +193,40 @@ services:
       source /opt/ros/noetic/setup.bash
       source /workspace/devel/setup.bash
       rosparam set /use_sim_time true
+      gbplanner_version="${GBPLANNER_VERSION:-gbplanner3}"
+      case "$${gbplanner_version}" in
+        gbplanner2)
+          gbplanner_config_file="/workspace/src/robot_bringup/config/ros1/gbplanner/collab_qrc_go2/gbplanner2_config.yaml"
+          planner_server_name="gbplanner"
+          planner_homing_server_name="gbplanner/homing"
+          planner_service_name="/gbplanner"
+          ;;
+        gbplanner3)
+          gbplanner_config_file="/workspace/src/robot_bringup/config/ros1/gbplanner/collab_qrc_go2/gbplanner_config.yaml"
+          planner_server_name="gbplanner_ros"
+          planner_homing_server_name="gbplanner_ros_homing"
+          planner_service_name="/gbplanner_ros"
+          ;;
+        *)
+          echo "Unsupported GBPLANNER_VERSION=$${gbplanner_version}" >&2
+          exit 2
+          ;;
+      esac
+      echo "Launching $${gbplanner_version} for robot_b"
       rosrun topic_tools relay /robot_b/tf /tf &
       python3 /workspace/src/robot_bringup/config/ros1/gbplanner/collab_qrc_go2/cloud_stamp_rewriter.py _source_topic:=/robot_b/cloud_registered_body _dest_topic:=/robot_b/lidar/points_downsampled _freespace_topic:=/robot_b/lidar/freespace_points &
       python3 /workspace/src/robot_bringup/config/ros1/gbplanner/collab_qrc_go2/odom_planning_height_adapter.py _source_topic:=/robot_b/odom/nav _dest_topic:=/robot_b/gbplanner/odom_planning _planning_z:=${GBPLANNER_PLANNING_Z:-0.15} &
       python3 /workspace/src/robot_bringup/config/ros1/gbplanner/collab_qrc_go2/publish_static_tfs.py _base_frame:=b_base_link _planning_base_frame:=base_link &
-      python3 /workspace/src/robot_bringup/config/ros1/gbplanner/collab_qrc_go2/start_automatic_planning.py --robot-label robot_b --odom-topic /robot_b/gbplanner/odom_planning --cloud-topic /robot_b/lidar/points_downsampled --warmup-sec 12.0 --repeat-sec ${GBPLANNER_REPLAN_PERIOD_SEC:-20.0} &
-      exec roslaunch /workspace/src/robot_bringup/config/ros1/gbplanner/collab_qrc_go2/gbplanner_common_executor.launch robot_name:=robot_b odometry_topic:=/robot_b/gbplanner/odom_planning config_name:=collab_qrc_go2 ele_map_enable:=false rviz_en:=false
+      executor_mode="${GBPLANNER_EXECUTOR_MODE:-}"
+      if [ -z "$${executor_mode}" ]; then
+        if [ "$${gbplanner_version}" = "gbplanner2" ]; then executor_mode="service_path"; else executor_mode="pci"; fi
+      fi
+      if [ "$${executor_mode}" = "service_path" ]; then
+        python3 /workspace/src/robot_bringup/config/ros1/gbplanner/collab_qrc_go2/gbplanner_service_path_executor.py --planner-label "$${gbplanner_version}" --robot-label robot_b --odom-topic /robot_b/gbplanner/odom_planning --cloud-topic /robot_b/lidar/points_downsampled --planner-service "$${planner_service_name}" --path-topic /robot_b/gbplanner_path --warmup-sec 12.0 --period-sec ${GBPLANNER_REPLAN_PERIOD_SEC:-20.0} --bound-modes "${GBPLANNER_BOUND_MODES:-0,1,2,4}" &
+      else
+        python3 /workspace/src/robot_bringup/config/ros1/gbplanner/collab_qrc_go2/start_automatic_planning.py --planner-label "$${gbplanner_version}" --robot-label robot_b --odom-topic /robot_b/gbplanner/odom_planning --cloud-topic /robot_b/lidar/points_downsampled --warmup-sec 12.0 --repeat-sec ${GBPLANNER_REPLAN_PERIOD_SEC:-20.0} &
+      fi
+      exec roslaunch /workspace/src/robot_bringup/config/ros1/gbplanner/collab_qrc_go2/gbplanner_common_executor.launch robot_name:=robot_b odometry_topic:=/robot_b/gbplanner/odom_planning config_name:=collab_qrc_go2 gbplanner_version:="$${gbplanner_version}" gbplanner_config_file:="$${gbplanner_config_file}" planner_server_name:="$${planner_server_name}" planner_homing_server_name:="$${planner_homing_server_name}" ele_map_enable:=false rviz_en:=false
       '
 
   ros2_launch_ros1_bridge_robot_a:

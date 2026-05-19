@@ -358,17 +358,20 @@ def _build_terrain_analysis_only_stack(*, ns: str, use_sim_time: bool, nav_delay
     return [TimerAction(period=nav_delay, actions=nodes)]
 
 
-def _build_gbplanner3_common_executor_actions(
+def _build_gbplanner_common_executor_actions(
     *,
     nav_delay: float,
+    planner_name: str,
+    gbplanner_version: str,
     external_cmd: str,
     log_dir: str,
 ):
-    """Wire GBPlanner3 trajectory outputs into the common waypoint contract."""
+    """Wire GBPlanner trajectory outputs into the common waypoint contract."""
     actions = [
         LogInfo(msg=(
-            "[exploration_planner=gbplanner3] Common executor active: "
-            "GBPlanner3 must publish /robot_a/command/trajectory and "
+            f"[exploration_planner={planner_name}] Common executor active: "
+            f"GBPlanner {gbplanner_version} must publish "
+            "/robot_a/command/trajectory and "
             "/robot_b/command/trajectory; adapters relay to /<ns>/way_point_coord."
         ))
     ]
@@ -384,15 +387,17 @@ def _build_gbplanner3_common_executor_actions(
         )
         if log_dir:
             os.makedirs(log_dir, exist_ok=True)
-            log_path = os.path.join(log_dir, "gbplanner3_dual_common_executor.log")
+            log_path = os.path.join(log_dir, f"{planner_name}_dual_common_executor.log")
         else:
-            log_path = "/tmp/gbplanner3_dual_common_executor.log"
+            log_path = f"/tmp/{planner_name}_dual_common_executor.log"
         cmd = (
+            f"GBPLANNER_VERSION={shlex.quote(gbplanner_version)} "
+            f"GBPLANNER_DUAL_LOG_PATH={shlex.quote(log_path)} "
             f"GBPLANNER3_DUAL_LOG_PATH={shlex.quote(log_path)} "
             f"{shlex.quote(wrapper_script)} run"
         )
         actions.append(LogInfo(msg=(
-            "[exploration_planner=gbplanner3] gbplanner3_external_cmd is empty; "
+            f"[exploration_planner={planner_name}] external command is empty; "
             f"starting built-in dual wrapper: {cmd}"
         )))
     if cmd:
@@ -400,7 +405,7 @@ def _build_gbplanner3_common_executor_actions(
             period=nav_delay + 5.0,
             actions=[ExecuteProcess(
                 cmd=["bash", "-lc", cmd],
-                name="gbplanner3_external_common_executor",
+                name=f"{planner_name}_external_common_executor",
                 output="screen",
             )],
         ))
@@ -414,6 +419,7 @@ def _build_gbplanner3_common_executor_actions(
                     "python3", "-u", adapter_path,
                     "--ros-args",
                     "-p", f"robot_namespace:={ns}",
+                    "-p", f"planner_label:={planner_name}",
                     "-p", f"trajectory_topic:=/{ns}/command/trajectory",
                     "-p", f"path_topic:=/{ns}/gbplanner_path",
                     "-p", f"odometry_topic:=/{ns}/odom/nav",
@@ -429,7 +435,7 @@ def _build_gbplanner3_common_executor_actions(
                     "-p", "publish_goal_pose:=false",
                     "-p", "publish_way_point_coord:=true",
                 ],
-                name=f"gbplanner3_waypoint_adapter_{ns}",
+                name=f"{planner_name}_waypoint_adapter_{ns}",
                 output="screen",
             )],
         ))
@@ -1942,10 +1948,11 @@ def _launch_setup(context):
     collision_output = _get(context, "collision_output_path").strip()
     exploration_planner = (_get(context, "exploration_planner").strip().lower() or "cfpa2")
     gbplanner3_external_cmd = _get(context, "gbplanner3_external_cmd").strip()
+    gbplanner2_external_cmd = _get(context, "gbplanner2_external_cmd").strip()
     mtare_external_cmd = _get(context, "mtare_external_cmd").strip()
     mtare_waypoint_topic_a = _get(context, "mtare_waypoint_topic_a").strip() or "/robot_a/mtare/way_point"
     mtare_waypoint_topic_b = _get(context, "mtare_waypoint_topic_b").strip() or "/robot_b/mtare/way_point"
-    _planner_allowed = {"cfpa2", "gbplanner3", "mtare"}
+    _planner_allowed = {"cfpa2", "gbplanner2", "gbplanner3", "mtare"}
     if exploration_planner not in _planner_allowed:
         raise ValueError(
             f"exploration_planner must be one of {_planner_allowed}, got '{exploration_planner}'")
@@ -1976,7 +1983,7 @@ def _launch_setup(context):
               "nav2": "nav2_mppi", "nav2_hybrid_astar": "nav2_mppi"}
     nav_backend_a = _alias.get(nav_backend_a, nav_backend_a)
     nav_backend_b = _alias.get(nav_backend_b, nav_backend_b)
-    if exploration_planner in {"gbplanner3", "mtare"}:
+    if exploration_planner in {"gbplanner2", "gbplanner3", "mtare"}:
         # Common-executor benchmark mode: only the high-level exploration
         # planner may vary.  Keep the Nav2 MPPI execution stack fixed even if
         # the caller passes legacy nav_backend values.
@@ -2271,10 +2278,12 @@ def _launch_setup(context):
                 ],
             )
         )
-    elif explore and exploration_planner == "gbplanner3":
-        actions.extend(_build_gbplanner3_common_executor_actions(
+    elif explore and exploration_planner in {"gbplanner2", "gbplanner3"}:
+        actions.extend(_build_gbplanner_common_executor_actions(
             nav_delay=nav_delay,
-            external_cmd=gbplanner3_external_cmd,
+            planner_name=exploration_planner,
+            gbplanner_version=exploration_planner,
+            external_cmd=gbplanner2_external_cmd if exploration_planner == "gbplanner2" else gbplanner3_external_cmd,
             log_dir=session_output_dir or metrics_output_dir,
         ))
     elif explore and exploration_planner == "mtare":
@@ -2528,7 +2537,7 @@ def generate_launch_description():
             default_value="cfpa2",
             description=(
                 "High-level exploration planner for common-executor benchmark: "
-                "cfpa2 | gbplanner3 | mtare. All modes execute through the same "
+                "cfpa2 | gbplanner2 | gbplanner3 | mtare. All modes execute through the same "
                 "Nav2 MPPI stack via /<ns>/way_point_coord."
             ),
         ),
@@ -2575,7 +2584,16 @@ def generate_launch_description():
             description=(
                 "Optional long-running command that starts the upstream dual "
                 "GBPlanner3 stack and publishes /robot_a|b/command/trajectory. "
-                "If empty, only ROS2 adapters are started."
+                "If empty, the built-in UAS/Docker wrapper checks out gbplanner3."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "gbplanner2_external_cmd",
+            default_value="",
+            description=(
+                "Optional long-running command that starts the upstream dual "
+                "GBPlanner2 stack and publishes /robot_a|b/command/trajectory. "
+                "If empty, the built-in UAS/Docker wrapper checks out gbplanner2."
             ),
         ),
         DeclareLaunchArgument(

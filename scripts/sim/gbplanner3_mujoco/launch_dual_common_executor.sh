@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start/stop dual GBPlanner3 for the mixed common-executor benchmark.
+# Start/stop dual GBPlanner2/3 for the mixed common-executor benchmark.
 #
 # This launches two isolated ROS1 masters through the Unified Autonomy Stack:
 #   robot_a master: localhost:11311 -> /robot_a/command/trajectory
@@ -13,7 +13,16 @@ WS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 UAS_REPO_ROOT="${UAS_REPO_ROOT:-$HOME/Research/uas_deploy/unified_autonomy_stack}"
 COLLAB_QRC_ROOT="${COLLAB_QRC_ROOT:-$WS_DIR}"
 OVERLAY_COMPOSE="${COLLAB_QRC_ROOT}/scripts/sim/gbplanner3_mujoco/compose/docker-compose.collab_qrc_dual.yml"
-LOG_PATH="${GBPLANNER3_DUAL_LOG_PATH:-/tmp/gbplanner3_dual_common_executor.log}"
+GBPLANNER_VERSION="${GBPLANNER_VERSION:-gbplanner3}"
+case "${GBPLANNER_VERSION}" in
+  gbplanner2|gbplanner3) ;;
+  *)
+    echo "ERROR: GBPLANNER_VERSION must be gbplanner2 or gbplanner3 (got '${GBPLANNER_VERSION}')" >&2
+    exit 2
+    ;;
+esac
+LOG_PATH="${GBPLANNER_DUAL_LOG_PATH:-${GBPLANNER3_DUAL_LOG_PATH:-/tmp/${GBPLANNER_VERSION}_dual_common_executor.log}}"
+PREPARE_SCRIPT="${COLLAB_QRC_ROOT}/scripts/sim/gbplanner3_mujoco/prepare_gbplanner_ref.sh"
 
 stop_stack() {
   if [[ -d "${UAS_REPO_ROOT}" && -f "${OVERLAY_COMPOSE}" ]]; then
@@ -22,7 +31,7 @@ stop_stack() {
       UAS_REPO_ROOT="${UAS_REPO_ROOT}" \
       COLLAB_QRC_ROOT="${COLLAB_QRC_ROOT}" \
       docker compose -f "${OVERLAY_COMPOSE}" --profile launch down --remove-orphans
-    ) >/tmp/gbplanner3_dual_stop.log 2>&1 || true
+    ) >"/tmp/${GBPLANNER_VERSION}_dual_stop.log" 2>&1 || true
   fi
 }
 
@@ -48,6 +57,10 @@ esac
   echo "ERROR: compose overlay not found: ${OVERLAY_COMPOSE}" >&2
   exit 1
 }
+[[ -x "${PREPARE_SCRIPT}" ]] || {
+  echo "ERROR: prepare script not executable: ${PREPARE_SCRIPT}" >&2
+  exit 1
+}
 command -v docker >/dev/null 2>&1 || {
   echo "ERROR: docker command not found" >&2
   exit 1
@@ -70,15 +83,18 @@ trap cleanup EXIT
 trap terminate INT TERM
 
 stop_stack
-echo "Starting dual GBPlanner3 common-executor stack"
+echo "Preparing ${GBPLANNER_VERSION} common-executor stack"
 echo "  UAS_REPO_ROOT   : ${UAS_REPO_ROOT}"
 echo "  COLLAB_QRC_ROOT : ${COLLAB_QRC_ROOT}"
 echo "  compose         : ${OVERLAY_COMPOSE}"
 echo "  log             : ${LOG_PATH}"
+"${PREPARE_SCRIPT}" "${GBPLANNER_VERSION}"
 
 cd "${UAS_REPO_ROOT}"
+export GBPLANNER_VERSION UAS_REPO_ROOT COLLAB_QRC_ROOT
 UAS_REPO_ROOT="${UAS_REPO_ROOT}" \
 COLLAB_QRC_ROOT="${COLLAB_QRC_ROOT}" \
+GBPLANNER_VERSION="${GBPLANNER_VERSION}" \
 DOMAIN_ID="${ROS_DOMAIN_ID:-0}" \
 bash -c "make launch DOCKER_COMPOSE_FILE='${OVERLAY_COMPOSE}' 2>&1 | grep --line-buffered -v \"No 'elevation' layer in map\"" \
   >"${LOG_PATH}" 2>&1 &

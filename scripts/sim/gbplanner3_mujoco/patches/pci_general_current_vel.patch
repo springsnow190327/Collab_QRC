@@ -1,0 +1,10 @@
+diff --git a/include/pci_general/pci_general.h b/include/pci_general/pci_general.h
+index 0a955fc..2ee71f0 100644
+--- a/include/pci_general/pci_general.h
++++ b/include/pci_general/pci_general.h
+@@ -269,4 +269,4 @@ class PCIGeneral : public PCIManager {
+   ExecutionPathType current_path_type_;
+-
++  Eigen::Vector3d current_vel_ = Eigen::Vector3d::Zero();
+   bool concatenate_path_enable_ = true;
+   std::vector<geometry_msgs::Pose> executing_path_;

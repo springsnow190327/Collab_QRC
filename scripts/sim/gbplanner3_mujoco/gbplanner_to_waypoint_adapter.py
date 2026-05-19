@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""gbplanner_to_waypoint_adapter — bridge gbplanner3 trajectory output to
+"""gbplanner_to_waypoint_adapter — bridge GBPlanner trajectory output to
 Collab_QRC's waypoint topic so CHAMP locomotion / FAR / Nav2 can execute.
 
   /command/trajectory (trajectory_msgs/MultiDOFJointTrajectory, from gbplanner
@@ -45,6 +45,7 @@ class GBPlannerWaypointAdapter(Node):
         super().__init__('gbplanner_waypoint_adapter')
 
         self.declare_parameter('robot_namespace', 'robot')
+        self.declare_parameter('planner_label', 'GBPlanner')
         self.declare_parameter('trajectory_topic', '/command/trajectory')
         self.declare_parameter('path_topic', '')
         self.declare_parameter('odometry_topic', '/robot/Odometry')
@@ -62,6 +63,10 @@ class GBPlannerWaypointAdapter(Node):
         self.declare_parameter('publish_way_point_coord', True)
 
         ns = self.get_parameter('robot_namespace').get_parameter_value().string_value
+        self._planner_label = (
+            self.get_parameter('planner_label').get_parameter_value().string_value
+            or 'GBPlanner'
+        )
         traj_topic = self.get_parameter('trajectory_topic').get_parameter_value().string_value
         path_topic = self.get_parameter('path_topic').get_parameter_value().string_value
         odom_topic = self.get_parameter('odometry_topic').get_parameter_value().string_value
@@ -156,7 +161,7 @@ class GBPlannerWaypointAdapter(Node):
         self._last_pub_idx = None
         self.get_logger().warn(
             f'Nav2 reported {state} for planner waypoint ({gx:+.2f},{gy:+.2f}); '
-            'blacklisting this point and advancing within the GBPlanner3 trajectory')
+            f'blacklisting this point and advancing within the {self._planner_label} trajectory')
 
     def _on_trajectory(self, msg: MultiDOFJointTrajectory) -> None:
         if not msg.points:
@@ -187,7 +192,7 @@ class GBPlannerWaypointAdapter(Node):
         now = self.get_clock().now().nanoseconds * 1e-9
         if now >= self._empty_log_deadline:
             self._empty_log_deadline = now + 10.0
-            self.get_logger().debug(f'ignoring empty GBPlanner3 {source} output')
+            self.get_logger().debug(f'ignoring empty {self._planner_label} {source} output')
 
     def _store_points(
         self,
@@ -211,7 +216,7 @@ class GBPlannerWaypointAdapter(Node):
         if stamp_sec >= self._source_log_deadline.get(source, 0.0):
             self._source_log_deadline[source] = stamp_sec + 5.0
             self.get_logger().info(
-                f'GBPlanner3 {source} update: points={len(points)} '
+                f'{self._planner_label} {source} update: points={len(points)} '
                 f'first={first_dist:.2f}m final={final_dist:.2f}m '
                 f'farthest={max_dist:.2f}m frame={frame_id}')
 
@@ -258,7 +263,8 @@ class GBPlannerWaypointAdapter(Node):
             return ('trajectory', str(traj['frame_id']), float(traj['stamp_sec']), list(traj['points']))
         if now_sec >= self._stale_log_deadline:
             self._stale_log_deadline = now_sec + 10.0
-            self.get_logger().debug('latest GBPlanner3 output is stale; waiting for a new planner output')
+            self.get_logger().debug(
+                f'latest {self._planner_label} output is stale; waiting for a new planner output')
         return None
 
     def _activate_output(self, source: str, stamp_sec: float) -> None:
@@ -284,7 +290,7 @@ class GBPlannerWaypointAdapter(Node):
         rx: float,
         ry: float,
     ) -> tuple[float, float, float, float, float, float, bool, int] | None:
-        """Select a Nav2-executable goal from GBPlanner3 output only."""
+        """Select a Nav2-executable goal from GBPlanner output only."""
         if not points:
             return None
 
@@ -375,7 +381,7 @@ class GBPlannerWaypointAdapter(Node):
             if now_sec >= self._near_goal_log_deadline:
                 self._near_goal_log_deadline = now_sec + 5.0
                 self.get_logger().warn(
-                    f'ignoring GBPlanner3 {source} goal {robot_to_goal:.2f}m from robot; '
+                    f'ignoring {self._planner_label} {source} goal {robot_to_goal:.2f}m from robot; '
                     f'farthest planner point is {max_dist:.2f}m; '
                     f'need >= {self._min_robot_goal_distance:.2f}m for Nav2 common executor')
             return

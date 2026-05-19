@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Start GBPlanner3 autonomous planning after its ROS1 inputs are alive.
+"""Start GBPlanner autonomous planning after its ROS1 inputs are alive.
 
-This only presses GBPlanner3's own ``automatic_planning`` service. It does not
+This only presses GBPlanner's own ``automatic_planning`` service. It does not
 publish routes, waypoints, or any scripted robot motion.
 """
 
@@ -17,6 +17,7 @@ from std_srvs.srv import Trigger
 
 def _parse_args(argv: List[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--planner-label", default="GBPlanner")
     parser.add_argument("--robot-label", default="robot")
     parser.add_argument("--odom-topic", default="/rmf/odom")
     parser.add_argument("--cloud-topic", default="/rmf/lidar/points_downsampled")
@@ -32,7 +33,7 @@ def _parse_args(argv: List[str]) -> argparse.Namespace:
         type=float,
         default=0.0,
         help=(
-            "If >0, keep re-triggering GBPlanner3's own automatic_planning "
+            "If >0, keep re-triggering GBPlanner's own automatic_planning "
             "service at this cadence. This is used in common-executor mode, "
             "where PCI's native controller feedback is replaced by Nav2."
         ),
@@ -42,7 +43,8 @@ def _parse_args(argv: List[str]) -> argparse.Namespace:
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = _parse_args(argv or sys.argv[1:])
-    rospy.init_node(f"gbplanner3_auto_start_{args.robot_label}", anonymous=True)
+    planner_label = str(args.planner_label)
+    rospy.init_node(f"{planner_label}_auto_start_{args.robot_label}", anonymous=True)
 
     rospy.loginfo(
         "[%s] waiting for odom=%s cloud=%s",
@@ -54,7 +56,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         rospy.wait_for_message(args.odom_topic, Odometry, timeout=args.input_timeout_sec)
         rospy.wait_for_message(args.cloud_topic, PointCloud2, timeout=args.input_timeout_sec)
     except rospy.ROSException as exc:
-        rospy.logerr("[%s] GBPlanner3 inputs not ready: %s", args.robot_label, exc)
+        rospy.logerr("[%s] %s inputs not ready: %s", args.robot_label, planner_label, exc)
         return 1
 
     if args.warmup_sec > 0.0:
@@ -71,11 +73,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         start = rospy.ServiceProxy(args.service, Trigger)
         response = start()
     except (rospy.ROSException, rospy.ServiceException) as exc:
-        rospy.logerr("[%s] failed to start GBPlanner3: %s", args.robot_label, exc)
+        rospy.logerr("[%s] failed to start %s: %s", args.robot_label, planner_label, exc)
         return 1
 
     if response.success:
-        rospy.loginfo("[%s] GBPlanner3 automatic planning started", args.robot_label)
+        rospy.loginfo("[%s] %s automatic planning started", args.robot_label, planner_label)
         if args.repeat_sec > 0.0:
             while not rospy.is_shutdown():
                 rospy.sleep(args.repeat_sec)
@@ -83,27 +85,31 @@ def main(argv: Optional[List[str]] = None) -> int:
                     response = start()
                 except (rospy.ROSException, rospy.ServiceException) as exc:
                     rospy.logwarn(
-                        "[%s] periodic GBPlanner3 re-trigger failed: %s",
+                        "[%s] periodic %s re-trigger failed: %s",
                         args.robot_label,
+                        planner_label,
                         exc,
                     )
                     continue
                 if response.success:
                     rospy.loginfo(
-                        "[%s] periodic GBPlanner3 automatic_planning trigger sent",
+                        "[%s] periodic %s automatic_planning trigger sent",
                         args.robot_label,
+                        planner_label,
                     )
                 else:
                     rospy.logwarn(
-                        "[%s] periodic GBPlanner3 trigger rejected: %s",
+                        "[%s] periodic %s trigger rejected: %s",
                         args.robot_label,
+                        planner_label,
                         response.message,
                     )
         return 0
 
     rospy.logerr(
-        "[%s] GBPlanner3 automatic planning rejected: %s",
+        "[%s] %s automatic planning rejected: %s",
         args.robot_label,
+        planner_label,
         response.message,
     )
     return 1

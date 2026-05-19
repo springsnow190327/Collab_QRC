@@ -143,7 +143,7 @@ class MTARECommonExecutorTests(unittest.TestCase):
 
 
 class BaselineWrapperTests(unittest.TestCase):
-    def test_gbplanner3_dual_wrapper_declares_required_topics(self) -> None:
+    def test_gbplanner_dual_wrapper_declares_required_topics(self) -> None:
         wrapper = ROOT / "scripts" / "sim" / "gbplanner3_mujoco" / "launch_dual_common_executor.sh"
         compose = ROOT / "scripts" / "sim" / "gbplanner3_mujoco" / "compose" / "docker-compose.collab_qrc_dual.yml"
         text = wrapper.read_text() + "\n" + compose.read_text()
@@ -151,6 +151,10 @@ class BaselineWrapperTests(unittest.TestCase):
         self.assertIn("/robot_b/command/trajectory", text)
         self.assertIn("ROS_MASTER_URI=http://localhost:11311", text)
         self.assertIn("ROS_MASTER_URI=http://localhost:11312", text)
+        self.assertIn("GBPLANNER_VERSION", text)
+        self.assertIn("gbplanner2_config.yaml", text)
+        self.assertIn("gbplanner_service_path_executor.py", text)
+        self.assertIn("service_path", text)
 
 
 if __name__ == "__main__":

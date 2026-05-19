@@ -15,6 +15,7 @@
 #   ./scripts/launch/nav_test_demo3_mixed.sh gui:=true rviz:=true
 #   ./scripts/launch/nav_test_demo3_mixed.sh explore:=false         # manual goals only
 #   ./scripts/launch/nav_test_demo3_mixed.sh exploration_planner:=cfpa2      # default
+#   ./scripts/launch/nav_test_demo3_mixed.sh exploration_planner:=gbplanner2 # dual GBPlanner2 wrapper + adapters
 #   ./scripts/launch/nav_test_demo3_mixed.sh exploration_planner:=gbplanner3 # dual GBPlanner3 wrapper + adapters
 #   ./scripts/launch/nav_test_demo3_mixed.sh exploration_planner:=mtare      # ROS2 MTARE common-executor fallback
 #

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Benchmark CFPA2, GBPlanner3, and MTARE/TARE under the same Nav2 MPPI executor.
+# Benchmark CFPA2, GBPlanner2/3, and MTARE/TARE under the same Nav2 MPPI executor.
 #
 # Default matrix:
 #   envs     : demo3_mixed + generated rooms/corridors mazes
@@ -8,14 +8,16 @@
 #   duration : 600 sim-seconds
 #
 # External planner hooks:
+#   GBPLANNER2_EXTERNAL_CMD  long-running command that publishes
+#                            /robot_a/command/trajectory and /robot_b/command/trajectory
 #   GBPLANNER3_EXTERNAL_CMD  long-running command that publishes
 #                            /robot_a/command/trajectory and /robot_b/command/trajectory
 #   MTARE_EXTERNAL_CMD       long-running command that publishes PointStamped
 #                            waypoints on MTARE_WAYPOINT_TOPIC_A/B
 #
-# Without those hooks, cfpa2 runs normally, gbplanner3 starts the built-in dual
-# UAS/Docker wrapper + adapters, and mtare uses the vendored TARE planner if it
-# is built, otherwise the local autonomous fallback.
+# Without those hooks, cfpa2 runs normally, gbplanner2/gbplanner3 start the
+# built-in dual UAS/Docker wrapper + adapters, and mtare uses the vendored TARE
+# planner if it is built, otherwise the local autonomous fallback.
 set -u -o pipefail
 
 NUM_TRIALS="${NUM_TRIALS:-10}"
@@ -29,13 +31,14 @@ GUI="${GUI:-false}"
 RVIZ="${RVIZ:-false}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 GBPLANNER3_EXTERNAL_CMD="${GBPLANNER3_EXTERNAL_CMD:-}"
+GBPLANNER2_EXTERNAL_CMD="${GBPLANNER2_EXTERNAL_CMD:-}"
 MTARE_EXTERNAL_CMD="${MTARE_EXTERNAL_CMD:-}"
 MTARE_WAYPOINT_TOPIC_A="${MTARE_WAYPOINT_TOPIC_A:-/robot_a/mtare/way_point}"
 MTARE_WAYPOINT_TOPIC_B="${MTARE_WAYPOINT_TOPIC_B:-/robot_b/mtare/way_point}"
 
 WS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 UAS_REPO_ROOT="${UAS_REPO_ROOT:-$HOME/Research/uas_deploy/unified_autonomy_stack}"
-GBPLANNER3_COMPOSE_FILE="${GBPLANNER3_COMPOSE_FILE:-${WS_DIR}/scripts/sim/gbplanner3_mujoco/compose/docker-compose.collab_qrc_dual.yml}"
+GBPLANNER_COMPOSE_FILE="${GBPLANNER_COMPOSE_FILE:-${GBPLANNER3_COMPOSE_FILE:-${WS_DIR}/scripts/sim/gbplanner3_mujoco/compose/docker-compose.collab_qrc_dual.yml}}"
 ROS2_SETUP_BASH="${ROS2_SETUP_BASH:-/opt/ros/humble/setup.bash}"
 MJK_DIR="${WS_DIR}/src/go2w/go2_gazebo_sim/mujoco"
 GENERATED_DIR="${MJK_DIR}/generated"
@@ -85,10 +88,10 @@ if [[ -n "${SCENE_FILTER}" ]]; then
 fi
 
 cleanup_procs() {
-  if [[ -f "${GBPLANNER3_COMPOSE_FILE}" ]] && command -v docker >/dev/null 2>&1; then
+  if [[ -f "${GBPLANNER_COMPOSE_FILE}" ]] && command -v docker >/dev/null 2>&1; then
     UAS_REPO_ROOT="${UAS_REPO_ROOT}" \
     COLLAB_QRC_ROOT="${WS_DIR}" \
-    docker compose -f "${GBPLANNER3_COMPOSE_FILE}" --profile launch down --remove-orphans >/tmp/exploration_bench_gbplanner3_down.log 2>&1 || true
+    docker compose -f "${GBPLANNER_COMPOSE_FILE}" --profile launch down --remove-orphans >/tmp/exploration_bench_gbplanner_down.log 2>&1 || true
   fi
   pkill -f 'ros2 launch go2_gazebo_sim nav_test_mujoco_fastlio_mixed' 2>/dev/null || true
   pkill -f 'mujoco_ros2_control/mujoco_ros2_control' 2>/dev/null || true
@@ -122,7 +125,10 @@ cat >"${OUT_DIR}/benchmark_config.json" <<EOF
   "scene_area_m2": ${SCENE_AREA_M2},
   "gui": "${GUI}",
   "rviz": "${RVIZ}",
-  "extra_args": "${EXTRA_ARGS}"
+  "extra_args": "${EXTRA_ARGS}",
+  "gbplanner2_external_cmd": "$(printf '%s' "${GBPLANNER2_EXTERNAL_CMD}")",
+  "gbplanner3_external_cmd": "$(printf '%s' "${GBPLANNER3_EXTERNAL_CMD}")",
+  "mtare_external_cmd": "$(printf '%s' "${MTARE_EXTERNAL_CMD}")"
 }
 EOF
 
@@ -146,6 +152,9 @@ echo "================================================================"
 
 if [[ " ${PLANNERS} " == *" gbplanner3 "* && -z "${GBPLANNER3_EXTERNAL_CMD}" ]]; then
   echo "  gbplanner3  : using built-in dual UAS/Docker wrapper"
+fi
+if [[ " ${PLANNERS} " == *" gbplanner2 "* && -z "${GBPLANNER2_EXTERNAL_CMD}" ]]; then
+  echo "  gbplanner2  : using built-in dual UAS/Docker wrapper"
 fi
 
 if [[ " ${PLANNERS} " == *" mtare "* && -z "${MTARE_EXTERNAL_CMD}" ]]; then
@@ -187,10 +196,25 @@ EOF
       echo "  dir  : ${trial_dir}"
 
       cleanup_procs
+      if [[ "${planner}" == "gbplanner2" && -z "${GBPLANNER2_EXTERNAL_CMD}" ]] || \
+         [[ "${planner}" == "gbplanner3" && -z "${GBPLANNER3_EXTERNAL_CMD}" ]]; then
+        echo "  preparing ${planner} UAS workspace before starting sim"
+        if ! UAS_REPO_ROOT="${UAS_REPO_ROOT}" \
+          "${WS_DIR}/scripts/sim/gbplanner3_mujoco/prepare_gbplanner_ref.sh" "${planner}" \
+          >"${trial_dir}/gbplanner_prepare.log" 2>&1; then
+          echo "  ERROR: ${planner} prepare failed; tail:"
+          tail -40 "${trial_dir}/gbplanner_prepare.log" | sed 's/^/    /'
+          echo "prepare_failed" >"${trial_dir}/exit_code.txt"
+          continue
+        fi
+      fi
       outer_timeout=$((DURATION_SEC * 3 + 180))
       optional_launch_args=()
       if [[ -n "${GBPLANNER3_EXTERNAL_CMD}" ]]; then
         optional_launch_args+=("gbplanner3_external_cmd:=${GBPLANNER3_EXTERNAL_CMD}")
+      fi
+      if [[ -n "${GBPLANNER2_EXTERNAL_CMD}" ]]; then
+        optional_launch_args+=("gbplanner2_external_cmd:=${GBPLANNER2_EXTERNAL_CMD}")
       fi
       if [[ -n "${MTARE_EXTERNAL_CMD}" ]]; then
         optional_launch_args+=("mtare_external_cmd:=${MTARE_EXTERNAL_CMD}")
