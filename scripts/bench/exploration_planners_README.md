@@ -1,6 +1,6 @@
 # Exploration Planner Benchmark
 
-Common-executor benchmark for `cfpa2`, `gbplanner2`, `gbplanner3`, and `mtare` in the
+Common-executor benchmark for `cfpa2`, `gbplanner2`, and `mtare` in the
 `demo3_mixed` dual-robot MuJoCo scene family.
 
 ## Launch One GUI Run
@@ -8,23 +8,27 @@ Common-executor benchmark for `cfpa2`, `gbplanner2`, `gbplanner3`, and `mtare` i
 ```bash
 ./scripts/launch/nav_test_demo3_mixed.sh gui:=true rviz:=true exploration_planner:=cfpa2
 ./scripts/launch/nav_test_demo3_mixed.sh gui:=true rviz:=true exploration_planner:=gbplanner2
-./scripts/launch/nav_test_demo3_mixed.sh gui:=true rviz:=true exploration_planner:=gbplanner3
 ./scripts/launch/nav_test_demo3_mixed.sh gui:=true rviz:=true exploration_planner:=mtare
 ```
 
 All planner modes execute through the same Nav2 MPPI stack.  External planners
 must only publish high-level waypoints/trajectories:
 
-- GBPlanner2/3: `/robot_a/command/trajectory`, `/robot_b/command/trajectory`
+- GBPlanner2: `/robot_a/command/trajectory`, `/robot_b/command/trajectory`
 - MTARE/TARE: `/robot_a/mtare/way_point`, `/robot_b/mtare/way_point`
 
 Adapters relay those outputs to `/<robot_ns>/way_point_coord`.
 
-GBPlanner2/3 use `scripts/sim/gbplanner3_mujoco/launch_dual_common_executor.sh`
-by default.  The wrapper checks out `origin/gbplanner2` or
-`origin/gbplanner3_test` in the Unified Autonomy Stack GBPlanner workspace and
-rebuilds when that ref changes.  Set `UAS_REPO_ROOT` if the Unified Autonomy
-Stack checkout is not at `~/Research/uas_deploy/unified_autonomy_stack`.
+GBPlanner2 uses `scripts/sim/gbplanner3_mujoco/launch_dual_common_executor.sh`
+by default.  The wrapper checks out upstream `origin/gbplanner2` in the Unified
+Autonomy Stack GBPlanner workspace and rebuilds when that ref changes.  Set
+`UAS_REPO_ROOT` if the Unified Autonomy Stack checkout is not at
+`~/Research/uas_deploy/unified_autonomy_stack`.
+
+GBPlanner3 is still available for manual smoke/debug through
+`nav_test_demo3_mixed.sh exploration_planner:=gbplanner3`, but it is
+intentionally excluded from the formal benchmark runner so the GBPlanner
+baseline is GBPlanner2 only.
 
 MTARE uses the local ROS2 common-executor fallback by default.  To run upstream
 ROS1 MTARE instead, pass `mtare_external_cmd:=...` or set

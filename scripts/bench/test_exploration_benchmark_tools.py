@@ -143,6 +143,13 @@ class MTARECommonExecutorTests(unittest.TestCase):
 
 
 class BaselineWrapperTests(unittest.TestCase):
+    def test_benchmark_runner_defaults_to_formal_three_planner_matrix(self) -> None:
+        runner = ROOT / "scripts" / "bench" / "benchmark_exploration_planners.sh"
+        text = runner.read_text()
+        self.assertIn('PLANNERS="${PLANNERS:-cfpa2 gbplanner2 mtare}"', text)
+        self.assertIn("Allowed: cfpa2 gbplanner2 mtare", text)
+        self.assertIn("gbplanner3 is intentionally excluded", text)
+
     def test_gbplanner_dual_wrapper_declares_required_topics(self) -> None:
         wrapper = ROOT / "scripts" / "sim" / "gbplanner3_mujoco" / "launch_dual_common_executor.sh"
         compose = ROOT / "scripts" / "sim" / "gbplanner3_mujoco" / "compose" / "docker-compose.collab_qrc_dual.yml"
