@@ -78,6 +78,13 @@ CTestTestfile.cmake
 *.tmp
 core
 core.*
+# `core` above is meant for Linux core dumps but also silently swallowed any
+# `core/` directory in the tree — including the ROS-independent algorithm
+# namespace `include/.../core/` that the 2026-05-19 hexagonal CFPA2 port
+# introduced. Whitelist `core/` subdirs that live under an `include/` path
+# (common C++ namespace convention) so they commit cleanly.
+!**/include/**/core/
+!**/include/**/core/**
 # MuJoCo runtime log (regenerated each run)
 MUJOCO_LOG.TXT
 *.pdf
