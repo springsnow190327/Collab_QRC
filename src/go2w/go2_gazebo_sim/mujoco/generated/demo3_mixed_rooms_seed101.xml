@@ -163,62 +163,55 @@
           size="0.100 8.100 0.500" material="wall_mat" class="world"/>
     <geom name="wall_east" type="box" pos="24.100 0.000 0.500"
           size="0.100 8.100 0.500" material="wall_mat" class="world"/>
-    <!-- Central 4m x 4m junction, matching demo3_mixed connectivity. -->
-    <geom name="cross_h_w" type="box" pos="5.000 0.000 0.500"
-          size="5.000 0.075 0.500" material="divider_mat" class="world"/>
-    <geom name="cross_h_e" type="box" pos="19.000 0.000 0.500"
-          size="5.000 0.075 0.500" material="divider_mat" class="world"/>
-    <geom name="cross_v_n" type="box" pos="12.000 5.000 0.500"
-          size="0.075 3.000 0.500" material="divider_mat" class="world"/>
-    <geom name="cross_v_s" type="box" pos="12.000 -5.000 0.500"
-          size="0.075 3.000 0.500" material="divider_mat" class="world"/>
-    <!-- Generated rooms maze: dense room transitions with 0.9-1.2m doors. -->
-    <geom name="generated_rooms_nw_h1" type="box" pos="3.000 4.250 0.500"
-          size="3.000 0.075 0.500" material="divider_mat" class="world"/>
-    <geom name="generated_rooms_nw_h2" type="box" pos="9.000 4.250 0.500"
+    <!-- Generated clean rooms maze: axis-aligned rooms, gates >= 2.0m. -->
+    <geom name="generated_rooms_clean_mid_west" type="box" pos="4.900 0.000 0.500"
+          size="4.100 0.075 0.500" material="divider_mat" class="world"/>
+    <geom name="generated_rooms_clean_mid_east" type="box" pos="19.100 0.000 0.500"
+          size="4.100 0.075 0.500" material="divider_mat" class="world"/>
+    <geom name="generated_rooms_clean_mid_north" type="box" pos="12.000 5.000 0.500"
+          size="0.075 2.200 0.500" material="divider_mat" class="world"/>
+    <geom name="generated_rooms_clean_mid_south" type="box" pos="12.000 -5.000 0.500"
+          size="0.075 2.200 0.500" material="divider_mat" class="world"/>
+    <geom name="generated_rooms_clean_nw_partition_left" type="box" pos="2.800 4.400 0.500"
           size="2.000 0.075 0.500" material="divider_mat" class="world"/>
-    <geom name="generated_rooms_nw_v1" type="box" pos="6.000 6.250 0.500"
-          size="0.075 1.750 0.500" material="divider_mat" class="world"/>
-    <geom name="generated_rooms_nw_v2" type="box" pos="6.000 2.350 0.500"
-          size="0.075 1.350 0.500" material="divider_mat" class="world"/>
-    <geom name="generated_rooms_ne_h1" type="box" pos="15.600 3.200 0.500"
-          size="1.600 0.075 0.500" material="divider_mat" class="world"/>
-    <geom name="generated_rooms_ne_h2" type="box" pos="21.200 3.200 0.500"
-          size="2.200 0.075 0.500" material="divider_mat" class="world"/>
-    <geom name="generated_rooms_ne_v1" type="box" pos="18.200 5.700 0.500"
-          size="0.075 2.300 0.500" material="divider_mat" class="world"/>
-    <geom name="generated_rooms_ne_v2" type="box" pos="22.000 5.700 0.500"
-          size="0.075 2.000 0.500" material="divider_mat" class="world"/>
-    <geom name="generated_rooms_sw_h1" type="box" pos="2.000 -4.000 0.500"
+    <geom name="generated_rooms_clean_nw_partition_right" type="box" pos="7.900 4.400 0.500"
+          size="1.100 0.075 0.500" material="divider_mat" class="world"/>
+    <geom name="generated_rooms_clean_nw_divider_lower" type="box" pos="6.000 2.200 0.500"
+          size="0.075 1.200 0.500" material="divider_mat" class="world"/>
+    <geom name="generated_rooms_clean_nw_divider_upper" type="box" pos="6.000 6.300 0.500"
+          size="0.075 0.900 0.500" material="divider_mat" class="world"/>
+    <geom name="generated_rooms_clean_ne_partition_left" type="box" pos="16.000 4.400 0.500"
+          size="1.000 0.075 0.500" material="divider_mat" class="world"/>
+    <geom name="generated_rooms_clean_ne_partition_right" type="box" pos="21.100 4.400 0.500"
+          size="2.100 0.075 0.500" material="divider_mat" class="world"/>
+    <geom name="generated_rooms_clean_ne_divider_lower" type="box" pos="18.000 2.200 0.500"
+          size="0.075 1.200 0.500" material="divider_mat" class="world"/>
+    <geom name="generated_rooms_clean_ne_divider_upper" type="box" pos="18.000 6.300 0.500"
+          size="0.075 0.900 0.500" material="divider_mat" class="world"/>
+    <geom name="generated_rooms_clean_sw_partition_left" type="box" pos="2.800 -4.200 0.500"
           size="2.000 0.075 0.500" material="divider_mat" class="world"/>
-    <geom name="generated_rooms_sw_h2" type="box" pos="8.200 -4.000 0.500"
-          size="2.800 0.075 0.500" material="divider_mat" class="world"/>
-    <geom name="generated_rooms_sw_v1" type="box" pos="5.200 -5.200 0.500"
-          size="0.075 0.800 0.500" material="divider_mat" class="world"/>
-    <geom name="generated_rooms_sw_v2" type="box" pos="5.200 -7.200 0.500"
-          size="0.075 0.800 0.500" material="divider_mat" class="world"/>
-    <geom name="generated_rooms_se_h1" type="box" pos="15.000 -2.300 0.500"
-          size="2.500 0.075 0.500" material="divider_mat" class="world"/>
-    <geom name="generated_rooms_se_h2" type="box" pos="21.500 -4.800 0.500"
-          size="2.500 0.075 0.500" material="divider_mat" class="world"/>
-    <geom name="generated_rooms_se_v1" type="box" pos="18.000 -6.300 0.500"
-          size="0.075 1.500 0.500" material="divider_mat" class="world"/>
-    <geom name="generated_rooms_box_1" type="box" pos="13.704 -4.151 0.300"
-          size="0.433 0.327 0.300" euler="0 0 0.327" material="obstacle_mat" class="world"/>
-    <geom name="generated_rooms_pillar_2" type="cylinder" pos="6.005 -3.785 0.500"
-          size="0.215 0.500" material="obstacle_mat" class="world"/>
-    <geom name="generated_rooms_pillar_3" type="cylinder" pos="5.960 6.407 0.500"
-          size="0.175 0.500" material="obstacle_mat" class="world"/>
-    <geom name="generated_rooms_pillar_4" type="cylinder" pos="3.366 3.671 0.500"
-          size="0.198 0.500" material="obstacle_mat" class="world"/>
-    <geom name="generated_rooms_pillar_5" type="cylinder" pos="8.347 1.869 0.500"
-          size="0.177 0.500" material="obstacle_mat" class="world"/>
-    <geom name="generated_rooms_pillar_6" type="cylinder" pos="10.533 -2.662 0.500"
-          size="0.226 0.500" material="obstacle_mat" class="world"/>
-    <geom name="generated_rooms_box_7" type="box" pos="15.783 2.241 0.300"
-          size="0.311 0.307 0.300" euler="0 0 -0.154" material="obstacle_mat" class="world"/>
-    <geom name="generated_rooms_pillar_8" type="cylinder" pos="9.996 2.298 0.500"
-          size="0.197 0.500" material="obstacle_mat" class="world"/>
+    <geom name="generated_rooms_clean_sw_partition_right" type="box" pos="7.900 -4.200 0.500"
+          size="1.100 0.075 0.500" material="divider_mat" class="world"/>
+    <geom name="generated_rooms_clean_sw_divider_lower" type="box" pos="6.000 -6.300 0.500"
+          size="0.075 0.900 0.500" material="divider_mat" class="world"/>
+    <geom name="generated_rooms_clean_sw_divider_upper" type="box" pos="6.000 -2.200 0.500"
+          size="0.075 1.200 0.500" material="divider_mat" class="world"/>
+    <geom name="generated_rooms_clean_se_partition_left" type="box" pos="16.000 -4.200 0.500"
+          size="1.000 0.075 0.500" material="divider_mat" class="world"/>
+    <geom name="generated_rooms_clean_se_partition_right" type="box" pos="21.100 -4.200 0.500"
+          size="2.100 0.075 0.500" material="divider_mat" class="world"/>
+    <geom name="generated_rooms_clean_se_divider_lower" type="box" pos="18.000 -6.300 0.500"
+          size="0.075 0.900 0.500" material="divider_mat" class="world"/>
+    <geom name="generated_rooms_clean_se_divider_upper" type="box" pos="18.000 -2.200 0.500"
+          size="0.075 1.200 0.500" material="divider_mat" class="world"/>
+    <geom name="generated_rooms_clean_pillar_nw" type="cylinder" pos="3.000 6.200 0.500"
+          size="0.180 0.500" material="obstacle_mat" class="world"/>
+    <geom name="generated_rooms_clean_pillar_ne" type="cylinder" pos="21.000 6.100 0.500"
+          size="0.180 0.500" material="obstacle_mat" class="world"/>
+    <geom name="generated_rooms_clean_pillar_sw" type="cylinder" pos="8.300 -6.300 0.500"
+          size="0.180 0.500" material="obstacle_mat" class="world"/>
+    <geom name="generated_rooms_clean_pillar_se" type="cylinder" pos="16.000 -2.400 0.500"
+          size="0.180 0.500" material="obstacle_mat" class="world"/>
 
     <!-- === Go2W Robot (spawn at (4, 2, 0.6) in NW quadrant) === -->
     <body name="base_link" pos="4.0 2.0 0.6" childclass="go2">

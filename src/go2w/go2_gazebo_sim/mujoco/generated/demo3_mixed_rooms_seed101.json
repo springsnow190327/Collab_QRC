@@ -22,10 +22,12 @@
       "yaw": 0.0
     }
   },
-  "wall_count": 21,
-  "obstacle_count": 8,
-  "blocked_area_estimate_m2": 31.384,
-  "free_space_estimate_m2": 352.616,
+  "wall_count": 20,
+  "obstacle_count": 4,
+  "blocked_area_estimate_m2": 26.587,
+  "free_space_estimate_m2": 357.413,
   "layout_family": "rooms",
-  "target_corridor_width_m": 1.0
+  "target_corridor_width_m": 2.2,
+  "minimum_gate_width_m": 2.0,
+  "wall_thickness_m": 0.15
 }

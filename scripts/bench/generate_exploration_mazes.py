@@ -22,6 +22,10 @@ from typing import Iterable
 
 SCENE_AREA_M2 = 384.0
 BOUNDS = {"x_min": 0.0, "x_max": 24.0, "y_min": -8.0, "y_max": 8.0}
+WALL_HALF_THICKNESS_M = 0.075
+WALL_THICKNESS_M = WALL_HALF_THICKNESS_M * 2.0
+MIN_GATE_WIDTH_M = 2.0
+TARGET_CORRIDOR_WIDTH_M = 2.2
 SPAWN_POSES = {
     "robot_a": {"x": 4.0, "y": 2.0, "yaw": 0.0},
     "robot_b": {"x": 4.0, "y": -6.0, "yaw": 0.0},
@@ -40,6 +44,32 @@ def _box(name: str, x: float, y: float, sx: float, sy: float,
     return (
         f'    <geom name="{name}" type="box" pos="{x:.3f} {y:.3f} {z:.3f}"\n'
         f'          size="{sx:.3f} {sy:.3f} {sz:.3f}" material="{material}" class="world"/>'
+    )
+
+
+def _h_wall(name: str, x_min: float, x_max: float, y: float, *, material: str = "divider_mat") -> str:
+    if x_max <= x_min:
+        raise ValueError(f"invalid horizontal wall '{name}': x_max <= x_min")
+    return _box(
+        name,
+        (x_min + x_max) * 0.5,
+        y,
+        (x_max - x_min) * 0.5,
+        WALL_HALF_THICKNESS_M,
+        material=material,
+    )
+
+
+def _v_wall(name: str, x: float, y_min: float, y_max: float, *, material: str = "divider_mat") -> str:
+    if y_max <= y_min:
+        raise ValueError(f"invalid vertical wall '{name}': y_max <= y_min")
+    return _box(
+        name,
+        x,
+        (y_min + y_max) * 0.5,
+        WALL_HALF_THICKNESS_M,
+        (y_max - y_min) * 0.5,
+        material=material,
     )
 
 
@@ -104,52 +134,71 @@ def _random_clutter(prefix: str, rng: random.Random, count: int) -> list[str]:
 
 
 def _rooms_variant(seed: int) -> tuple[list[str], dict]:
-    rng = random.Random(seed)
-    geoms = _outer_walls() + _central_junction()
+    _ = seed
+    geoms = _outer_walls()
     geoms += [
-        "    <!-- Generated rooms maze: dense room transitions with 0.9-1.2m doors. -->",
-        _box("generated_rooms_nw_h1", 3.0, 4.25, 3.0, 0.075),
-        _box("generated_rooms_nw_h2", 9.0, 4.25, 2.0, 0.075),
-        _box("generated_rooms_nw_v1", 6.0, 6.25, 0.075, 1.75),
-        _box("generated_rooms_nw_v2", 6.0, 2.35, 0.075, 1.35),
-        _box("generated_rooms_ne_h1", 15.6, 3.2, 1.6, 0.075),
-        _box("generated_rooms_ne_h2", 21.2, 3.2, 2.2, 0.075),
-        _box("generated_rooms_ne_v1", 18.2, 5.7, 0.075, 2.3),
-        _box("generated_rooms_ne_v2", 22.0, 5.7, 0.075, 2.0),
-        _box("generated_rooms_sw_h1", 2.0, -4.0, 2.0, 0.075),
-        _box("generated_rooms_sw_h2", 8.2, -4.0, 2.8, 0.075),
-        _box("generated_rooms_sw_v1", 5.2, -5.2, 0.075, 0.8),
-        _box("generated_rooms_sw_v2", 5.2, -7.2, 0.075, 0.8),
-        _box("generated_rooms_se_h1", 15.0, -2.3, 2.5, 0.075),
-        _box("generated_rooms_se_h2", 21.5, -4.8, 2.5, 0.075),
-        _box("generated_rooms_se_v1", 18.0, -6.3, 0.075, 1.5),
+        "    <!-- Generated clean rooms maze: axis-aligned rooms, gates >= 2.0m. -->",
+        _h_wall("generated_rooms_clean_mid_west", 0.8, 9.0, 0.0),
+        _h_wall("generated_rooms_clean_mid_east", 15.0, 23.2, 0.0),
+        _v_wall("generated_rooms_clean_mid_north", 12.0, 2.8, 7.2),
+        _v_wall("generated_rooms_clean_mid_south", 12.0, -7.2, -2.8),
+        _h_wall("generated_rooms_clean_nw_partition_left", 0.8, 4.8, 4.4),
+        _h_wall("generated_rooms_clean_nw_partition_right", 6.8, 9.0, 4.4),
+        _v_wall("generated_rooms_clean_nw_divider_lower", 6.0, 1.0, 3.4),
+        _v_wall("generated_rooms_clean_nw_divider_upper", 6.0, 5.4, 7.2),
+        _h_wall("generated_rooms_clean_ne_partition_left", 15.0, 17.0, 4.4),
+        _h_wall("generated_rooms_clean_ne_partition_right", 19.0, 23.2, 4.4),
+        _v_wall("generated_rooms_clean_ne_divider_lower", 18.0, 1.0, 3.4),
+        _v_wall("generated_rooms_clean_ne_divider_upper", 18.0, 5.4, 7.2),
+        _h_wall("generated_rooms_clean_sw_partition_left", 0.8, 4.8, -4.2),
+        _h_wall("generated_rooms_clean_sw_partition_right", 6.8, 9.0, -4.2),
+        _v_wall("generated_rooms_clean_sw_divider_lower", 6.0, -7.2, -5.4),
+        _v_wall("generated_rooms_clean_sw_divider_upper", 6.0, -3.4, -1.0),
+        _h_wall("generated_rooms_clean_se_partition_left", 15.0, 17.0, -4.2),
+        _h_wall("generated_rooms_clean_se_partition_right", 19.0, 23.2, -4.2),
+        _v_wall("generated_rooms_clean_se_divider_lower", 18.0, -7.2, -5.4),
+        _v_wall("generated_rooms_clean_se_divider_upper", 18.0, -3.4, -1.0),
+        _cylinder("generated_rooms_clean_pillar_nw", 3.0, 6.2, 0.18),
+        _cylinder("generated_rooms_clean_pillar_ne", 21.0, 6.1, 0.18),
+        _cylinder("generated_rooms_clean_pillar_sw", 8.3, -6.3, 0.18),
+        _cylinder("generated_rooms_clean_pillar_se", 16.0, -2.4, 0.18),
     ]
-    geoms += _random_clutter("generated_rooms", rng, 8)
-    meta = {"layout_family": "rooms", "target_corridor_width_m": 1.0}
+    meta = {
+        "layout_family": "rooms",
+        "target_corridor_width_m": TARGET_CORRIDOR_WIDTH_M,
+        "minimum_gate_width_m": MIN_GATE_WIDTH_M,
+        "wall_thickness_m": WALL_THICKNESS_M,
+    }
     return geoms, meta
 
 
 def _corridors_variant(seed: int) -> tuple[list[str], dict]:
-    rng = random.Random(seed)
-    geoms = _outer_walls() + _central_junction()
+    _ = seed
+    geoms = _outer_walls()
     geoms += [
-        "    <!-- Generated corridor maze: long looped corridors and S-turns. -->",
-        _box("generated_corridors_nw_lane_1", 3.2, 5.8, 3.2, 0.075),
-        _box("generated_corridors_nw_lane_2", 7.8, 3.7, 3.2, 0.075),
-        _box("generated_corridors_nw_gate", 10.0, 5.7, 0.075, 2.0),
-        _box("generated_corridors_ne_lane_1", 15.2, 6.0, 3.0, 0.075),
-        _box("generated_corridors_ne_lane_2", 20.8, 4.0, 3.1, 0.075),
-        _box("generated_corridors_ne_gate", 18.0, 6.0, 0.075, 2.0),
-        _box("generated_corridors_sw_lane_1", 2.8, -3.5, 2.8, 0.075),
-        _box("generated_corridors_sw_lane_2", 8.2, -6.0, 2.8, 0.075),
-        _box("generated_corridors_sw_gate", 6.0, -5.8, 0.075, 2.2),
-        _box("generated_corridors_se_lane_1", 15.0, -2.1, 3.0, 0.075),
-        _box("generated_corridors_se_lane_2", 21.0, -4.6, 3.0, 0.075),
-        _box("generated_corridors_se_lane_3", 15.5, -6.9, 3.3, 0.075),
-        _box("generated_corridors_se_gate", 19.0, -5.8, 0.075, 1.3),
+        "    <!-- Generated clean corridor maze: broad switchbacks, gates >= 2.0m. -->",
+        _h_wall("generated_corridors_clean_lane_top", 0.8, 18.0, 5.4),
+        _h_wall("generated_corridors_clean_lane_upper", 6.0, 23.2, 2.6),
+        _h_wall("generated_corridors_clean_lane_middle", 0.8, 18.0, -0.2),
+        _h_wall("generated_corridors_clean_lane_lower", 6.0, 23.2, -3.0),
+        _h_wall("generated_corridors_clean_lane_bottom", 7.0, 23.2, -5.6),
+        _v_wall("generated_corridors_clean_turn_right_upper", 18.0, 5.4, 7.2),
+        _v_wall("generated_corridors_clean_turn_left_upper", 6.0, 2.6, 4.4),
+        _v_wall("generated_corridors_clean_turn_right_mid", 18.0, -0.2, 1.6),
+        _v_wall("generated_corridors_clean_turn_left_lower", 6.0, -3.0, -1.2),
+        _v_wall("generated_corridors_clean_turn_right_bottom", 18.0, -5.6, -4.0),
+        _cylinder("generated_corridors_clean_pillar_top", 21.0, 6.5, 0.18),
+        _cylinder("generated_corridors_clean_pillar_upper", 3.0, 3.7, 0.18),
+        _cylinder("generated_corridors_clean_pillar_middle", 21.0, 0.8, 0.18),
+        _cylinder("generated_corridors_clean_pillar_lower", 3.0, -4.3, 0.18),
+        _cylinder("generated_corridors_clean_pillar_bottom", 20.8, -6.8, 0.18),
     ]
-    geoms += _random_clutter("generated_corridors", rng, 6)
-    meta = {"layout_family": "corridors", "target_corridor_width_m": 1.1}
+    meta = {
+        "layout_family": "corridors",
+        "target_corridor_width_m": TARGET_CORRIDOR_WIDTH_M,
+        "minimum_gate_width_m": MIN_GATE_WIDTH_M,
+        "wall_thickness_m": WALL_THICKNESS_M,
+    }
     return geoms, meta
 
 

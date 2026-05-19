@@ -56,6 +56,25 @@ class GeneratedMazeTests(unittest.TestCase):
             self.assertEqual(first.metadata["variant"], "rooms")
             self.assertTrue(first.metadata_path.exists())
 
+    def test_generated_layouts_keep_robot_passable_clearances(self) -> None:
+        from generate_exploration_mazes import generate_maze_scene
+
+        template = ROOT / "src" / "go2w" / "go2_gazebo_sim" / "mujoco" / "demo3_mixed.xml"
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            for variant, seed in (("rooms", 101), ("corridors", 202)):
+                generated = generate_maze_scene(
+                    template_path=template,
+                    output_dir=tmp_path,
+                    variant=variant,
+                    seed=seed,
+                )
+                xml_text = generated.scene_path.read_text()
+                self.assertGreaterEqual(generated.metadata["minimum_gate_width_m"], 1.6)
+                self.assertGreaterEqual(generated.metadata["target_corridor_width_m"], 1.8)
+                self.assertIn("clean_", xml_text)
+                self.assertNotIn("0.9-1.2m doors", xml_text)
+
 
 class BenchmarkAggregationTests(unittest.TestCase):
     def test_summary_uses_global_csv_and_per_robot_json(self) -> None:
