@@ -102,9 +102,12 @@ void MPPIControllerROS::initialize(
     if (!fp_x.empty()) {
       cuda_backend_->setFootprint(fp_x, fp_y);
     }
+    // Load critic weights + gate thresholds from the same yaml tree the CPU
+    // CriticManager reads. Replaces the v1 hardcoded values.
+    cuda_backend_->loadCriticParams(parameters_handler_.get(), name_);
     optimizer_.setCudaBackend(cuda_backend_.get());
     ROS_INFO("MPPIControllerROS [%s] CUDA backend ENABLED "
-             "(B=%u T=%u footprint_n=%zu).",
+             "(B=%u T=%u footprint_n=%zu, critic params loaded from yaml).",
              name_.c_str(), bcfg.batch_size, bcfg.time_steps, fp_x.size());
   }
 #else
