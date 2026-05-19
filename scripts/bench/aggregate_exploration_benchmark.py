@@ -25,6 +25,8 @@ from typing import Any
 
 
 ROBOTS = ("robot_a", "robot_b")
+CHECKPOINT_SECONDS = (120, 240, 360, 480)
+CHECKPOINT_MAX_SAMPLE_AGE_SEC = 5.0
 
 
 @dataclass(frozen=True)
@@ -155,6 +157,12 @@ def _mean_or_none(values: list[float]) -> float | None:
     return statistics.fmean(values) if values else None
 
 
+def _stdev_or_none(values: list[float]) -> float | None:
+    if not values:
+        return None
+    return statistics.stdev(values) if len(values) >= 2 else 0.0
+
+
 def _percentile(values: list[float], p: float) -> float:
     if not values:
         return 0.0
@@ -209,18 +217,53 @@ def _record_rtf(record: TrialRecord) -> float:
     return (elapsed / wall) if wall > 0.0 else 0.0
 
 
-def _time_to_coverage_sec(record: TrialRecord, threshold: float) -> float | None:
-    rows = [row for row in record.timeseries if "global_coverage_ratio" in row]
+def _timed_rows(record: TrialRecord) -> list[tuple[float, dict[str, float]]]:
+    rows = [
+        row for row in record.timeseries
+        if "t_sim" in row or "t_wall" in row
+    ]
     if not rows:
-        return None
+        return []
     first = rows[0]
     use_sim = "t_sim" in first
-    start_t = first.get("t_sim" if use_sim else "t_wall", 0.0)
-    for row in rows:
+    time_key = "t_sim" if use_sim else "t_wall"
+    start_t = first.get(time_key, 0.0)
+    timed = [
+        (max(0.0, row.get(time_key, 0.0) - start_t), row)
+        for row in rows
+        if time_key in row
+    ]
+    return sorted(timed, key=lambda item: item[0])
+
+
+def _time_to_coverage_sec(record: TrialRecord, threshold: float) -> float | None:
+    for elapsed, row in _timed_rows(record):
         if row.get("global_coverage_ratio", 0.0) >= threshold:
-            t = row.get("t_sim" if use_sim else "t_wall", 0.0)
-            return max(0.0, t - start_t)
+            return elapsed
     return None
+
+
+def _checkpoint_row(record: TrialRecord, checkpoint_sec: int) -> dict[str, float] | None:
+    timed = _timed_rows(record)
+    if not timed or timed[-1][0] < checkpoint_sec:
+        return None
+    selected_elapsed = None
+    selected_row = None
+    for elapsed, row in timed:
+        if elapsed <= checkpoint_sec:
+            selected_elapsed = elapsed
+            selected_row = row
+        else:
+            break
+    if selected_elapsed is None or selected_row is None:
+        return None
+    if checkpoint_sec - selected_elapsed > CHECKPOINT_MAX_SAMPLE_AGE_SEC:
+        return None
+    return selected_row
+
+
+def _row_values(rows: list[dict[str, float]], key: str) -> list[float]:
+    return [_float(row.get(key)) for row in rows if key in row]
 
 
 def summarise_records(records: list[TrialRecord]) -> dict[tuple[str, str], dict[str, Any]]:
@@ -296,6 +339,29 @@ def summarise_records(records: list[TrialRecord]) -> dict[tuple[str, str], dict[
             entry[f"coverage_{pct}pct_reach_rate"] = (
                 float(len(times)) / float(len(group)) if group else 0.0
             )
+        for checkpoint_sec in CHECKPOINT_SECONDS:
+            prefix = f"at_{checkpoint_sec}s"
+            rows = [
+                row for row in (_checkpoint_row(r, checkpoint_sec) for r in group)
+                if row is not None
+            ]
+            entry[f"{prefix}_sample_count"] = float(len(rows))
+            entry[f"{prefix}_sample_rate"] = (
+                float(len(rows)) / float(len(group)) if group else 0.0
+            )
+            global_area_at = _row_values(rows, "global_explored_area_m2")
+            global_cov_at = _row_values(rows, "global_coverage_ratio")
+            entry[f"{prefix}_global_explored_area_m2_mean"] = _mean_or_none(global_area_at)
+            entry[f"{prefix}_global_explored_area_m2_std"] = _stdev_or_none(global_area_at)
+            entry[f"{prefix}_global_coverage_ratio_mean"] = _mean_or_none(global_cov_at)
+            entry[f"{prefix}_global_coverage_ratio_std"] = _stdev_or_none(global_cov_at)
+            for ns in ROBOTS:
+                distances_at = _row_values(rows, f"{ns}_trajectory_m")
+                areas_at = _row_values(rows, f"{ns}_coverage_area_m2")
+                entry[f"{prefix}_{ns}_distance_m_mean"] = _mean_or_none(distances_at)
+                entry[f"{prefix}_{ns}_distance_m_std"] = _stdev_or_none(distances_at)
+                entry[f"{prefix}_{ns}_explored_area_m2_mean"] = _mean_or_none(areas_at)
+                entry[f"{prefix}_{ns}_explored_area_m2_std"] = _stdev_or_none(areas_at)
         for ns in ROBOTS:
             distances = [_robot_value(r, ns, "progress", "distance_travelled_m") for r in group]
             areas = [_robot_value(r, ns, "coverage", "explored_area_m2") for r in group]

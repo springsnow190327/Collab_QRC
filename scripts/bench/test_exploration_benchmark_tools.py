@@ -122,6 +122,10 @@ class BenchmarkAggregationTests(unittest.TestCase):
                         "global_explored_area_m2",
                         "global_coverage_ratio",
                         "overlap_pct",
+                        "robot_a_trajectory_m",
+                        "robot_a_coverage_area_m2",
+                        "robot_b_trajectory_m",
+                        "robot_b_coverage_area_m2",
                     ],
                 )
                 writer.writeheader()
@@ -131,6 +135,32 @@ class BenchmarkAggregationTests(unittest.TestCase):
                     "global_explored_area_m2": "96.0",
                     "global_coverage_ratio": "0.25",
                     "overlap_pct": "10.0",
+                    "robot_a_trajectory_m": "5.0",
+                    "robot_a_coverage_area_m2": "80.0",
+                    "robot_b_trajectory_m": "4.0",
+                    "robot_b_coverage_area_m2": "70.0",
+                })
+                writer.writerow({
+                    "t_wall": "110.0",
+                    "t_sim": "130.0",
+                    "global_explored_area_m2": "120.0",
+                    "global_coverage_ratio": "0.3125",
+                    "overlap_pct": "11.0",
+                    "robot_a_trajectory_m": "12.0",
+                    "robot_a_coverage_area_m2": "105.0",
+                    "robot_b_trajectory_m": "10.0",
+                    "robot_b_coverage_area_m2": "90.0",
+                })
+                writer.writerow({
+                    "t_wall": "230.0",
+                    "t_sim": "250.0",
+                    "global_explored_area_m2": "160.0",
+                    "global_coverage_ratio": "0.4166666667",
+                    "overlap_pct": "12.0",
+                    "robot_a_trajectory_m": "22.0",
+                    "robot_a_coverage_area_m2": "130.0",
+                    "robot_b_trajectory_m": "19.0",
+                    "robot_b_coverage_area_m2": "120.0",
                 })
                 writer.writerow({
                     "t_wall": "300.0",
@@ -138,6 +168,10 @@ class BenchmarkAggregationTests(unittest.TestCase):
                     "global_explored_area_m2": "190.0",
                     "global_coverage_ratio": "0.4947916667",
                     "overlap_pct": "13.0",
+                    "robot_a_trajectory_m": "31.0",
+                    "robot_a_coverage_area_m2": "120.0",
+                    "robot_b_trajectory_m": "25.0",
+                    "robot_b_coverage_area_m2": "95.0",
                 })
             (trial_dir / "exploration_events_demo.log").write_text(
                 "[00:00:01.000 +----ms] PLAN_RETURNED: ns=robot_a planner=ComputePathToPose t=20ms ok\n"
@@ -163,6 +197,15 @@ class BenchmarkAggregationTests(unittest.TestCase):
             self.assertAlmostEqual(summary[key]["robot_a_slam_trans_error_mean_m_mean"], 0.1)
             self.assertAlmostEqual(summary[key]["nav2_plan_ms_mean"], 20.0)
             self.assertAlmostEqual(summary[key]["nav2_plan_success_rate"], 0.5)
+            self.assertAlmostEqual(summary[key]["at_120s_global_explored_area_m2_mean"], 120.0)
+            self.assertAlmostEqual(summary[key]["at_120s_global_coverage_ratio_mean"], 0.3125)
+            self.assertAlmostEqual(summary[key]["at_120s_robot_a_distance_m_mean"], 12.0)
+            self.assertAlmostEqual(summary[key]["at_120s_robot_a_explored_area_m2_mean"], 105.0)
+            self.assertAlmostEqual(summary[key]["at_240s_global_explored_area_m2_mean"], 160.0)
+            self.assertAlmostEqual(summary[key]["at_240s_robot_b_distance_m_mean"], 19.0)
+            self.assertAlmostEqual(summary[key]["at_240s_robot_b_explored_area_m2_mean"], 120.0)
+            self.assertIsNone(summary[key]["at_360s_global_explored_area_m2_mean"])
+            self.assertIsNone(summary[key]["at_480s_robot_a_distance_m_mean"])
 
 
 class MTARECommonExecutorTests(unittest.TestCase):
