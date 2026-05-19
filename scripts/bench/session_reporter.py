@@ -41,6 +41,7 @@ import rclpy
 from nav_msgs.msg import OccupancyGrid, Odometry
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rosgraph_msgs.msg import Clock
 from std_msgs.msg import String
 
 # Shared contact classification + canonical tilt math. Same module powers
@@ -84,6 +85,7 @@ class SessionMetrics:
     duration_target_sec: float
     namespace: str
     started_at: float
+    time_source: str = "wall"
     ended_at: float = 0.0
     elapsed_sec: float = 0.0
 
@@ -175,10 +177,14 @@ class SessionReporter(Node):
         namespace: str,
         output_path: Path,
         scene_area_m2: float = 0.0,
+        time_source: str = "wall",
     ) -> None:
         super().__init__("session_reporter")
         self._duration = duration_sec
         self._ns = namespace.strip().strip("/") or "robot"
+        self._time_source = time_source.strip().lower()
+        if self._time_source not in ("wall", "sim"):
+            raise ValueError(f"unsupported time_source={time_source!r}")
         self._output = output_path
         self._output.parent.mkdir(parents=True, exist_ok=True)
 
@@ -186,10 +192,14 @@ class SessionReporter(Node):
             duration_target_sec=duration_sec,
             namespace=self._ns,
             started_at=time.time(),
+            time_source=self._time_source,
             scene_area_m2=scene_area_m2,
         )
         self._wall_start = time.monotonic()
         self._last_status_at = self._wall_start
+        self._latest_sim_sec: float | None = None
+        self._sim_start_sec: float | None = None
+        self._last_clock_wait_log = self._wall_start
         self._prev_odom_xy: tuple[float, float] | None = None
         # Relative-drift tracking: each stream's first observation is its
         # "anchor", subsequent samples are compared as deltas from anchor.
@@ -214,6 +224,8 @@ class SessionReporter(Node):
         self.create_subscription(
             OccupancyGrid, f"/{self._ns}/map", self._on_map, 1
         )
+        if self._time_source == "sim":
+            self.create_subscription(Clock, "/clock", self._on_clock, 10)
 
         self.create_timer(0.25, self._tick)
 
@@ -226,12 +238,22 @@ class SessionReporter(Node):
         print(
             "  SESSION REPORTER\n"
             f"    duration   : {duration_sec:.0f} s\n"
+            f"    time source: {self._time_source}\n"
             f"    namespace  : /{self._ns}\n"
             f"    output     : {output_path}\n"
             f"    scene area : {scene_str}",
             flush=True,
         )
         print("=" * 70, flush=True)
+
+    def _elapsed_now(self) -> float:
+        if (
+            self._time_source == "sim"
+            and self._latest_sim_sec is not None
+            and self._sim_start_sec is not None
+        ):
+            return max(0.0, self._latest_sim_sec - self._sim_start_sec)
+        return time.monotonic() - self._wall_start
 
     # ── Subscribers ───────────────────────────────────────────────────
     def _on_odom(self, msg: Odometry) -> None:
@@ -274,7 +296,7 @@ class SessionReporter(Node):
         tilt_deg = _tilt_from_quat_deg(q)
         if tilt_deg > self._m.peak_tilt_deg:
             self._m.peak_tilt_deg = tilt_deg
-        t_now = time.monotonic() - self._wall_start
+        t_now = self._elapsed_now()
         if tilt_deg > TIP_THRESHOLD_DEG:
             if self._m._tilt_above_since is None:
                 self._m._tilt_above_since = t_now
@@ -345,6 +367,9 @@ class SessionReporter(Node):
             _wrap_pi(now[2] - self._gt_anchor[2]),
         )
 
+    def _on_clock(self, msg: Clock) -> None:
+        self._latest_sim_sec = msg.clock.sec + msg.clock.nanosec * 1e-9
+
     def _on_map(self, msg: OccupancyGrid) -> None:
         self._m.map_received = True
         res = float(msg.info.resolution)
@@ -388,7 +413,7 @@ class SessionReporter(Node):
         # benchmark-script back-compat), and `ever_touched_anything`
         # latches on first contact of either kind.
         self._m.contact_msg_count += 1
-        t_rel = time.monotonic() - self._wall_start
+        t_rel = self._elapsed_now()
         for ln in msg.data.split("\n"):
             if not ln:
                 continue
@@ -437,7 +462,17 @@ class SessionReporter(Node):
     # ── Timer ─────────────────────────────────────────────────────────
     def _tick(self) -> None:
         now = time.monotonic()
-        elapsed = now - self._wall_start
+        if self._time_source == "sim":
+            if self._latest_sim_sec is None:
+                if now - self._last_clock_wait_log >= 5.0:
+                    self._last_clock_wait_log = now
+                    print("[session_reporter] waiting for /clock", flush=True)
+                return
+            if self._sim_start_sec is None:
+                self._sim_start_sec = self._latest_sim_sec
+            elapsed = max(0.0, self._latest_sim_sec - self._sim_start_sec)
+        else:
+            elapsed = now - self._wall_start
         self._m.elapsed_sec = elapsed
 
         if now - self._last_status_at >= STATUS_INTERVAL_SEC:
@@ -477,6 +512,7 @@ class SessionReporter(Node):
         return {
             "outcome": m.outcome,
             "duration_target_sec": m.duration_target_sec,
+            "time_source": m.time_source,
             "elapsed_sec": round(m.elapsed_sec, 3),
             "started_at_unix": m.started_at,
             "ended_at_unix": m.ended_at,
@@ -653,18 +689,12 @@ class SessionReporter(Node):
             return
         self._already_finalized = True
         self._flush_json(final=True)
-        try:
-            self.destroy_node()
-        except Exception:
-            pass
-        try:
-            rclpy.try_shutdown()
-        except Exception:
-            pass
-        # sys.exit inside an rclpy timer/signal callback can be swallowed
-        # by the executor, leaving the subprocess alive past its bound.
-        # os._exit forces immediate termination, which lets the launch
-        # OnProcessExit handler fire and cascade a clean Shutdown.
+        # Do not call destroy_node()/rclpy.try_shutdown() here. This method is
+        # reached from an rclpy timer callback, and shutdown can block inside
+        # the executor after the FINAL JSON has already been written. A stuck
+        # reporter prevents launch's OnProcessExit from firing, so benchmark
+        # runs sit around until the outer wall-timeout kills MuJoCo. The
+        # reporter owns no state that needs graceful teardown after flushing.
         sys.stdout.flush()
         sys.stderr.flush()
         os._exit(code)
@@ -681,6 +711,8 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--scene-area-m2", type=float, default=0.0,
                     help="Sim ground-truth observable area in m² (denominator "
                          "for coverage_ratio_of_scene). Defaults to 0 (disabled).")
+    ap.add_argument("--time-source", choices=("wall", "sim"), default="wall",
+                    help="Duration clock: wall for wall-clock seconds, sim for /clock seconds.")
     return ap.parse_args()
 
 
@@ -692,6 +724,7 @@ def main() -> None:
         namespace=args.namespace,
         output_path=Path(args.output),
         scene_area_m2=args.scene_area_m2,
+        time_source=args.time_source,
     )
 
     def _sigterm(_signo, _frame):
@@ -700,7 +733,12 @@ def main() -> None:
         # before the launch finished cascading shutdown, we want the
         # report to still say "completed".
         if node._m.outcome == "running":
-            node._m.outcome = "sigterm"
+            node._m.elapsed_sec = node._elapsed_now()
+            completion_slack = max(2.0, 0.05 * node._duration)
+            if node._m.elapsed_sec + completion_slack >= node._duration:
+                node._m.outcome = "completed"
+            else:
+                node._m.outcome = "sigterm"
         node._finalize_and_exit(0)
 
     signal.signal(signal.SIGTERM, _sigterm)

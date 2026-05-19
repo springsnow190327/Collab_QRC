@@ -1,0 +1,214 @@
+# Dual-robot GBPlanner3 ↔ Collab_QRC common-executor integration.
+#
+# Two isolated ROS 1 masters avoid TF-frame collisions between robot_a and
+# robot_b.  Each GBPlanner3 instance receives only one robot's odom/cloud/TF,
+# plans autonomously, and publishes trajectory/path on namespaced ROS2 topics:
+#   /robot_a/command/trajectory
+#   /robot_b/command/trajectory
+#
+# The ROS 1 bridge deliberately uses parameter_bridge with an explicit topic
+# list.  dynamic_bridge --bridge-all-2to1-topics was functionally convenient,
+# but it bridged cameras/costmaps/maps/services for both robots and consumed a
+# full CPU core per robot.  The common-executor comparison only needs clock,
+# per-robot odom/cloud/tf, and the planner's path/trajectory output.
+
+x-env-common: &env-common
+  DISPLAY: ${DISPLAY:-:0}
+  NVIDIA_VISIBLE_DEVICES: all
+  NVIDIA_DRIVER_CAPABILITIES: all
+  QT_X11_NO_MITSHM: "1"
+  DISABLE_ROS1_EOL_WARNINGS: "1"
+  ROS_DOMAIN_ID: ${DOMAIN_ID:-0}
+  ROS_IP: 127.0.0.1
+
+x-ros1-master-a: &ros1-master-a
+  ROS_MASTER_URI: http://localhost:11311
+
+x-ros1-master-b: &ros1-master-b
+  ROS_MASTER_URI: http://localhost:11312
+
+x-system-template: &system-template
+  working_dir: /workspace
+  network_mode: host
+  ipc: host
+  restart: "no"
+  stdin_open: true
+  tty: true
+  logging:
+    driver: json-file
+    options:
+      max-size: "20m"
+      max-file: "3"
+  environment:
+    <<: *env-common
+  volumes:
+    - /tmp/.X11-unix:/tmp/.X11-unix:rw
+
+x-gbplanner-volumes: &gbplanner-volumes
+  - /tmp/.X11-unix:/tmp/.X11-unix:rw
+  - ${UAS_REPO_ROOT}/workspaces/robot_bringup:/workspace/src/robot_bringup:rw
+  - ${UAS_REPO_ROOT}/workspaces/ws_gbplanner:/workspace:rw
+  - ${COLLAB_QRC_ROOT}/scripts/sim/gbplanner3_mujoco/config/collab_qrc_go2:/workspace/src/robot_bringup/config/ros1/gbplanner/collab_qrc_go2:ro
+
+services:
+  ros1_launch_roscore_robot_a:
+    <<: [*system-template]
+    image: unified_autonomy:ros1_base
+    profiles: ["launch"]
+    environment:
+      <<: [*env-common, *ros1-master-a]
+    command: |
+      bash -c '
+      set -e
+      source /opt/ros/noetic/setup.bash
+      roscore -p 11311 &
+      trap "jobs -p | xargs -r kill -TERM 2>/dev/null || true; wait 2>/dev/null || true" EXIT INT TERM
+      until ROS_MASTER_URI=http://localhost:11311 rostopic list >/dev/null 2>&1; do sleep 0.2; done
+      rosparam set /use_sim_time true
+      rosparam set /topics "[
+        {topic: /clock, type: rosgraph_msgs/msg/Clock, queue_size: 10},
+        {topic: /robot_a/odom/nav, type: nav_msgs/msg/Odometry, queue_size: 10},
+        {topic: /robot_a/cloud_registered_body, type: sensor_msgs/msg/PointCloud2, queue_size: 2},
+        {topic: /robot_a/tf, type: tf2_msgs/msg/TFMessage, queue_size: 10},
+        {topic: /robot_a/command/trajectory, type: trajectory_msgs/msg/MultiDOFJointTrajectory, queue_size: 2},
+        {topic: /robot_a/gbplanner_path, type: nav_msgs/msg/Path, queue_size: 2}
+      ]"
+      rosparam set /services_1_to_2 "[]"
+      rosparam set /services_2_to_1 "[]"
+      rosparam set /collab_qrc_bridge_topics_ready true
+      wait
+      '
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'source /opt/ros/noetic/setup.bash && ROS_MASTER_URI=http://localhost:11311 rostopic list >/dev/null && rosparam get /collab_qrc_bridge_topics_ready | grep -q true'"]
+      interval: 2s
+      timeout: 2s
+      retries: 8
+      start_period: 3s
+
+  ros1_launch_roscore_robot_b:
+    <<: [*system-template]
+    image: unified_autonomy:ros1_base
+    profiles: ["launch"]
+    environment:
+      <<: [*env-common, *ros1-master-b]
+    command: |
+      bash -c '
+      set -e
+      source /opt/ros/noetic/setup.bash
+      roscore -p 11312 &
+      trap "jobs -p | xargs -r kill -TERM 2>/dev/null || true; wait 2>/dev/null || true" EXIT INT TERM
+      until ROS_MASTER_URI=http://localhost:11312 rostopic list >/dev/null 2>&1; do sleep 0.2; done
+      rosparam set /use_sim_time true
+      rosparam set /topics "[
+        {topic: /clock, type: rosgraph_msgs/msg/Clock, queue_size: 10},
+        {topic: /robot_b/odom/nav, type: nav_msgs/msg/Odometry, queue_size: 10},
+        {topic: /robot_b/cloud_registered_body, type: sensor_msgs/msg/PointCloud2, queue_size: 2},
+        {topic: /robot_b/tf, type: tf2_msgs/msg/TFMessage, queue_size: 10},
+        {topic: /robot_b/command/trajectory, type: trajectory_msgs/msg/MultiDOFJointTrajectory, queue_size: 2},
+        {topic: /robot_b/gbplanner_path, type: nav_msgs/msg/Path, queue_size: 2}
+      ]"
+      rosparam set /services_1_to_2 "[]"
+      rosparam set /services_2_to_1 "[]"
+      rosparam set /collab_qrc_bridge_topics_ready true
+      wait
+      '
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'source /opt/ros/noetic/setup.bash && ROS_MASTER_URI=http://localhost:11312 rostopic list >/dev/null && rosparam get /collab_qrc_bridge_topics_ready | grep -q true'"]
+      interval: 2s
+      timeout: 2s
+      retries: 8
+      start_period: 3s
+
+  ros1_launch_gbplanner_robot_a:
+    <<: [*system-template]
+    image: unified_autonomy:ros1_gbplanner
+    profiles: ["launch"]
+    environment:
+      <<: [*env-common, *ros1-master-a]
+    privileged: true
+    devices:
+      - /dev/dri:/dev/dri
+    depends_on:
+      ros1_launch_roscore_robot_a:
+        condition: service_healthy
+    volumes: *gbplanner-volumes
+    command: |
+      bash -c '
+      set -e
+      source /opt/ros/noetic/setup.bash
+      source /workspace/devel/setup.bash
+      rosparam set /use_sim_time true
+      rosrun topic_tools relay /robot_a/tf /tf &
+      python3 /workspace/src/robot_bringup/config/ros1/gbplanner/collab_qrc_go2/cloud_stamp_rewriter.py _source_topic:=/robot_a/cloud_registered_body _dest_topic:=/robot_a/lidar/points_downsampled _freespace_topic:=/robot_a/lidar/freespace_points &
+      python3 /workspace/src/robot_bringup/config/ros1/gbplanner/collab_qrc_go2/odom_planning_height_adapter.py _source_topic:=/robot_a/odom/nav _dest_topic:=/robot_a/gbplanner/odom_planning _planning_z:=${GBPLANNER_PLANNING_Z:-0.15} &
+      python3 /workspace/src/robot_bringup/config/ros1/gbplanner/collab_qrc_go2/publish_static_tfs.py _base_frame:=base_link _planning_base_frame:=base_link &
+      python3 /workspace/src/robot_bringup/config/ros1/gbplanner/collab_qrc_go2/start_automatic_planning.py --robot-label robot_a --odom-topic /robot_a/gbplanner/odom_planning --cloud-topic /robot_a/lidar/points_downsampled --warmup-sec 12.0 --repeat-sec ${GBPLANNER_REPLAN_PERIOD_SEC:-20.0} &
+      exec roslaunch /workspace/src/robot_bringup/config/ros1/gbplanner/collab_qrc_go2/gbplanner_common_executor.launch robot_name:=robot_a odometry_topic:=/robot_a/gbplanner/odom_planning config_name:=collab_qrc_go2 ele_map_enable:=false rviz_en:=false
+      '
+
+  ros1_launch_gbplanner_robot_b:
+    <<: [*system-template]
+    image: unified_autonomy:ros1_gbplanner
+    profiles: ["launch"]
+    environment:
+      <<: [*env-common, *ros1-master-b]
+    privileged: true
+    devices:
+      - /dev/dri:/dev/dri
+    depends_on:
+      ros1_launch_roscore_robot_b:
+        condition: service_healthy
+    volumes: *gbplanner-volumes
+    command: |
+      bash -c '
+      set -e
+      source /opt/ros/noetic/setup.bash
+      source /workspace/devel/setup.bash
+      rosparam set /use_sim_time true
+      rosrun topic_tools relay /robot_b/tf /tf &
+      python3 /workspace/src/robot_bringup/config/ros1/gbplanner/collab_qrc_go2/cloud_stamp_rewriter.py _source_topic:=/robot_b/cloud_registered_body _dest_topic:=/robot_b/lidar/points_downsampled _freespace_topic:=/robot_b/lidar/freespace_points &
+      python3 /workspace/src/robot_bringup/config/ros1/gbplanner/collab_qrc_go2/odom_planning_height_adapter.py _source_topic:=/robot_b/odom/nav _dest_topic:=/robot_b/gbplanner/odom_planning _planning_z:=${GBPLANNER_PLANNING_Z:-0.15} &
+      python3 /workspace/src/robot_bringup/config/ros1/gbplanner/collab_qrc_go2/publish_static_tfs.py _base_frame:=b_base_link _planning_base_frame:=base_link &
+      python3 /workspace/src/robot_bringup/config/ros1/gbplanner/collab_qrc_go2/start_automatic_planning.py --robot-label robot_b --odom-topic /robot_b/gbplanner/odom_planning --cloud-topic /robot_b/lidar/points_downsampled --warmup-sec 12.0 --repeat-sec ${GBPLANNER_REPLAN_PERIOD_SEC:-20.0} &
+      exec roslaunch /workspace/src/robot_bringup/config/ros1/gbplanner/collab_qrc_go2/gbplanner_common_executor.launch robot_name:=robot_b odometry_topic:=/robot_b/gbplanner/odom_planning config_name:=collab_qrc_go2 ele_map_enable:=false rviz_en:=false
+      '
+
+  ros2_launch_ros1_bridge_robot_a:
+    <<: [*system-template]
+    image: unified_autonomy:ros2_ros1_bridge
+    profiles: ["launch"]
+    environment:
+      <<: [*env-common, *ros1-master-a]
+    depends_on:
+      ros1_launch_roscore_robot_a:
+        condition: service_healthy
+    volumes:
+      - ${UAS_REPO_ROOT}/workspaces/ws_ros1_bridge:/workspace:rw
+      - ${COLLAB_QRC_ROOT}/scripts/sim/gbplanner3_mujoco/config/collab_qrc_go2:/collab_qrc_gbplanner_config:ro
+    command: |
+      bash -c '
+      set -e
+      source /opt/ros/humble/setup.bash
+      source /workspace/install/setup.bash 2>/dev/null || true
+      exec ros2 run ros1_bridge parameter_bridge
+      '
+
+  ros2_launch_ros1_bridge_robot_b:
+    <<: [*system-template]
+    image: unified_autonomy:ros2_ros1_bridge
+    profiles: ["launch"]
+    environment:
+      <<: [*env-common, *ros1-master-b]
+    depends_on:
+      ros1_launch_roscore_robot_b:
+        condition: service_healthy
+    volumes:
+      - ${UAS_REPO_ROOT}/workspaces/ws_ros1_bridge:/workspace:rw
+      - ${COLLAB_QRC_ROOT}/scripts/sim/gbplanner3_mujoco/config/collab_qrc_go2:/collab_qrc_gbplanner_config:ro
+    command: |
+      bash -c '
+      set -e
+      source /opt/ros/humble/setup.bash
+      source /workspace/install/setup.bash 2>/dev/null || true
+      exec ros2 run ros1_bridge parameter_bridge
+      '

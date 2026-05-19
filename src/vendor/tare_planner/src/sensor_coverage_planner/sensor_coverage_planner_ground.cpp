@@ -61,6 +61,7 @@ void SensorCoveragePlanner3D::ReadParameters() {
   this->declare_parameter<bool>("kUseLineOfSightLookAheadPoint", true);
   this->declare_parameter<bool>("kNoExplorationReturnHome", true);
   this->declare_parameter<bool>("kUseMomentum", false);
+  this->declare_parameter<bool>("kSendInitialWaypoint", true);
 
   // Double
   this->declare_parameter<double>("kKeyposeCloudDwzFilterLeafSize", 0.2);
@@ -216,6 +217,7 @@ void SensorCoveragePlanner3D::ReadParameters() {
                       kUseLineOfSightLookAheadPoint);
   this->get_parameter("kNoExplorationReturnHome", kNoExplorationReturnHome);
   this->get_parameter("kUseMomentum", kUseMomentum);
+  this->get_parameter("kSendInitialWaypoint", kSendInitialWaypoint);
 
   this->get_parameter("kKeyposeCloudDwzFilterLeafSize",
                       kKeyposeCloudDwzFilterLeafSize);
@@ -1353,9 +1355,21 @@ void SensorCoveragePlanner3D::PublishWaypoint() {
     waypoint.point.y = initial_position_.y();
     waypoint.point.z = initial_position_.z();
   } else {
+    if (!lookahead_point_update_) {
+      RCLCPP_WARN_THROTTLE(
+          this->get_logger(), *this->get_clock(), 5000,
+          "No valid lookahead point this cycle; skipping waypoint publish");
+      return;
+    }
     double dx = lookahead_point_.x() - robot_position_.x;
     double dy = lookahead_point_.y() - robot_position_.y;
     double r = sqrt(dx * dx + dy * dy);
+    if (r < 1e-3) {
+      RCLCPP_WARN_THROTTLE(
+          this->get_logger(), *this->get_clock(), 5000,
+          "Lookahead is at the robot position; skipping waypoint publish");
+      return;
+    }
     double extend_dist = lookahead_point_in_line_of_sight_
                              ? kExtendWayPointDistanceBig
                              : kExtendWayPointDistanceSmall;
@@ -1469,11 +1483,15 @@ void SensorCoveragePlanner3D::execute() {
   overall_runtime_ = 0;
 
   if (!initialized_) {
-    SendInitialWaypoint();
+    if (kSendInitialWaypoint) {
+      SendInitialWaypoint();
+    }
     start_time_ = this->now().seconds();
     if(start_time_ == 0.0){
-      RCLCPP_ERROR(this->get_logger(), "Start time is zero, time source (use_time_time) not set correctly. Exiting...");
-      exit(1);
+      RCLCPP_WARN_THROTTLE(
+          this->get_logger(), *this->get_clock(), 5000,
+          "Start time is zero; waiting for non-zero simulation clock");
+      return;
     }
     global_direction_switch_time_ = this->now().seconds();
     initialized_ = true;

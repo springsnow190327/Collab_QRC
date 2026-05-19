@@ -12,11 +12,14 @@ smooth_heading_enable: false      # Go2 yaw can rotate fast; gbplanner heading i
 smooth_homing_enable: false
 
 # Path tracking thresholds — Go2 small footprint, looser than UAV
-path_end_dist_thr: 1.0
+# Common executor executes GBPlanner3 paths through Nav2 MPPI, whose frontier
+# goal tolerance is 0.50 m.  Keep PCI's path-end gate aligned so reaching a
+# planner segment via Nav2 can trigger the next GBPlanner3 planning iteration.
+path_end_dist_thr: 0.55
 path_end_yaw_thr: 1.5
 path_end_dist_scale: 1.0
-path_progression_dist_thr: 1.5
-path_progression_dist_thr_min: 1.0
+path_progression_dist_thr: 0.8
+path_progression_dist_thr_min: 0.4
 path_progression_yaw_thr: 1.5
 path_progression_yaw_thr_min: 0.6
 path_progression_pitch_thr: 3.14

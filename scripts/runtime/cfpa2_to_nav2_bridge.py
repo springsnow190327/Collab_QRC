@@ -125,6 +125,7 @@ class Cfpa2ToNav2Bridge(Node):
         self._goal_seq = 0
         self._active_goal: tuple[float, float] | None = None
         self._planner_failure_count = 0
+        self._last_goal_pub_stamp_ns = 0
 
         self.create_subscription(Odometry, odom_topic, self._on_odom, cfpa_qos)
         self.create_subscription(
@@ -225,6 +226,10 @@ class Cfpa2ToNav2Bridge(Node):
         out.pose.orientation.z = math.sin(0.5 * yaw)
         out.pose.orientation.w = math.cos(0.5 * yaw)
         self._goal_pub.publish(out)
+        self._last_goal_pub_stamp_ns = (
+            int(out.header.stamp.sec) * 1_000_000_000
+            + int(out.header.stamp.nanosec)
+        )
 
         self.get_logger().info(
             f"forwarded goal ({gx:+.2f}, {gy:+.2f}) yaw={math.degrees(yaw):+.1f}°"
@@ -234,6 +239,10 @@ class Cfpa2ToNav2Bridge(Node):
         self._goal_seq += 1
         self._active_goal = (gx, gy)
         self._planner_failure_count = 0
+        if getattr(self, "_action_terminal_burst_timer", None) is not None:
+            self._action_terminal_burst_timer.cancel()
+            self._action_terminal_burst_timer = None
+        self._action_terminal_burst_remaining = 0
         self._emit_nav_status("navigating", "goal_forwarded")
 
     def _on_action_status(self, msg: GoalStatusArray) -> None:
@@ -255,6 +264,8 @@ class Cfpa2ToNav2Bridge(Node):
                 continue
             stamp_ns = int(st.goal_info.stamp.sec) * 1_000_000_000 \
                 + int(st.goal_info.stamp.nanosec)
+            if stamp_ns < int(getattr(self, "_last_goal_pub_stamp_ns", 0)):
+                continue
             uuid = bytes(st.goal_info.goal_id.uuid)
             if terminal is None or stamp_ns > terminal[0]:
                 terminal = (stamp_ns, uuid, code)
@@ -353,7 +364,7 @@ def main(argv=None) -> int:
         node = Cfpa2ToNav2Bridge()
         rclpy.spin(node)
     finally:
-        rclpy.shutdown()
+        rclpy.try_shutdown()
     return 0
 
 

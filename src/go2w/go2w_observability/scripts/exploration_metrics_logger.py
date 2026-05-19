@@ -84,6 +84,7 @@ class _RobotState:
         self.map_total: int = 0
         self.map_resolution: float = 0.05
         self.explored_cells: set[tuple[int, int]] = set()
+        self.last_map_processed_wall: float = 0.0
 
         self.goals_received: int = 0
         self.goals_reached: int = 0
@@ -146,6 +147,14 @@ class ExplorationMetricsLogger(Node):
         self.declare_parameter("coverage_stagnant_window_sec", 30.0)
         self.declare_parameter("summary_interval_sec", 30.0)
         self.declare_parameter("enable_stop_trigger", True)
+        self.declare_parameter("global_map_topic", "/merged_map")
+        self.declare_parameter("scene_area_m2", 0.0)
+        # OccupancyGrid callbacks can arrive faster than the CSV log rate, and
+        # converting every grid to overlap sets is CPU-heavy on growing maps.
+        # The logger only writes at log_rate, so processing maps at 1 Hz keeps
+        # metrics responsive without stealing CPU from MuJoCo/planners.
+        self.declare_parameter("map_processing_min_period_sec", 1.0)
+        self.declare_parameter("global_map_processing_min_period_sec", 1.0)
 
         namespaces = self.get_parameter("namespaces").value
         experiment_name = str(self.get_parameter("experiment_name").value)
@@ -164,6 +173,18 @@ class ExplorationMetricsLogger(Node):
             self.get_parameter("summary_interval_sec").value)
         self._enable_stop_trigger = bool(
             self.get_parameter("enable_stop_trigger").value)
+        self._global_map_topic = str(
+            self.get_parameter("global_map_topic").value).strip()
+        self._scene_area_m2 = float(
+            self.get_parameter("scene_area_m2").value)
+        self._map_processing_min_period_sec = max(0.0, float(
+            self.get_parameter("map_processing_min_period_sec").value))
+        self._global_map_processing_min_period_sec = max(0.0, float(
+            self.get_parameter("global_map_processing_min_period_sec").value))
+
+        self._global_map_known_cells = 0
+        self._global_map_resolution = 0.05
+        self._last_global_map_processed_wall = 0.0
 
         os.makedirs(output_dir, exist_ok=True)
         ts = time.strftime("%Y%m%d_%H%M%S")
@@ -258,6 +279,10 @@ class ExplorationMetricsLogger(Node):
             self._cancel_clients[ns] = self.create_client(
                 CancelGoal, f"/{ns}/navigate_to_pose/_action/cancel_goal")
 
+        if self._global_map_topic:
+            self.create_subscription(
+                OccupancyGrid, self._global_map_topic, self._global_map_cb, 1)
+
         # cmd_vel monitor — used to detect "first motion after goal" deltas.
         self.create_subscription(
             Twist, "/cmd_vel", self._cmd_vel_cb, qos_profile_sensor_data,
@@ -281,6 +306,10 @@ class ExplorationMetricsLogger(Node):
         # Multi-robot overlap (only if > 1 robot)
         if len(namespaces) > 1:
             header_parts.append("overlap_pct")
+        header_parts.extend([
+            "global_explored_area_m2",
+            "global_coverage_ratio",
+        ])
 
         with open(self.csv_path, "w") as f:
             f.write(",".join(header_parts) + "\n")
@@ -295,6 +324,10 @@ class ExplorationMetricsLogger(Node):
         self.get_logger().info(f"Exploration logger started → {self.csv_path}")
         self.get_logger().info(f"  namespaces={namespaces}  rate={log_rate}Hz")
         self.get_logger().info(f"  event log → {self._event_log_path}")
+        if self._global_map_topic:
+            self.get_logger().info(
+                f"  global map → {self._global_map_topic} "
+                f"(scene_area_m2={self._scene_area_m2:.1f})")
         if not _HAS_BT_LOG:
             self.get_logger().warn(
                 "nav2_msgs.msg.BehaviorTreeLog unavailable — plan-time metrics "
@@ -323,6 +356,13 @@ class ExplorationMetricsLogger(Node):
 
     def _map_cb(self, msg: OccupancyGrid, ns: str) -> None:
         rs = self.robots[ns]
+        now = time.time()
+        if (
+            self._map_processing_min_period_sec > 0.0
+            and now - rs.last_map_processed_wall < self._map_processing_min_period_sec
+        ):
+            return
+        rs.last_map_processed_wall = now
         rs.map_total = len(msg.data)
         rs.map_resolution = msg.info.resolution
         rs.map_free = 0
@@ -344,6 +384,18 @@ class ExplorationMetricsLogger(Node):
                 wy = int((oy + (gy + 0.5) * res) / res)
                 explored.add((wx, wy))
         rs.explored_cells = explored
+
+    def _global_map_cb(self, msg: OccupancyGrid) -> None:
+        now = time.time()
+        if (
+            self._global_map_processing_min_period_sec > 0.0
+            and now - self._last_global_map_processed_wall
+            < self._global_map_processing_min_period_sec
+        ):
+            return
+        self._last_global_map_processed_wall = now
+        self._global_map_resolution = msg.info.resolution
+        self._global_map_known_cells = sum(1 for v in msg.data if v >= 0)
 
     def _nav_status_cb(self, msg: String, ns: str) -> None:
         import json
@@ -704,6 +756,10 @@ class ExplorationMetricsLogger(Node):
                 parts.append(f"{overlap_pct:.2f}")
             else:
                 parts.append("0.00")
+
+        global_area = self._global_map_known_cells * (self._global_map_resolution ** 2)
+        global_ratio = (global_area / self._scene_area_m2) if self._scene_area_m2 > 0 else 0.0
+        parts.extend([f"{global_area:.3f}", f"{global_ratio:.6f}"])
 
         with open(self.csv_path, "a") as f:
             f.write(",".join(parts) + "\n")
