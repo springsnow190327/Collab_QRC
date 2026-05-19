@@ -19,7 +19,15 @@
 
 #include <cuda_runtime.h>
 
-#include "nav_algo_core/mppi/optimizer.hpp"
+// Compile-time selector matching nav_algo_mppi_cuda/cuda_backend.hpp:
+// pick whichever full-Optimizer header matches the current build (ROS 1
+// nav_algo_core or ROS 2 nav2_mppi_controller_cuda). Both expose the same
+// public Optimizer accessor surface (state(), control_sequence(), etc.).
+#ifdef NAV_ALGO_MPPI_CUDA_USE_NAV2
+  #include "nav2_mppi_controller/optimizer.hpp"
+#else
+  #include "nav_algo_core/mppi/optimizer.hpp"
+#endif
 
 #ifdef NAV_ALGO_CUDA_PROBE
 #include <fstream>

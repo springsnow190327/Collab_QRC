@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>nav2_mppi_controller_cuda_plugin</name>
+  <version>0.1.0</version>
+  <description>
+    CudaMPPIController: nav2_core::Controller plugin that injects the
+    nav_algo_mppi_cuda CUDA backend into a vendored, patched
+    nav2_mppi_controller_cuda::Optimizer at configure() time. When
+    use_cuda=true the per-iteration MPPI body (generateNoisedTrajectories +
+    evalTrajectoriesScores + updateControlSequence) runs on the GPU.
+    When false, the upstream xtensor CPU path runs unchanged.
+  </description>
+  <maintainer email="zhuhanshan12@outlook.com">Hanshang Zhu</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_ros</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>rclcpp_lifecycle</depend>
+  <depend>pluginlib</depend>
+  <depend>nav2_common</depend>
+  <depend>nav2_core</depend>
+  <depend>nav2_costmap_2d</depend>
+  <depend>nav2_util</depend>
+  <depend>nav2_mppi_controller_cuda</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>tf2_ros</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+    <nav2_core plugin="${prefix}/mppic_cuda.xml" />
+  </export>
+</package>

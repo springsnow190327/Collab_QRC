@@ -21,8 +21,18 @@
 #include <cstdint>
 #include <vector>
 
-#include "nav_algo_core/mppi/cuda_backend.hpp"
-#include "nav_algo_core/mppi/tools/parameters_handler.hpp"
+// Compile-time selector: same CudaBackend translation unit feeds both
+// the ROS 1 nav_algo_core build and the ROS 2 nav2_mppi_controller_cuda
+// build. The two interface headers are byte-equivalent (mppi::ICudaBackend
+// is fwd-decl-only) and the two ParametersHandlers expose the same
+// `getParamGetter(ns)` / `getLock()` surface that loadCriticParams uses.
+#ifdef NAV_ALGO_MPPI_CUDA_USE_NAV2
+  #include "nav2_mppi_controller/cuda_backend.hpp"
+  #include "nav2_mppi_controller/tools/parameters_handler.hpp"
+#else
+  #include "nav_algo_core/mppi/cuda_backend.hpp"
+  #include "nav_algo_core/mppi/tools/parameters_handler.hpp"
+#endif
 #include "nav_algo_mppi_cuda/critics.cuh"
 #include "nav_algo_mppi_cuda/integrate.cuh"
 #include "nav_algo_mppi_cuda/control_update.cuh"
