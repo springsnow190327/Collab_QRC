@@ -52,6 +52,7 @@ include_directories(
 # Kernel library — pure CUDA, no ROS deps.
 add_library(${PROJECT_NAME} SHARED
   src/integrate.cu
+  src/critics.cu
 )
 set_target_properties(${PROJECT_NAME} PROPERTIES
   CUDA_SEPARABLE_COMPILATION ON
@@ -67,7 +68,16 @@ target_link_libraries(integrate_bench
   ${CUDART_LIB}
 )
 
-install(TARGETS ${PROJECT_NAME} integrate_bench
+# Critics bench — same structure, exercises each critic kernel against its
+# CPU reference. Grows as new critics get ported.
+add_executable(critics_bench src/critics_bench.cpp)
+target_include_directories(critics_bench PRIVATE /usr/local/cuda/include)
+target_link_libraries(critics_bench
+  ${PROJECT_NAME}
+  ${CUDART_LIB}
+)
+
+install(TARGETS ${PROJECT_NAME} integrate_bench critics_bench
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   RUNTIME DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}/${PROJECT_NAME})
