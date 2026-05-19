@@ -115,14 +115,52 @@ python3 scripts/training/synth_noise_corpus.py \
 Performance: **~36k patches/sec** on a typical laptop. 6 scenes × 10k
 cells/class × 3 classes × 4 noise × 8 geom = 5.76M patches in ~2.5 minutes.
 
-### 4. `trav_corpus_collector.py` + `run_with_corpus.sh` — live-sim capture
+### 4. `trav_corpus_collector.py` — live-sim capture
 
 ROS 2 node that subscribes to `/<ns>/elevation_map_raw` and samples N
 patches per GridMap. Each patch's center is looked up in the static
 `<scene>_gtlabel.npy` to assign a ground-truth label. On SIGTERM (the bench
 launch's session-duration timer), flushes everything to `.npz`.
 
-Use the shell wrapper to side-car the collector around any benchmark
+#### Option A — benchmark-integrated (recommended)
+
+`benchmark_exploration_planners.sh` runs the collector automatically for
+both robots during every trial. Set `COLLECT_TRAV_CORPUS=true` to enable:
+
+```bash
+# collect only
+COLLECT_TRAV_CORPUS=true \
+  ./scripts/bench/benchmark_exploration_planners.sh
+
+# collect + retrain in one shot
+COLLECT_TRAV_CORPUS=true \
+TRAV_RETRAIN=true \
+TRAV_PRETRAIN_WEIGHTS=training_runs/weights_pretrain_v2.dat \
+  ./scripts/bench/benchmark_exploration_planners.sh
+```
+
+What happens automatically:
+- GT label maps built for any scene that lacks a `*_gtlabel.npy` (one-shot,
+  cached on subsequent runs).
+- Two `trav_corpus_collector.py` processes started per trial (robot_a +
+  robot_b), writing to `<trial_dir>/corpus/`.
+- Both flushed via SIGTERM when the trial ends.
+- After all trials (if `TRAV_RETRAIN=true`): `merge_trav_corpus.py` →
+  `train_trav_filter.py` → `<OUT_DIR>/weights_bench_retrain.dat`.
+
+Available knobs:
+
+| variable | default | meaning |
+|---|---|---|
+| `COLLECT_TRAV_CORPUS` | `false` | enable collection |
+| `TRAV_RETRAIN` | `false` | merge + retrain after all trials |
+| `TRAV_WEIGHTS_OUT` | `<OUT_DIR>/weights_bench_retrain.dat` | output weights path |
+| `TRAV_PRETRAIN_WEIGHTS` | _(empty)_ | existing weights for init + anti-forgetting mix |
+| `TRAV_PATCHES_PER_FRAME` | `50` | patches sampled per GridMap message |
+
+#### Option B — manual wrapper (single-robot, one scene at a time)
+
+Use `run_with_corpus.sh` to side-car the collector around any benchmark
 launch — no edits to launch files required:
 
 ```bash
@@ -197,7 +235,16 @@ python3 scripts/training/train_trav_filter.py \
   --epochs 150 --lr 2e-4 \
   --lethal-weight 3.0 --label-smoothing 0.05
 
-# ── 4. Fine-tune corpus (live capture during bench runs) ──
+# ── 4. Fine-tune corpus + retrain (benchmark-integrated, recommended) ──
+# Runs the full 3-planner × 3-scene benchmark, collects corpus for both robots
+# during every trial, then merges + retrains automatically at the end.
+COLLECT_TRAV_CORPUS=true \
+TRAV_RETRAIN=true \
+TRAV_PRETRAIN_WEIGHTS=training_runs/weights_pretrain_v2.dat \
+  ./scripts/bench/benchmark_exploration_planners.sh
+# → new weights at /tmp/exploration_bench/<ts>/weights_bench_retrain.dat
+
+# ── 4 (alt). Manual fine-tune corpus (single-robot, one scene at a time) ──
 mkdir -p /tmp/trav_corpus
 for trial in $(seq 1 20); do
   for scene in demo3_mixed lrc_maze_go2w vlm_exploration_scene; do
@@ -210,12 +257,12 @@ for trial in $(seq 1 20); do
   done
 done
 
-# ── 5. Merge fine-tune captures ──
+# ── 5. Merge fine-tune captures (manual path only) ──
 python3 scripts/training/merge_trav_corpus.py /tmp/trav_corpus \
   --output training_runs/data/finetune_corpus.npz \
   --drop-inflated false
 
-# ── 6. Fine-tune from pretrain ──
+# ── 6. Fine-tune from pretrain (manual path only) ──
 python3 scripts/training/train_trav_filter.py \
   training_runs/data/finetune_corpus.npz \
   training_runs/weights_corpus_v2.dat \
