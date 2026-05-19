@@ -632,22 +632,30 @@ def _launch_setup(context):
     if enable_perception:
         if use_fast_lio:
             scan_cloud_topic = f"/{robot_ns}/cloud_registered_body"
-            robot_actions.append(
-                Node(
-                    package="tf2_ros",
-                    executable="static_transform_publisher",
-                    namespace=robot_ns,
-                    name="imu_to_body_tf",
-                    arguments=[
-                        "--frame-id", "imu", "--child-frame-id", "body",
-                        "--x", "0", "--y", "0", "--z", "0",
-                        "--qx", "0", "--qy", "0", "--qz", "0", "--qw", "1",
-                    ],
-                    remappings=[("/tf_static", f"/{robot_ns}/tf_static")],
-                    parameters=[{"use_sim_time": use_sim_time}],
-                    output="log",
+            # Standalone-sim only: when fast_lio runs locally on desktop, this
+            # static gives the scan pipeline a TF path body → base_link. In
+            # HIL split (enable_slam=false → Jetson owns SLAM), the Jetson
+            # publishes camera_init → body → base_link itself, so a desktop-
+            # side imu→body static gives body TWO parents (imu locally +
+            # camera_init from Jetson) → TF rejects with "two unconnected
+            # trees" or one branch gets dropped. Gate on enable_slam.
+            if enable_slam:
+                robot_actions.append(
+                    Node(
+                        package="tf2_ros",
+                        executable="static_transform_publisher",
+                        namespace=robot_ns,
+                        name="imu_to_body_tf",
+                        arguments=[
+                            "--frame-id", "imu", "--child-frame-id", "body",
+                            "--x", "0", "--y", "0", "--z", "0",
+                            "--qx", "0", "--qy", "0", "--qz", "0", "--qw", "1",
+                        ],
+                        remappings=[("/tf_static", f"/{robot_ns}/tf_static")],
+                        parameters=[{"use_sim_time": use_sim_time}],
+                        output="log",
+                    )
                 )
-            )
         else:
             scan_cloud_topic = perception_cloud_topic
 

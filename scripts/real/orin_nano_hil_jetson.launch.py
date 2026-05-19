@@ -213,13 +213,19 @@ def generate_launch_description():
     # CNN traversability is already in elevation_map_raw at full rate.
     # We bypass the chain and consume the CNN trav layer directly below.
 
-    # 6. grid_map_to_occupancy_grid — reads CNN trav directly from raw map.
-    # Bypass filter_chain: input_topic = elevation_map_raw, layer = traversability.
-    # ramp_override needs slope+step_residual from filter_chain → DISABLED.
-    # upper_bound_clearance still works (upper_bound layer is in raw map).
+    # 6. grid_map_to_occupancy_grid (C++ port) — reads CNN trav directly from
+    # raw map. Bypass filter_chain: input_topic = elevation_map_raw,
+    # layer = traversability. ramp_override needs slope+step_residual from
+    # filter_chain → DISABLED. upper_bound_clearance still works (upper_bound
+    # layer is in raw map).
+    #
+    # C++ port is the production executable (commit 0393668): 4.6× faster
+    # than the Python `grid_map_to_occupancy_grid` (0.59 → 2.72 Hz on
+    # Orin Nano, CPU 99% → 4%). Same param contract. Fall back to Python
+    # by changing executable below to `grid_map_to_occupancy_grid`.
     actions.append(
         Node(
-            package="trav_cost_filters", executable="grid_map_to_occupancy_grid",
+            package="trav_cost_filters", executable="grid_map_to_occupancy_grid_cpp",
             name="grid_map_to_occupancy_grid", namespace=ROBOT_NS,
             parameters=[{
                 "use_sim_time": USE_SIM_TIME,

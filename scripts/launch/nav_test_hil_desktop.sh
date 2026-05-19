@@ -54,12 +54,19 @@ echo ""
 
 # Call the base launch directly, skipping all autonomy nodes.
 # Key flags:
-#   enable_assets=true        : MuJoCo + robot spawn
-#   enable_perception=true    : sensor bridges (lidar/imu/contacts)
-#   enable_slam=false         : NO fast_lio on desktop (Jetson owns SLAM)
-#   enable_control=true       : CHAMP cmd_vel → joint torques (closed loop)
-#   enable_navigation=false   : NO nav2 on desktop (Jetson owns navigation)
-#   use_fast_lio=true         : keep pointcloud_adapter active (it's gated on this)
+#   enable_assets=true             : MuJoCo + robot spawn
+#   enable_perception=true         : sensor bridges (lidar/imu/contacts)
+#   enable_slam=false              : NO fast_lio on desktop (Jetson owns SLAM)
+#   enable_control=true            : CHAMP cmd_vel → joint torques (closed loop)
+#   enable_navigation=false        : NO nav2 on desktop (Jetson owns navigation)
+#   use_fast_lio=true              : keep pointcloud_adapter active
+#   odom_bridge_publish_tf=false   : Jetson SLAM owns map → base_link;
+#                                    don't publish a conflicting `odom →
+#                                    base_link` from the MuJoCo bridge
+#                                    (two parents for base_link → TF rejects).
+#   (also: enable_slam=false gates the imu_to_body_tf static off — that
+#    one used to fire in standalone sim to give the scan pipeline a body
+#    frame, but Jetson SLAM publishes camera_init → body itself.)
 exec ros2 launch go2_gazebo_sim single_go2w_mujoco_cfpa2.launch.py \
   "mujoco_model_path:=${SCENE}" \
   "robot_namespace:=robot" \
@@ -72,5 +79,6 @@ exec ros2 launch go2_gazebo_sim single_go2w_mujoco_cfpa2.launch.py \
   "use_fast_lio:=true" \
   "enable_control:=true" \
   "enable_navigation:=false" \
+  "odom_bridge_publish_tf:=false" \
   "cleanup_stale:=true" \
   "$@"

@@ -103,7 +103,8 @@ else
   _clean_jetson_dds_shm
 fi
 
-LAUNCH=/tmp/orin_nano_hil_jetson.launch.py
+WS="${HOME}/jetson_ws"
+LAUNCH="${WS}/scripts/real/orin_nano_hil_jetson.launch.py"
 [[ -f "$LAUNCH" ]] || { echo "ERROR: launch file not at $LAUNCH" >&2; exit 1; }
 
 echo "═══════════════════════════════════════════════════════════════════"
