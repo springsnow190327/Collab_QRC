@@ -70,7 +70,17 @@ _PREFLIGHT_PATTERNS=(
   "localPlanner"
   "pathFollower"
   "exploration_metrics_logger"
+  "session_reporter.py"
+  "ros1_bridge"
+  "dynamic_bridge"
+  "parameter_bridge"
+  "roscore -p 1131"
+  "launch_dual_common_executor.sh"
+  "gbplanner_common_executor.launch"
+  "cloud_stamp_rewriter.py"
   # Nav / exploration
+  "ros2 bag record"
+  "/tmp/nav2_run_robot_"
   "path_relay.py"
   "stuck_watchdog.py"
   "cfpa2_to_nav2_bridge"
@@ -105,15 +115,40 @@ _PREFLIGHT_PATTERNS=(
 
 _preflight_kill_patterns() {
   local sig="$1"
-  local pat
+  local pat self_pgid
+  self_pgid="$(ps -o pgid= -p "$$" 2>/dev/null | tr -d ' ')"
   for pat in "${_PREFLIGHT_PATTERNS[@]}"; do
-    pkill "${sig}" -f "${pat}" 2>/dev/null || true
+    # Do not use plain `pkill -f`: benchmark launch args such as
+    # `experiment_name:=demo3_mixed_cfpa2_trial_1` legitimately contain
+    # planner substrings like `cfpa2_`, which previously killed the current
+    # timeout/launch process before MuJoCo ever started.  Walk matches and
+    # skip the current process group so preflight only removes stale stacks.
+    pgrep -f "${pat}" 2>/dev/null | while read -r pid; do
+      [[ -n "${pid}" ]] || continue
+      [[ "${pid}" == "$$" || "${pid}" == "${BASHPID:-}" ]] && continue
+      local pgid
+      pgid="$(ps -o pgid= -p "${pid}" 2>/dev/null | tr -d ' ')"
+      [[ -n "${self_pgid}" && "${pgid}" == "${self_pgid}" ]] && continue
+      kill "${sig}" "${pid}" 2>/dev/null || true
+    done
+  done
+}
+
+_preflight_alive_pids() {
+  local self_pgid pid pgid
+  self_pgid="$(ps -o pgid= -p "$$" 2>/dev/null | tr -d ' ')"
+  pgrep -f "${_PREFLIGHT_ALIVE_RE}" 2>/dev/null | while read -r pid; do
+    [[ -n "${pid}" ]] || continue
+    [[ "${pid}" == "$$" || "${pid}" == "${BASHPID:-}" ]] && continue
+    pgid="$(ps -o pgid= -p "${pid}" 2>/dev/null | tr -d ' ')"
+    [[ -n "${self_pgid}" && "${pgid}" == "${self_pgid}" ]] && continue
+    printf '%s\n' "${pid}"
   done
 }
 
 # Regex reused for pre/post-kill detection. Matches any process likely to
 # hold DDS resources, GPU contexts, or a LiDAR plugin handle.
-_PREFLIGHT_ALIVE_RE='mujoco_ros2_control|mujoco_sensor_bridge|mujoco_odom_bridge|mujoco_contact_node|mujoco_lidar_node|tare_planner_node|far_planner|localPlanner|pathFollower|sensor_scan_generation|champ_base|quadruped_controller_node|state_estimation_node|fastlio_mapping|laserMapping|__node:=slam_node|octomap_server|cfpa2_|cartographer_node|sc_pgo_node|pointcloud_frame_bridge|pointcloud_adapter|qos_bridge|twist_bridge|slam_odom_relay|fast_lio_tf_adapter|cloud_world_offset_bridge|astar_nav_node|hybrid_astar_nav_node|nav2_hybrid_astar_nav_node|default_nav.py|path_relay.py|stuck_watchdog.py|exploration_metrics_logger|cfpa2_to_nav2_bridge|planner_server|controller_server|bt_navigator|behavior_server|lifecycle_manager_navigation|stand_up_slowly|go2w_hybrid_cmd_router|wall_collision_checker.py|supervisor_panic_node.py|autonomy_enabler.py|map_merge|map_augmenter|robot_self_filter|multi_tf_relay|dual_robot_collision_monitor|mapper_node|nvblox_frontend_mapper|robot_state_publisher|pointcloud_to_laserscan_node|__node:=(world_to_map_tf|base_link_to_body_tf|b_base_link_to_body_tf|far_vehicle_tf|far_camera_tf|map_to_odom_tf|base_to_footprint_ekf|footprint_to_odom_ekf)'
+_PREFLIGHT_ALIVE_RE='mujoco_ros2_control|mujoco_sensor_bridge|mujoco_odom_bridge|mujoco_contact_node|mujoco_lidar_node|tare_planner_node|far_planner|localPlanner|pathFollower|sensor_scan_generation|champ_base|quadruped_controller_node|state_estimation_node|fastlio_mapping|laserMapping|__node:=slam_node|octomap_server|cfpa2_|cartographer_node|sc_pgo_node|pointcloud_frame_bridge|pointcloud_adapter|qos_bridge|twist_bridge|slam_odom_relay|fast_lio_tf_adapter|cloud_world_offset_bridge|astar_nav_node|hybrid_astar_nav_node|nav2_hybrid_astar_nav_node|default_nav.py|path_relay.py|stuck_watchdog.py|exploration_metrics_logger|session_reporter.py|ros1_bridge|dynamic_bridge|parameter_bridge|roscore -p 1131|launch_dual_common_executor.sh|gbplanner_common_executor.launch|cloud_stamp_rewriter.py|cfpa2_to_nav2_bridge|planner_server|controller_server|bt_navigator|behavior_server|lifecycle_manager_navigation|stand_up_slowly|go2w_hybrid_cmd_router|wall_collision_checker.py|supervisor_panic_node.py|autonomy_enabler.py|map_merge|map_augmenter|robot_self_filter|multi_tf_relay|dual_robot_collision_monitor|mapper_node|nvblox_frontend_mapper|robot_state_publisher|pointcloud_to_laserscan_node|ros2 bag record|/tmp/nav2_run_robot_|__node:=(world_to_map_tf|base_link_to_body_tf|b_base_link_to_body_tf|far_vehicle_tf|far_camera_tf|map_to_odom_tf|base_to_footprint_ekf|footprint_to_odom_ekf)'
 
 # Report any stuck processes (D = kernel I/O, Z = zombie waiting reap).
 # D-state cannot be killed by SIGKILL — usually a wedged GPU/DDS syscall.
@@ -167,7 +202,7 @@ _preflight_clean_shm() {
   rm -f /tmp/map_merge_params.yaml /tmp/dual_robot_collision_report.json 2>/dev/null || true
 }
 
-if pgrep -f "${_PREFLIGHT_ALIVE_RE}" >/dev/null 2>&1 || pgrep -f rviz2 >/dev/null 2>&1; then
+if [[ -n "$(_preflight_alive_pids)" ]] || pgrep -f rviz2 >/dev/null 2>&1; then
   echo "[preflight] killing stale sim/nav/rviz processes (SIGKILL only)..."
   # Skip -TERM: rviz2 ignores SIGTERM until it finishes loading TF, MuJoCo's
   # libsensor plugin holds CUDA contexts that don't release on -TERM, and
@@ -179,9 +214,11 @@ if pgrep -f "${_PREFLIGHT_ALIVE_RE}" >/dev/null 2>&1 || pgrep -f rviz2 >/dev/nul
   sleep 1
   _preflight_stop_ros2_daemon
   _preflight_clean_shm
-  if pgrep -f "${_PREFLIGHT_ALIVE_RE}" >/dev/null 2>&1; then
+  if [[ -n "$(_preflight_alive_pids)" ]]; then
     echo "[preflight] WARNING: some processes survived SIGKILL — check manually:"
-    pgrep -af "${_PREFLIGHT_ALIVE_RE}" | head -20
+    _preflight_alive_pids | while read -r pid; do
+      ps -p "${pid}" -o pid=,args= 2>/dev/null
+    done | head -20
     _preflight_report_stuck
   else
     echo "[preflight] clean."
@@ -192,5 +229,5 @@ else
 fi
 
 unset _PREFLIGHT_PATTERNS _PREFLIGHT_ALIVE_RE
-unset -f _preflight_kill_patterns _preflight_report_stuck
+unset -f _preflight_kill_patterns _preflight_alive_pids _preflight_report_stuck
 unset -f _preflight_stop_ros2_daemon _preflight_clean_shm

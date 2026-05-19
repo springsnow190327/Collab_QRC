@@ -101,6 +101,7 @@ private:
   bool kUseLineOfSightLookAheadPoint;
   bool kNoExplorationReturnHome;
   bool kUseMomentum;
+  bool kSendInitialWaypoint;
 
   // Double
   double kKeyposeCloudDwzFilterLeafSize;

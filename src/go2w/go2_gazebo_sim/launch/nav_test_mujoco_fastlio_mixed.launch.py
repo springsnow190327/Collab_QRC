@@ -21,6 +21,7 @@ Key deltas from `nav_test_mujoco_fastlio_dual.launch.py`:
 from __future__ import annotations
 
 import os
+import shlex
 import sys
 
 # sys.path must be amended BEFORE the `from modules.*` imports below — when
@@ -85,6 +86,10 @@ _NAV_DEBUG_KEEP_EXECUTABLES = (
     "twist_bridge",
     "go2w_hybrid_cmd_router",
     "cmd_vel_safety_shield",
+    "external_point_to_waypoint_coord_adapter",
+    "gbplanner_to_waypoint_adapter",
+    "mtare_common_executor",
+    "tare_planner_node",
     # Goal source — without this, an agent reading the terminal can't see
     # WHERE the planner was told to drive, so wall hits / stuck events are
     # un-attributable to a goal selection.
@@ -290,6 +295,298 @@ def _build_sensor_bridges(ns: str, mjcf_path: str, base_body: str, imu_site: str
     ]
 
 
+def _build_terrain_analysis_only_stack(*, ns: str, use_sim_time: bool, nav_delay: float):
+    """Start the CMU terrain pre-processing nodes without FAR/localPlanner.
+
+    MTARE/TARE consumes ``state_estimation_at_scan``, ``terrain_map`` and
+    ``terrain_map_ext``.  In common-executor mode Nav2 still executes motion, so
+    we need only the perception products, not CMU's downstream controller stack.
+    """
+    tf_remaps = [("/tf", f"/{ns}/tf"), ("/tf_static", f"/{ns}/tf_static")]
+    scan_topic = f"/{ns}/registered_scan_map"
+    odom_topic = f"/{ns}/odom/nav"
+    nodes = [
+        Node(
+            package="sensor_scan_generation",
+            executable="sensorScanGeneration",
+            namespace=ns,
+            name="sensor_scan_generation_mtare",
+            arguments=["--ros-args", "--log-level", "WARN"],
+            parameters=[{"use_sim_time": use_sim_time}],
+            remappings=[
+                ("/state_estimation", odom_topic),
+                ("/registered_scan", scan_topic),
+                ("/state_estimation_at_scan", f"/{ns}/state_estimation_at_scan"),
+                ("/sensor_scan", f"/{ns}/sensor_scan"),
+            ] + tf_remaps,
+            output="screen",
+        ),
+        Node(
+            package="terrain_analysis",
+            executable="terrainAnalysis",
+            namespace=ns,
+            name="terrain_analysis_mtare",
+            arguments=["--ros-args", "--log-level", "WARN"],
+            parameters=[{"use_sim_time": use_sim_time, "maxRelZ": 0.8}],
+            remappings=[
+                ("/state_estimation", odom_topic),
+                ("/registered_scan", scan_topic),
+                ("/joy", f"/{ns}/joy"),
+                ("/map_clearing", f"/{ns}/map_clearing"),
+                ("/terrain_map", f"/{ns}/terrain_map"),
+            ],
+            output="screen",
+        ),
+        Node(
+            package="terrain_analysis_ext",
+            executable="terrainAnalysisExt",
+            namespace=ns,
+            name="terrain_analysis_ext_mtare",
+            arguments=["--ros-args", "--log-level", "WARN"],
+            parameters=[{"use_sim_time": use_sim_time, "maxRelZ": 0.8}],
+            remappings=[
+                ("/state_estimation", odom_topic),
+                ("/registered_scan", scan_topic),
+                ("/joy", f"/{ns}/joy"),
+                ("/cloud_clearing", f"/{ns}/cloud_clearing"),
+                ("/terrain_map", f"/{ns}/terrain_map"),
+                ("/terrain_map_ext", f"/{ns}/terrain_map_ext"),
+            ],
+            output="screen",
+        ),
+    ]
+    return [TimerAction(period=nav_delay, actions=nodes)]
+
+
+def _build_gbplanner_common_executor_actions(
+    *,
+    nav_delay: float,
+    planner_name: str,
+    gbplanner_version: str,
+    external_cmd: str,
+    log_dir: str,
+):
+    """Wire GBPlanner trajectory outputs into the common waypoint contract."""
+    actions = [
+        LogInfo(msg=(
+            f"[exploration_planner={planner_name}] Common executor active: "
+            f"GBPlanner {gbplanner_version} must publish "
+            "/robot_a/command/trajectory and "
+            "/robot_b/command/trajectory; adapters relay to /<ns>/way_point_coord."
+        ))
+    ]
+    if external_cmd:
+        cmd = external_cmd
+    else:
+        wrapper_script = os.path.join(
+            _ws_root,
+            "scripts",
+            "sim",
+            "gbplanner3_mujoco",
+            "launch_dual_common_executor.sh",
+        )
+        if log_dir:
+            os.makedirs(log_dir, exist_ok=True)
+            log_path = os.path.join(log_dir, f"{planner_name}_dual_common_executor.log")
+        else:
+            log_path = f"/tmp/{planner_name}_dual_common_executor.log"
+        cmd = (
+            f"GBPLANNER_VERSION={shlex.quote(gbplanner_version)} "
+            f"GBPLANNER_DUAL_LOG_PATH={shlex.quote(log_path)} "
+            f"GBPLANNER3_DUAL_LOG_PATH={shlex.quote(log_path)} "
+            f"{shlex.quote(wrapper_script)} run"
+        )
+        actions.append(LogInfo(msg=(
+            f"[exploration_planner={planner_name}] external command is empty; "
+            f"starting built-in dual wrapper: {cmd}"
+        )))
+    if cmd:
+        actions.append(TimerAction(
+            period=nav_delay + 5.0,
+            actions=[ExecuteProcess(
+                cmd=["bash", "-lc", cmd],
+                name=f"{planner_name}_external_common_executor",
+                output="screen",
+            )],
+        ))
+
+    adapter_path = os.path.join(_ws_root, "scripts/sim/gbplanner3_mujoco/gbplanner_to_waypoint_adapter.py")
+    for ns in ("robot_a", "robot_b"):
+        actions.append(TimerAction(
+            period=nav_delay + 3.0,
+            actions=[ExecuteProcess(
+                cmd=[
+                    "python3", "-u", adapter_path,
+                    "--ros-args",
+                    "-p", f"robot_namespace:={ns}",
+                    "-p", f"planner_label:={planner_name}",
+                    "-p", f"trajectory_topic:=/{ns}/command/trajectory",
+                    "-p", f"path_topic:=/{ns}/gbplanner_path",
+                    "-p", f"odometry_topic:=/{ns}/odom/nav",
+                    "-p", "lookahead_distance:=2.0",
+                    "-p", "republish_period_sec:=1.0",
+                    "-p", "min_waypoint_separation:=0.5",
+                    "-p", "min_robot_goal_distance:=0.55",
+                    "-p", "goal_reached_reselect_distance:=0.55",
+                    "-p", "blacklist_radius:=0.45",
+                    "-p", "prefer_trajectory_sec:=2.0",
+                    "-p", "max_source_age_sec:=30.0",
+                    "-p", "path_after_trajectory_grace_sec:=0.5",
+                    "-p", "publish_goal_pose:=false",
+                    "-p", "publish_way_point_coord:=true",
+                ],
+                name=f"{planner_name}_waypoint_adapter_{ns}",
+                output="screen",
+            )],
+        ))
+    return actions
+
+
+def _build_mtare_common_executor_actions(
+    *,
+    nav_delay: float,
+    go2_gazebo_pkg: str,
+    external_cmd: str,
+    waypoint_topics: dict[str, str],
+):
+    """Wire MTARE/TARE PointStamped outputs into the common waypoint contract."""
+    actions = [
+        LogInfo(msg=(
+            "[exploration_planner=mtare] Common executor active: MTARE/TARE "
+            "publishes PointStamped waypoints; adapters relay to /<ns>/way_point_coord."
+        ))
+    ]
+    if external_cmd:
+        actions.append(TimerAction(
+            period=nav_delay + 7.0,
+            actions=[ExecuteProcess(
+                cmd=["bash", "-lc", external_cmd],
+                name="mtare_external_common_executor",
+                output="screen",
+            )],
+        ))
+    else:
+        mtare_setup = os.path.join(_ws_root, "src/vendor/tare_planner/install/setup.bash")
+        mtare_config = os.path.join(_ws_root, "scripts/sim/mtare_common_executor/collab_qrc_indoor.yaml")
+        if os.path.exists(mtare_setup) and os.path.exists(mtare_config):
+            for robot_id, ns in enumerate(("robot_a", "robot_b")):
+                ros_args = [
+                    "--ros-args",
+                    "--params-file", mtare_config,
+                    "-r", f"__node:=mtare_planner_{ns}",
+                    "-r", f"__ns:=/{ns}/mtare_core",
+                    "-p", "use_sim_time:=true",
+                    "-p", "kAutoStart:=true",
+                    "-p", "kSendInitialWaypoint:=false",
+                    "-p", f"sub_start_exploration_topic_:=/{ns}/start_exploration",
+                    "-p", f"sub_state_estimation_topic_:=/{ns}/state_estimation_at_scan",
+                    "-p", f"sub_registered_scan_topic_:=/{ns}/registered_scan_map",
+                    "-p", f"sub_terrain_map_topic_:=/{ns}/terrain_map",
+                    "-p", f"sub_terrain_map_ext_topic_:=/{ns}/terrain_map_ext",
+                    "-p", f"sub_coverage_boundary_topic_:=/{ns}/coverage_boundary",
+                    "-p", f"sub_viewpoint_boundary_topic_:=/{ns}/navigation_boundary",
+                    "-p", f"sub_nogo_boundary_topic_:=/{ns}/nogo_boundary",
+                    "-p", f"sub_joystick_topic_:=/{ns}/joy",
+                    "-p", f"sub_reset_waypoint_topic_:=/{ns}/reset_waypoint",
+                    "-p", f"pub_waypoint_topic_:={waypoint_topics[ns]}",
+                    "-p", f"pub_exploration_finish_topic_:=/{ns}/mtare/exploration_finish",
+                    "-p", f"pub_runtime_breakdown_topic_:=/{ns}/mtare/runtime_breakdown",
+                    "-p", f"pub_runtime_topic_:=/{ns}/mtare/runtime",
+                    "-p", f"pub_momentum_activation_count_topic_:=/{ns}/mtare/momentum_activation_count",
+                ]
+                cmd = (
+                    f"source {shlex.quote(mtare_setup)} && "
+                    f"exec ros2 run tare_planner tare_planner_node "
+                    + " ".join(shlex.quote(arg) for arg in ros_args)
+                )
+                actions.append(TimerAction(
+                    period=nav_delay + 7.0,
+                    actions=[ExecuteProcess(
+                        cmd=["bash", "-lc", cmd],
+                        name=f"mtare_vendor_common_executor_{ns}",
+                        output="screen",
+                    )],
+                ))
+            actions.append(LogInfo(msg=(
+                "[exploration_planner=mtare] Starting vendor TARE/MTARE ground "
+                "planner instances from src/vendor/tare_planner; outputs are adapted to "
+                "/<ns>/way_point_coord."
+            )))
+        else:
+            mtare_node_path = os.path.join(_ws_root, "scripts", "runtime", "mtare_common_executor_node.py")
+            actions.append(TimerAction(
+                period=nav_delay + 7.0,
+                actions=[
+                    ExecuteProcess(
+                        cmd=[
+                            "python3", "-u", mtare_node_path,
+                            "--ros-args",
+                            "-p", "use_sim_time:=true",
+                            "-p", "namespaces:=['robot_a','robot_b']",
+                            "-p", "mobility_types:=['wheeled','wheeled']",
+                            "-p", "shared_map_topic:=/merged_map",
+                            "-p", "waypoint_topic_suffix:=/mtare/way_point",
+                            "-p", "replan_period_sec:=4.0",
+                            "-p", "min_cluster_size:=8",
+                            "-p", "min_peer_goal_separation:=2.0",
+                        ],
+                        name="mtare_common_executor",
+                        output="screen",
+                    ),
+                    LogInfo(msg=(
+                        "[mtare fallback] Vendor TARE install was not found; "
+                        "started local autonomous frontier allocator instead. "
+                        "Build src/vendor/tare_planner for the replicated TARE planner."
+                    )),
+                ],
+            ))
+
+    adapter_path = os.path.join(_ws_root, "scripts/runtime/external_point_to_waypoint_coord_adapter.py")
+    watchdog_path = os.path.join(_ws_root, "scripts/runtime/tare_waypoint_watchdog.py")
+    for ns in ("robot_a", "robot_b"):
+        actions.append(TimerAction(
+            period=nav_delay + 4.0,
+            actions=[
+                ExecuteProcess(
+                    cmd=[
+                        "python3", "-u", adapter_path,
+                        "--ros-args",
+                        "-p", f"robot_namespace:={ns}",
+                        "-p", f"input_topic:={waypoint_topics[ns]}",
+                        "-p", f"output_topic:=/{ns}/way_point_coord",
+                        "-p", "default_frame_id:=map",
+                        "-p", "min_waypoint_separation:=0.20",
+                        "-p", f"odometry_topic:=/{ns}/odom/nav",
+                        "-p", "min_robot_waypoint_distance:=0.45",
+                        "-p", "source_planner:=mtare",
+                    ],
+                    name=f"mtare_waypoint_adapter_{ns}",
+                    output="screen",
+                ),
+                ExecuteProcess(
+                    cmd=[
+                        "python3", "-u", watchdog_path,
+                        "--ros-args",
+                        "-r", f"__ns:=/{ns}",
+                        "-p", "use_sim_time:=true",
+                        "-p", f"terrain_map_topic:=/{ns}/terrain_map",
+                        "-p", f"waypoint_topic:={waypoint_topics[ns]}",
+                        "-p", f"reset_topic:=/{ns}/reset_waypoint",
+                        "-p", f"occgrid_topic:=/{ns}/map",
+                        "-p", f"odom_topic:=/{ns}/odom/nav",
+                        "-p", f"marker_topic:=/{ns}/mtare_way_point_marker",
+                        "-p", f"robot_marker_topic:=/{ns}/mtare_robot_pose_marker",
+                        "-p", "marker_frame:=map",
+                        "-p", f"nogo_topic:=/{ns}/nogo_boundary",
+                    ],
+                    name=f"mtare_waypoint_watchdog_{ns}",
+                    output="screen",
+                ),
+            ],
+        ))
+    return actions
+
+
 def _build_fastlio_nav_stack(
     *,
     ns: str,
@@ -308,6 +605,7 @@ def _build_fastlio_nav_stack(
     peer_namespaces: list | None = None,
     loop_closure: bool = False,
     holonomic_profile: str = "off",
+    record_nav_bags: bool = False,
 ):
     """Per-robot Fast-LIO + octomap + FAR nav stack.
 
@@ -844,7 +1142,17 @@ def _build_fastlio_nav_stack(
         nav2_yaml = os.path.join(
             go2w_config_pkg, "config", "nav", _nav2_yaml_filename
         )
-        nav2_param_rewrites = {"use_sim_time": str(use_sim_time).lower()}
+        nav2_param_rewrites = {
+            "use_sim_time": str(use_sim_time).lower(),
+            # Common-executor mixed benchmark uses the per-robot augmented
+            # occupancy maps.  The standalone Go2 profile may target a
+            # traversability_grid, but this launch does not start that
+            # pipeline; using it here leaves robot_b's global costmap empty
+            # and Nav2 reports "Robot is out of bounds of the costmap".
+            "map_topic": f"/{ns}/map",
+            "topic": f"/{ns}/scan_3d",
+            "odom_topic": f"/{ns}/odom/nav",
+        }
         if not has_wheels:
             nav2_param_rewrites["default_nav_to_pose_bt_xml"] = os.path.join(
                 go2w_config_pkg,
@@ -1052,7 +1360,7 @@ def _build_fastlio_nav_stack(
         else:
             router_node = None
 
-        # ros2 bag recorder — captures the full cmd_vel chain so a
+        # Optional ros2 bag recorder — captures the full cmd_vel chain so a
         # post-mortem of any wall-hit can show whether MPPI was
         # commanding forward (planner / critic issue) or reverse
         # (inertia issue). Records to /tmp/nav2_run_{ns}/ as MCAP.
@@ -1112,8 +1420,9 @@ def _build_fastlio_nav_stack(
             bridge_node,
             path_relay_node,
             stuck_watchdog_node,
-            bag_record,
         ]
+        if record_nav_bags:
+            _nav2_actions.append(bag_record)
         if router_node is not None:
             _nav2_actions.insert(3, router_node)  # before bag_record
         if nav2_cmd_guard_node is not None:
@@ -1629,9 +1938,24 @@ def _launch_setup(context):
     map_merge_enabled = _as_bool(_get(context, "map_merge"))
     mujoco_model_path = _get(context, "mujoco_model_path").strip()
     session_duration_sec = float(_get(context, "session_duration_sec"))
+    session_time_source = (_get(context, "session_time_source").strip().lower() or "wall")
     session_output_dir = _get(context, "session_output_dir").strip()
+    metrics_output_dir = _get(context, "metrics_output_dir").strip()
+    experiment_name = _get(context, "experiment_name").strip() or "demo3_mixed"
+    metrics_logger_enabled = _as_bool(_get(context, "metrics_logger"))
+    record_nav_bags = _as_bool(_get(context, "record_nav_bags"))
     scene_area_m2 = float(_get(context, "scene_area_m2"))
     collision_output = _get(context, "collision_output_path").strip()
+    exploration_planner = (_get(context, "exploration_planner").strip().lower() or "cfpa2")
+    gbplanner3_external_cmd = _get(context, "gbplanner3_external_cmd").strip()
+    gbplanner2_external_cmd = _get(context, "gbplanner2_external_cmd").strip()
+    mtare_external_cmd = _get(context, "mtare_external_cmd").strip()
+    mtare_waypoint_topic_a = _get(context, "mtare_waypoint_topic_a").strip() or "/robot_a/mtare/way_point"
+    mtare_waypoint_topic_b = _get(context, "mtare_waypoint_topic_b").strip() or "/robot_b/mtare/way_point"
+    _planner_allowed = {"cfpa2", "gbplanner2", "gbplanner3", "mtare"}
+    if exploration_planner not in _planner_allowed:
+        raise ValueError(
+            f"exploration_planner must be one of {_planner_allowed}, got '{exploration_planner}'")
     # Per-robot nav backend. Default keeps the historical behaviour
     # (both FAR), but callers can mix: e.g. Go2W on astar, Go2 on far.
     # Accepted values: "far" | "astar".
@@ -1659,6 +1983,14 @@ def _launch_setup(context):
               "nav2": "nav2_mppi", "nav2_hybrid_astar": "nav2_mppi"}
     nav_backend_a = _alias.get(nav_backend_a, nav_backend_a)
     nav_backend_b = _alias.get(nav_backend_b, nav_backend_b)
+    if exploration_planner in {"gbplanner2", "gbplanner3", "mtare"}:
+        # Common-executor benchmark mode: only the high-level exploration
+        # planner may vary.  Keep the Nav2 MPPI execution stack fixed even if
+        # the caller passes legacy nav_backend values.
+        nav_backend_a = "nav2_mppi"
+        nav_backend_b = "nav2_mppi"
+        holonomic_profile_a = "se2_holonomic"
+        holonomic_profile_b = "se2_holonomic"
     # "none" → spawn perception + SLAM + octomap but NO path planner / controller.
     # "far"  → CMU autonomy stack (vendor, dormant).
     # "nav2_mppi" → Nav2 SmacPlannerHybrid + MPPI + behavior_server.
@@ -1715,7 +2047,10 @@ def _launch_setup(context):
     mujoco_plugin_dir = _find_mujoco_plugin_dir()
     sim_ns = "mujoco_sim"
 
-    actions = [LogInfo(msg="[nav_test_mujoco_fastlio_mixed] starting heterogeneous dual-robot nav (Go2W + Go2)")]
+    actions = [LogInfo(msg=(
+        "[nav_test_mujoco_fastlio_mixed] starting heterogeneous dual-robot nav "
+        f"(Go2W + Go2), exploration_planner={exploration_planner}"
+    ))]
 
     # ── T=0: cleanup stale ──
     if cleanup_stale:
@@ -1852,6 +2187,7 @@ def _launch_setup(context):
             peer_namespaces=["robot_b"],
             loop_closure=loop_closure_on,
             holonomic_profile=holonomic_profile_a,
+            record_nav_bags=record_nav_bags,
         )
     )
     actions.extend(
@@ -1879,11 +2215,18 @@ def _launch_setup(context):
             peer_namespaces=["robot_a"],
             loop_closure=loop_closure_on,
             holonomic_profile=holonomic_profile_b,
+            record_nav_bags=record_nav_bags,
         )
     )
 
+    if explore and exploration_planner == "mtare":
+        actions.extend(_build_terrain_analysis_only_stack(
+            ns="robot_a", use_sim_time=use_sim_time, nav_delay=nav_delay))
+        actions.extend(_build_terrain_analysis_only_stack(
+            ns="robot_b", use_sim_time=use_sim_time, nav_delay=nav_delay))
+
     # ── CFPA2 dual-robot coordinator (shared) ──
-    if explore:
+    if explore and exploration_planner == "cfpa2":
         cfpa2_config_path = os.path.join(cfpa2_pkg, "config", "cfpa2_coordinator.yaml")
         if not os.path.exists(cfpa2_config_path):
             cfpa2_config_path = os.path.join(cfpa2_pkg, "config", "cfpa2_single_robot.yaml")
@@ -1935,6 +2278,24 @@ def _launch_setup(context):
                 ],
             )
         )
+    elif explore and exploration_planner in {"gbplanner2", "gbplanner3"}:
+        actions.extend(_build_gbplanner_common_executor_actions(
+            nav_delay=nav_delay,
+            planner_name=exploration_planner,
+            gbplanner_version=exploration_planner,
+            external_cmd=gbplanner2_external_cmd if exploration_planner == "gbplanner2" else gbplanner3_external_cmd,
+            log_dir=session_output_dir or metrics_output_dir,
+        ))
+    elif explore and exploration_planner == "mtare":
+        actions.extend(_build_mtare_common_executor_actions(
+            nav_delay=nav_delay,
+            go2_gazebo_pkg=go2_gazebo_pkg,
+            external_cmd=mtare_external_cmd,
+            waypoint_topics={
+                "robot_a": mtare_waypoint_topic_a,
+                "robot_b": mtare_waypoint_topic_b,
+            },
+        ))
 
     # ── Dual-robot safety monitor: wall contacts (per robot), tip-over,
     #    planner-stuck, plus the legacy inter-robot collision pair tracker.
@@ -1967,6 +2328,36 @@ def _launch_setup(context):
         )
     )
 
+    # ── Unified exploration metrics logger ──
+    # Read-only for benchmark fairness: stop trigger is disabled so the logger
+    # cannot change planner/controller behaviour.
+    if metrics_logger_enabled:
+        metrics_dir = metrics_output_dir or session_output_dir or "/tmp/collab_qrc_exploration_metrics"
+        os.makedirs(metrics_dir, exist_ok=True)
+        actions.append(
+            TimerAction(
+                period=nav_delay + 3.0,
+                actions=[
+                    Node(
+                        package="go2w_observability",
+                        executable="exploration_metrics_logger.py",
+                        name="exploration_metrics_logger",
+                        parameters=[{
+                            "use_sim_time": use_sim_time,
+                            "namespaces": ["robot_a", "robot_b"],
+                            "experiment_name": f"{experiment_name}_{exploration_planner}",
+                            "log_rate": 1.0,
+                            "output_dir": metrics_dir,
+                            "global_map_topic": "/merged_map",
+                            "scene_area_m2": scene_area_m2,
+                            "enable_stop_trigger": False,
+                        }],
+                        output="screen",
+                    ),
+                ],
+            )
+        )
+
     # ── Session reporter(s) ──
     # Per-robot reporter if session_duration_sec > 0 and output dir given.
     if session_duration_sec > 0 and session_output_dir:
@@ -1982,6 +2373,7 @@ def _launch_setup(context):
                     "--namespace", ns,
                     "--output", out_path,
                     "--scene-area-m2", str(scene_area_m2),
+                    "--time-source", session_time_source,
                 ],
                 name=f"session_reporter_{ns}",
                 output="screen",
@@ -2140,6 +2532,15 @@ def generate_launch_description():
         DeclareLaunchArgument("gui", default_value="false"),
         DeclareLaunchArgument("rviz", default_value="false"),
         DeclareLaunchArgument("explore", default_value="true"),
+        DeclareLaunchArgument(
+            "exploration_planner",
+            default_value="cfpa2",
+            description=(
+                "High-level exploration planner for common-executor benchmark: "
+                "cfpa2 | gbplanner2 | gbplanner3 | mtare. All modes execute through the same "
+                "Nav2 MPPI stack via /<ns>/way_point_coord."
+            ),
+        ),
         DeclareLaunchArgument("cleanup_stale", default_value="true"),
         DeclareLaunchArgument(
             "map_merge", default_value="true",
@@ -2150,8 +2551,62 @@ def generate_launch_description():
             description="Path to MJCF scene. Defaults to demo3_mixed.xml (Go2W robot_a + Go2 robot_b).",
         ),
         DeclareLaunchArgument("session_duration_sec", default_value="0.0"),
+        DeclareLaunchArgument(
+            "session_time_source",
+            default_value="wall",
+            description="session_reporter duration clock: wall or sim.",
+        ),
         DeclareLaunchArgument("session_output_dir", default_value=""),
+        DeclareLaunchArgument(
+            "metrics_logger",
+            default_value="true",
+            description="Start read-only exploration_metrics_logger for benchmark CSV output.",
+        ),
+        DeclareLaunchArgument(
+            "metrics_output_dir",
+            default_value="",
+            description="Directory for exploration metrics CSV. Defaults to session_output_dir or /tmp.",
+        ),
+        DeclareLaunchArgument(
+            "record_nav_bags",
+            default_value="false",
+            description="Record per-robot Nav2 debug bags under /tmp/nav2_run_<ns>. Disabled by default for MuJoCo FPS.",
+        ),
+        DeclareLaunchArgument(
+            "experiment_name",
+            default_value="demo3_mixed",
+            description="Experiment tag used in metrics filenames.",
+        ),
         DeclareLaunchArgument("scene_area_m2", default_value="384.0"),
+        DeclareLaunchArgument(
+            "gbplanner3_external_cmd",
+            default_value="",
+            description=(
+                "Optional long-running command that starts the upstream dual "
+                "GBPlanner3 stack and publishes /robot_a|b/command/trajectory. "
+                "If empty, the built-in UAS/Docker wrapper checks out gbplanner3."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "gbplanner2_external_cmd",
+            default_value="",
+            description=(
+                "Optional long-running command that starts the upstream dual "
+                "GBPlanner2 stack and publishes /robot_a|b/command/trajectory. "
+                "If empty, the built-in UAS/Docker wrapper checks out gbplanner2."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "mtare_external_cmd",
+            default_value="",
+            description=(
+                "Optional long-running command that starts upstream MTARE. "
+                "If empty, launch tries the local ROS2 TARE-compatible "
+                "tare_planner_node fallback."
+            ),
+        ),
+        DeclareLaunchArgument("mtare_waypoint_topic_a", default_value="/robot_a/mtare/way_point"),
+        DeclareLaunchArgument("mtare_waypoint_topic_b", default_value="/robot_b/mtare/way_point"),
         DeclareLaunchArgument(
             "collision_output_path",
             default_value="/tmp/dual_robot_collision_report.json",

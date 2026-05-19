@@ -14,6 +14,10 @@
 #   ./scripts/launch/nav_test_demo3_mixed.sh                        # both = nav2_mppi + se2_holonomic
 #   ./scripts/launch/nav_test_demo3_mixed.sh gui:=true rviz:=true
 #   ./scripts/launch/nav_test_demo3_mixed.sh explore:=false         # manual goals only
+#   ./scripts/launch/nav_test_demo3_mixed.sh exploration_planner:=cfpa2      # default
+#   ./scripts/launch/nav_test_demo3_mixed.sh exploration_planner:=gbplanner2 # dual GBPlanner2 wrapper + adapters
+#   ./scripts/launch/nav_test_demo3_mixed.sh exploration_planner:=gbplanner3 # dual GBPlanner3 wrapper + adapters
+#   ./scripts/launch/nav_test_demo3_mixed.sh exploration_planner:=mtare      # ROS2 MTARE common-executor fallback
 #
 # Go2 (robot_b) SE2-holonomic, isolated:
 #   # Go2 alone on SE2 lattice; Go2W on baseline diff-drive Hybrid for A/B comparison
@@ -91,6 +95,14 @@ if [[ -d "${SC_PGO_PREFIX}/share/sc_pgo" ]]; then
   export PATH="${SC_PGO_PREFIX}/bin:${PATH}"
 fi
 export FASTRTPS_DEFAULT_PROFILES_FILE="${WS_DIR}/config/fastdds_no_shm.xml"
+
+# Dual-robot mixed benchmark is CPU-bound in MuJoCo ray casting, not GUI-bound.
+# Use the balanced Mid-360 uniform ray preset by default. The lean 512x8
+# preset was faster but too sparse for Fast-LIO in demo3_mixed: it produced
+# repeated "No Effective Points" and large SLAM pose jumps.
+export MUJOCO_LIDAR_HZ_SAMPLES="${MUJOCO_LIDAR_HZ_SAMPLES:-720}"
+export MUJOCO_LIDAR_VT_SAMPLES="${MUJOCO_LIDAR_VT_SAMPLES:-10}"
+echo "    Sim LiDAR rays: ${MUJOCO_LIDAR_HZ_SAMPLES} x ${MUJOCO_LIDAR_VT_SAMPLES} = $((MUJOCO_LIDAR_HZ_SAMPLES * MUJOCO_LIDAR_VT_SAMPLES)) per frame"
 
 # Defaults are inherited from nav_test_mujoco_fastlio_mixed.launch.py:
 #   nav_backend_a / nav_backend_b   → nav2_mppi
