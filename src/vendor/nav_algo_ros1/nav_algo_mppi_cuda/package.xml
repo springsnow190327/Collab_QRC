@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>nav_algo_mppi_cuda</name>
+  <version>0.0.1</version>
+  <description>
+    CUDA kernels replacing the MPPI Optimizer hot loop on Jetson Orin.
+    Targets: integrateStateVelocities, the 8 critics' trajectory-cost
+    evaluation, and the softmax + weighted-average control update.
+    Mathematical equivalence to nav_algo_core's xtensor/CPU path is
+    preserved (reduction ordering may introduce ≤ 1e-5 absolute deltas
+    on softmax outputs; the resulting cmd_vel matches CPU within 1e-3).
+
+    Build is gated on CUDA toolkit availability. Without nvcc, this
+    package is silently skipped and nav_algo_mppi_ros1 stays on the
+    nav_algo_core CPU path.
+  </description>
+  <maintainer email="zhuhanshan12@outlook.com">Hanshang Zhu</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+  <depend>roscpp</depend>
+  <depend>nav_algo_core</depend>
+</package>
