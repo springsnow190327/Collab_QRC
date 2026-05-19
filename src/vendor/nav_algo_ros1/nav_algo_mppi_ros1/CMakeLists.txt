@@ -56,8 +56,12 @@ target_link_libraries(${PROJECT_NAME}
   ${catkin_LIBRARIES}
 )
 if(nav_algo_mppi_cuda_FOUND)
+  # cuda_backend.hpp now includes device_memory.hpp which pulls in
+  # cuda_runtime.h. The plugin .cpp is a host C++ TU (not nvcc), so its
+  # include path needs /usr/local/cuda/include explicitly.
   target_include_directories(${PROJECT_NAME} PRIVATE
-    ${nav_algo_mppi_cuda_INCLUDE_DIRS})
+    ${nav_algo_mppi_cuda_INCLUDE_DIRS}
+    /usr/local/cuda/include)
   target_link_libraries(${PROJECT_NAME}
     ${nav_algo_mppi_cuda_LIBRARIES})
 endif()
