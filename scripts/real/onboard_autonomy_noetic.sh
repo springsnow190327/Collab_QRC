@@ -67,6 +67,7 @@ _kill_stack() {
            elevation_mapping_node trav_filter_occ_grid \
            pointlio_mapping laserMapping fastlio_mapping \
            livox_ros_driver2_node static_transform_publisher \
+           hil_relay_rx_node hil_relay_tx_node \
            "topic_tools relay" rosout rosmaster; do
     pkill -9 -f "$p" 2>/dev/null || true
   done
@@ -193,13 +194,27 @@ echo "      roscore up."
 # + /livox/imu from the laptop MuJoCo sim. We just wait for them to appear.
 if [[ "$HIL" == "true" ]]; then
   echo "[2/8] HIL: waiting for bridged /livox/lidar (from laptop MuJoCo via ros1_bridge)..."
+  # Start the UDP relay (replaces the broken Foxy ros1_bridge):
+  #   rx: receives /livox/lidar(CustomMsg)+/livox/imu from the laptop (ports 9001/9002)
+  #   tx: sends /<ns>/cmd_vel (+ viz) back to the laptop
+  echo "      starting hil_udp_relay rx (sensors in) + tx (cmd_vel/viz out)..."
+  nohup rosrun hil_udp_relay hil_relay_rx_node \
+    _lidar_port:=9001 _imu_port:=9002 \
+    </dev/null >/tmp/onboard_relay_rx.log 2>&1 &
+  disown $! 2>/dev/null || true
+  HIL_LAPTOP_IP="${HIL_LAPTOP_IP:-192.168.123.222}"
+  nohup rosrun hil_udp_relay hil_relay_tx_node \
+    _laptop_ip:="$HIL_LAPTOP_IP" _cmd_vel_topic:=/${NAMESPACE}/cmd_vel \
+    _cmd_vel_port:=9003 _odom_port:=9004 _trav_port:=9005 _enable_viz:=true \
+    </dev/null >/tmp/onboard_relay_tx.log 2>&1 &
+  disown $! 2>/dev/null || true
   for i in $(seq 1 60); do
     rostopic info /livox/lidar 2>/dev/null | grep -q "Publishers:" && break; sleep 1
   done
   if rostopic info /livox/lidar 2>/dev/null | grep -q "Publishers:"; then
-    echo "      /livox/lidar present (bridged)."
+    echo "      /livox/lidar present (UDP relay from laptop)."
   else
-    echo "      WARN: /livox/lidar not seen after 60s — is the laptop sim + bridge up?" >&2
+    echo "      WARN: /livox/lidar not seen after 60s — is the laptop sim + relay up?" >&2
   fi
 else
   echo "[2/8] livox_ros_driver2 (Mid-360)..."

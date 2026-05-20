@@ -114,13 +114,28 @@ echo "  → starting IMU relay (/${ROBOT_NS}/imu/data → /livox/imu)"
 ros2 run topic_tools relay /${ROBOT_NS}/imu/data /livox/imu &
 IMU_PID=$!
 
+# 4) UDP relay (replaces the broken Foxy ros1_bridge). The Jetson's Foxy
+#    ros1_bridge bad_allocs on every message; our C++ UDP relay carries the
+#    sensors DOWN to the NX and cmd_vel/viz back UP. See docs/claude/orin_nx_hil_design.md.
+#    TX: /livox/{lidar,imu} → NX ports 9001/9002.  RX: NX cmd_vel/odom/trav → ROS2.
+NX_IP="${NX_IP:-192.168.123.18}"
+sleep 2
+echo "  → starting UDP relay TX (/livox/* → ${NX_IP}:9001/9002)"
+ros2 run hil_udp_relay hil_relay_tx_node --ros-args \
+  -p nx_ip:="${NX_IP}" -p lidar_port:=9001 -p imu_port:=9002 &
+RELAY_TX_PID=$!
+echo "  → starting UDP relay RX (NX cmd_vel/odom/trav → ROS2 :9003/9004/9005)"
+ros2 run hil_udp_relay hil_relay_rx_node --ros-args \
+  -p cmd_vel_port:=9003 -p odom_port:=9004 -p trav_port:=9005 -p enable_viz:=true &
+RELAY_RX_PID=$!
+
 echo ""
-echo "  Laptop sim up. Sensors publishing to /livox/{lidar,imu}."
-echo "  Now start the NX side:  scripts/launch/hil_orin_nx.sh up   (or run_nx_hil_bridge.sh on the NX)"
+echo "  Laptop sim up. Sensors → /livox/{lidar,imu} → UDP → NX."
+echo "  cmd_vel/viz ← UDP ← NX. Now start the NX side: scripts/launch/hil_orin_nx.sh up"
 echo "  Ctrl+C to tear down."
 
 cleanup() {
-  kill "$PC2_PID" "$IMU_PID" "$LAUNCH_PID" 2>/dev/null || true
+  kill "$RELAY_TX_PID" "$RELAY_RX_PID" "$PC2_PID" "$IMU_PID" "$LAUNCH_PID" 2>/dev/null || true
   wait 2>/dev/null || true
 }
 trap cleanup INT TERM EXIT

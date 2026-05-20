@@ -114,26 +114,19 @@ timeout 3 ros2 topic info /livox/lidar 2>/dev/null | grep -q "Publisher count: [
   && ok "/livox/lidar up (laptop sensors live)" \
   || warn "/livox/lidar not seen yet — check /tmp/hil_nx_laptop.log"
 
-# 2) NX autonomy stack in HIL mode — started FIRST so it brings up roscore.
-#    Its step [2/8] then waits (up to 60 s, non-fatal) for /livox/lidar, which
-#    the bridge (step 3) provides once it connects to this roscore. This breaks
-#    the circular dependency (bridge needs roscore; stack needs bridged sensors).
-banner "Start NX autonomy stack (hil=true) — brings up roscore"
+# 2) NX autonomy stack in HIL mode. It brings up roscore, starts the C++ UDP
+#    relay (rx: sensors in from laptop; tx: cmd_vel/viz out), then the full
+#    compute stack (Point-LIO + trav + move_base + CFPA2). The relay REPLACES
+#    the Foxy ros1_bridge, which is broken on this Jetson (bad_allocs on every
+#    message — see docs/claude/orin_nx_hil_design.md).
+banner "Start NX autonomy stack (hil=true) — roscore + UDP relay + compute"
 EXPLORE_ARG="explore=true"; [[ "${NO_EXPLORE:-0}" = "1" ]] && EXPLORE_ARG="explore=false"
-SSH "setsid nohup ${NX_WS}/scripts/onboard_autonomy_noetic.sh hil=true ${EXPLORE_ARG} </dev/null >/tmp/hil_nx_stack.log 2>&1 & echo started" >/dev/null 2>&1
+# Pass the laptop's IP so the NX relay tx can send cmd_vel/viz back.
+LAPTOP_IP="${LAPTOP_IP:-192.168.123.222}"
+SSH "HIL_LAPTOP_IP=${LAPTOP_IP} setsid nohup ${NX_WS}/scripts/onboard_autonomy_noetic.sh hil=true ${EXPLORE_ARG} </dev/null >/tmp/hil_nx_stack.log 2>&1 & echo started" >/dev/null 2>&1
 ok "NX stack launching (log on NX: /tmp/hil_nx_stack.log)"
-echo "  waiting for NX roscore..."
-for i in $(seq 1 20); do
-  SSH "source /opt/ros/noetic/setup.bash; ROS_MASTER_URI=http://${NX_HOST}:11311 rostopic list >/dev/null 2>&1 && echo up" 2>/dev/null | grep -q up && break
-  sleep 2
-done
-ok "NX roscore up"
-
-# 3) NX ros1_bridge (CustomMsg-capable from-source build) — connects to roscore.
-banner "Start NX ros1_bridge"
-SSH "setsid nohup ${NX_WS}/scripts/run_nx_hil_bridge.sh </dev/null >/tmp/hil_nx_bridge.log 2>&1 & echo started" >/dev/null 2>&1 || true
-sleep 8
-SSH "grep -q 'CustomMsg pairing present' /tmp/hil_nx_bridge.log 2>/dev/null && echo '  ✓ bridge: CustomMsg paired' || { echo '  bridge log tail:'; tail -3 /tmp/hil_nx_bridge.log 2>/dev/null; }" 2>/dev/null
+sleep 4
+SSH "grep -qE 'relay rx|/livox/lidar present' /tmp/hil_nx_stack.log 2>/dev/null && echo '  ✓ NX relay + sensors wiring up' || tail -3 /tmp/hil_nx_stack.log 2>/dev/null" 2>/dev/null
 
 banner "HIL bench up"
 echo "  Laptop = simulated world (MuJoCo ops2-v4) | NX = compute (SLAM+trav+nav+CFPA2)"

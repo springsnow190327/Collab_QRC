@@ -68,5 +68,11 @@ if [[ "$MODE" == "dynamic" ]]; then
   exec ros2 run ros1_bridge dynamic_bridge --bridge-all-topics
 fi
 
-# parameter_bridge: feed the explicit HIL topic set.
-exec ros2 run ros1_bridge parameter_bridge __params:="${TOPICS_YAML}"
+# parameter_bridge reads its 'topics' array from the ROS 1 PARAM SERVER (via
+# ros1_node.getParam), NOT a ROS 2 __params:= yaml. So load the yaml onto the
+# ROS 1 master first, then run the bridge (it picks up rosparam 'topics').
+# (Passing __params:= here causes a bad_alloc — it reads an empty/garbage param.)
+echo "  loading bridge topic config onto ROS 1 param server..."
+rosparam load "${TOPICS_YAML}"
+echo "  rosparam 'topics' count: $(rosparam get /topics 2>/dev/null | grep -c topic: || echo '?')"
+exec ros2 run ros1_bridge parameter_bridge
