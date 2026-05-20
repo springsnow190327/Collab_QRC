@@ -1,0 +1,33 @@
+{
+  "scene": "demo3_mixed_corridors_seed202",
+  "variant": "corridors",
+  "seed": 202,
+  "template": "/home/ylhc/Desktop/Collab_QRC/src/go2w/go2_gazebo_sim/mujoco/demo3_mixed.xml",
+  "scene_area_m2": 384.0,
+  "bounds": {
+    "x_min": 0.0,
+    "x_max": 24.0,
+    "y_min": -8.0,
+    "y_max": 8.0
+  },
+  "spawn_poses": {
+    "robot_a": {
+      "x": 4.0,
+      "y": 2.0,
+      "yaw": 0.0
+    },
+    "robot_b": {
+      "x": 4.0,
+      "y": -6.0,
+      "yaw": 0.0
+    }
+  },
+  "wall_count": 10,
+  "obstacle_count": 5,
+  "blocked_area_estimate_m2": 30.739,
+  "free_space_estimate_m2": 353.261,
+  "layout_family": "corridors",
+  "target_corridor_width_m": 2.2,
+  "minimum_gate_width_m": 2.0,
+  "wall_thickness_m": 0.15
+}

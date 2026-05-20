@@ -1,0 +1,13 @@
+<library path="lib/libnav_algo_smac_ros1">
+  <class name="nav_algo_smac_ros1/SmacLatticePlannerROS"
+         type="nav_algo_smac_ros1::SmacLatticePlannerROS"
+         base_class_type="nav_core::BaseGlobalPlanner">
+    <description>
+      ROS 1 wrapper around the ported Nav2 Humble SmacPlannerLattice
+      (state-lattice global A*). Math layer = nav_algo_core's
+      AStarAlgorithm&lt;NodeLattice&gt; + AnalyticExpansion + Smoother,
+      byte-identical to Humble upstream. This plugin handles the
+      move_base coupling: param load (yaml), costmap binding, plan output.
+    </description>
+  </class>
+</library>

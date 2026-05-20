@@ -20,9 +20,11 @@ import math
 import sys
 
 import rclpy
+import time
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy
+from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy, ReliabilityPolicy
 from sensor_msgs.msg import Imu
+from std_msgs.msg import Bool
 from tf2_ros import Buffer, TransformListener
 
 
@@ -33,6 +35,16 @@ class WaitForReady(Node):
         self.declare_parameter("mode", "topic")
         self.declare_parameter("timeout_sec", 60.0)
         self.declare_parameter("gate_name", "")
+        # Cross-host lifecycle signal: when readiness condition met, publish
+        # latched Bool(True) on this topic. Subscribers (e.g. Jetson side
+        # autonomy launch) can wait for this signal via
+        #   ros2 topic echo --once --qos-durability transient_local <topic>
+        # to gate their startup. Empty string = don't publish (default).
+        self.declare_parameter("signal_topic", "")
+        # After publishing the signal, keep the node alive this many seconds
+        # so cross-host DDS subscribers actually receive the latched message
+        # (transient_local stores last sample; node death drops it).
+        self.declare_parameter("post_signal_linger_sec", 5.0)
 
         # TF mode params
         self.declare_parameter("tf_parent_frame", "odom")
@@ -50,8 +62,27 @@ class WaitForReady(Node):
         self.mode = self.get_parameter("mode").value
         self.timeout_sec = self.get_parameter("timeout_sec").value
         self.gate_name = self.get_parameter("gate_name").value or self.mode
+        self.signal_topic = self.get_parameter("signal_topic").value
+        self.post_signal_linger_sec = float(
+            self.get_parameter("post_signal_linger_sec").value)
         self.start_time = self.get_clock().now()
         self._consecutive_ok = 0
+
+        # Latched publisher for cross-host lifecycle handshake.
+        self._signal_pub = None
+        if self.signal_topic:
+            signal_qos = QoSProfile(
+                depth=1,
+                durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+                reliability=QoSReliabilityPolicy.RELIABLE,
+                history=QoSHistoryPolicy.KEEP_LAST,
+            )
+            self._signal_pub = self.create_publisher(
+                Bool, self.signal_topic, signal_qos)
+            self.get_logger().info(
+                f"[{self.gate_name}] Will publish latched Bool(True) to "
+                f"{self.signal_topic} on success (linger "
+                f"{self.post_signal_linger_sec:.1f}s for cross-host DDS).")
 
         if self.mode == "tf":
             self._setup_tf_mode()
@@ -176,6 +207,18 @@ class WaitForReady(Node):
         self.get_logger().info(
             f"[{self.gate_name}] Ready: {reason} (after {self._elapsed():.1f}s)"
         )
+        if self._signal_pub is not None:
+            self._signal_pub.publish(Bool(data=True))
+            self.get_logger().info(
+                f"[{self.gate_name}] Published latched signal to "
+                f"{self.signal_topic} — lingering "
+                f"{self.post_signal_linger_sec:.1f}s for cross-host receive.")
+            # Spin briefly so subscribers established BEFORE the publish still
+            # receive (transient_local saves last sample, but the spin gives
+            # discovery a chance to complete cross-host).
+            t0 = time.monotonic()
+            while time.monotonic() - t0 < self.post_signal_linger_sec:
+                rclpy.spin_once(self, timeout_sec=0.2)
         raise SystemExit(0)
 
     def _check(self):

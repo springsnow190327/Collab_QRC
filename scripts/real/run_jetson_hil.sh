@@ -107,12 +107,68 @@ WS="${HOME}/jetson_ws"
 LAUNCH="${WS}/scripts/real/orin_nano_hil_jetson.launch.py"
 [[ -f "$LAUNCH" ]] || { echo "ERROR: launch file not at $LAUNCH" >&2; exit 1; }
 
+# ─────────────────────────────────────────────────────────────────────
+# Persistent timestamped logs under ~/jetson_ws/logs/.
+# Each run gets its own file; `latest.log` symlink always points at the
+# current run for `tail -f` convenience. Pull to desktop with
+# `scripts/real/fetch_jetson_logs.sh`. Retain last ~30 runs (about a
+# week of daily runs); older logs auto-pruned.
+# ─────────────────────────────────────────────────────────────────────
+LOG_DIR="${WS}/logs"
+mkdir -p "${LOG_DIR}"
+RUN_TS="$(date +%Y%m%d_%H%M%S)"
+LOG_FILE="${LOG_DIR}/jetson_hil_${RUN_TS}.log"
+ln -sfn "${LOG_FILE}" "${LOG_DIR}/latest.log"
+# Prune logs older than the most recent 30. -t sorts by mtime desc.
+ls -t "${LOG_DIR}"/jetson_hil_*.log 2>/dev/null | tail -n +31 | xargs -r rm -f
+
 echo "═══════════════════════════════════════════════════════════════════"
 echo "  Orin Nano HIL Jetson side — full autonomy stack"
 echo "    fast_lio + tf_adapter + elevation_mapping + filter_chain"
 echo "    + grid_map_to_occupancy_grid + Nav2 (planner/MPPI/behaviors/BT)"
 echo "  ELEVATION_MAPPING_FORCE_CUPY=$ELEVATION_MAPPING_FORCE_CUPY"
 echo "  ROS_DOMAIN_ID=$ROS_DOMAIN_ID"
+echo "  log file : ${LOG_FILE}"
+echo "  latest   : ${LOG_DIR}/latest.log  (symlink)"
 echo "═══════════════════════════════════════════════════════════════════"
 
-exec ros2 launch "$LAUNCH"
+# ─────────────────────────────────────────────────────────────────────
+# Cross-host lifecycle gate (2026-05-20):
+# Block until desktop side signals /robot/platform_ready=True (latched,
+# transient_local). Desktop's wait_for_settle node publishes this AFTER
+# stand_up_slowly's trajectory is physically complete + 5s of post-stand-up
+# IMU stability. If we exec Fast-LIO before this signal, Fast-LIO's IMU
+# initialization happens during stand-up leg motion → computed gravity
+# vector is wrong → z-drift accumulates to +6m. Observed 2026-05-20.
+#
+# Skip the gate with WAIT_FOR_PLATFORM_READY=0 (rarely useful — debug only).
+# ─────────────────────────────────────────────────────────────────────
+WAIT_FOR_PLATFORM_READY="${WAIT_FOR_PLATFORM_READY:-1}"
+PLATFORM_READY_TOPIC="${PLATFORM_READY_TOPIC:-/robot/platform_ready}"
+PLATFORM_READY_TIMEOUT_SEC="${PLATFORM_READY_TIMEOUT_SEC:-90}"
+
+if [[ "${WAIT_FOR_PLATFORM_READY}" == "1" ]]; then
+  echo
+  echo "[lifecycle] Waiting up to ${PLATFORM_READY_TIMEOUT_SEC}s for desktop"
+  echo "[lifecycle]   signal on ${PLATFORM_READY_TOPIC} (latched / transient_local)..."
+  echo "[lifecycle]   (set WAIT_FOR_PLATFORM_READY=0 to skip)"
+  if timeout "${PLATFORM_READY_TIMEOUT_SEC}" \
+      ros2 topic echo --once \
+      --qos-durability transient_local \
+      --qos-reliability reliable \
+      "${PLATFORM_READY_TOPIC}" std_msgs/msg/Bool > /tmp/platform_ready.log 2>&1; then
+    echo "[lifecycle] ✓ platform_ready received — starting autonomy stack."
+  else
+    echo "[lifecycle] ⚠ timed out waiting for ${PLATFORM_READY_TOPIC}."
+    echo "[lifecycle]   Proceeding anyway (autonomy may use wrong pose; expect z-drift)."
+    echo "[lifecycle]   Desktop side: ensure wait_for_settle is running + has signal_topic param."
+  fi
+  echo
+fi
+
+# `exec` so the parent shell of `nohup bash run_jetson_hil.sh > /tmp/.. &`
+# correctly inherits the ros2 launch process — but we tee to the persistent
+# log file too, so stdout is captured even if the caller didn't redirect.
+# Caller redirection (`> /tmp/jetson_hil.log`) still works; we ALSO write
+# to LOG_FILE via process substitution.
+exec ros2 launch "$LAUNCH" "$@" 2>&1 | tee "${LOG_FILE}"

@@ -68,26 +68,60 @@ try:
         ctypes.c_int8,                    # unknown_val
         ctypes.POINTER(ctypes.c_float),   # gains_out
     ]
+    # 2026-05-19: optional batch floodfill IG path. Older .so versions
+    # don't have it; presence-check before binding so legacy builds
+    # silently fall back to Python floodfill.
+    if hasattr(_GRID_OPS_LIB, "batch_info_gain_floodfill"):
+        _GRID_OPS_LIB.batch_info_gain_floodfill.restype = None
+        _GRID_OPS_LIB.batch_info_gain_floodfill.argtypes = [
+            ctypes.POINTER(ctypes.c_int8),   # grid
+            ctypes.c_int, ctypes.c_int,       # W, H
+            ctypes.c_float, ctypes.c_float, ctypes.c_float,  # res, ox, oy
+            ctypes.POINTER(ctypes.c_float),   # goal_x
+            ctypes.POINTER(ctypes.c_float),   # goal_y
+            ctypes.c_int,                     # n_goals
+            ctypes.c_int,                     # budget
+            ctypes.c_int,                     # max_radius_cells
+            ctypes.c_int8,                    # unknown_val
+            ctypes.POINTER(ctypes.c_int32),   # visited_scratch (W*H ints)
+            ctypes.POINTER(ctypes.c_float),   # gains_out
+        ]
+    # 2026-05-19: optional C++ filter_dead_frontiers + cluster_representatives.
+    if hasattr(_GRID_OPS_LIB, "filter_dead_frontiers"):
+        _GRID_OPS_LIB.filter_dead_frontiers.restype = ctypes.c_int
+        _GRID_OPS_LIB.filter_dead_frontiers.argtypes = [
+            ctypes.POINTER(ctypes.c_int8),   # grid
+            ctypes.c_int, ctypes.c_int,       # W, H
+            ctypes.c_float, ctypes.c_float, ctypes.c_float,  # res, ox, oy
+            ctypes.c_int8,                    # occ_threshold
+            ctypes.c_int,                     # radius_cells
+            ctypes.c_int,                     # min_live_unknowns
+            ctypes.POINTER(ctypes.c_float),   # in_x
+            ctypes.POINTER(ctypes.c_float),   # in_y
+            ctypes.c_int,                     # n_in
+            ctypes.POINTER(ctypes.c_float),   # out_x
+            ctypes.POINTER(ctypes.c_float),   # out_y
+        ]
+    if hasattr(_GRID_OPS_LIB, "cluster_representatives"):
+        _GRID_OPS_LIB.cluster_representatives.restype = ctypes.c_int
+        _GRID_OPS_LIB.cluster_representatives.argtypes = [
+            ctypes.POINTER(ctypes.c_float),   # in_x
+            ctypes.POINTER(ctypes.c_float),   # in_y
+            ctypes.c_int,                     # n_in
+            ctypes.c_float,                   # cluster_radius_m
+            ctypes.POINTER(ctypes.c_float),   # out_x
+            ctypes.POINTER(ctypes.c_float),   # out_y
+        ]
 except Exception:
     _GRID_OPS_LIB = None
 
 import rclpy
 from geometry_msgs.msg import Point, PointStamped
-from .map_merge_utils import build_fallback_map, build_shared_with_local_patches
 from nav_msgs.msg import OccupancyGrid, Odometry
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 from std_msgs.msg import Empty, String
 from visualization_msgs.msg import Marker, MarkerArray
-
-# Optional 3D voxel input (nvblox_frontend). Imported lazily so CFPA2 can
-# still run when ig_dimension == "2d" and the msg pkg isn't installed.
-try:
-    from nvblox_frontend_msgs.msg import VoxelGrid3D as _VoxelGrid3DMsg
-    _HAVE_VOXEL_GRID3D = True
-except Exception:
-    _VoxelGrid3DMsg = None  # type: ignore[assignment]
-    _HAVE_VOXEL_GRID3D = False
 
 
 def _resolve_cfpa2_overlap_penalty_fn():
@@ -185,39 +219,22 @@ class CFPA2Coordinator(Node):
         # Either way the message type is OccupancyGrid; only the cell-value semantics
         # differ. unknown_value (-1) is the same in both.
         self.declare_parameter("planning_map_topic_suffix", "/map")
-        self.declare_parameter("use_shared_map", False)
-        self.declare_parameter("shared_map_topic", "/disco_slam/global_map")
-        self.declare_parameter("shared_map_wait_sec", 8.0)
-        self.declare_parameter("shared_map_local_patch_radius_m", 2.5)
         self.declare_parameter("free_value", 0)
         self.declare_parameter("unknown_value", -1)
         self.declare_parameter("occupancy_block_threshold", 50)
         self.declare_parameter("cfpa2_reachability_occ_threshold", 0)
         self.declare_parameter("cfpa2_reachability_allow_unknown", False)
-        # --- 3D information-gain source (nvblox_frontend integration) ---
-        # ig_dimension:
-        #   "2d" — count unknown cells in a square radius on the 2D map (default,
-        #          back-compat). Uses the existing C++ batch_info_gain path.
-        #   "3d" — count unknown voxels in a vertical cylinder above the goal XY,
-        #          drawn from a nvblox_frontend_msgs/VoxelGrid3D topic. Rewards
-        #          frontiers near ramps/stairs whose elevated unknown volume is
-        #          invisible to a 2D scan. Requires nvblox_frontend running.
-        self.declare_parameter("ig_dimension", "2d")
-        self.declare_parameter("voxels_3d_topic_suffix", "/voxels_3d")
-        # Cylinder height (m) above the goal XY for 3D IG counting. Default 2.0m
-        # captures the full robot-traversable column from floor to head clearance.
-        self.declare_parameter("cfpa2_ig_height_m", 2.0)
-        # IG aggregation mode:
-        #   "local"     — count unknown cells in a fixed radius square/cylinder
-        #                 around the goal (original ETH-style local IG). Tends
-        #                 to undervalue large rooms because the count saturates
+        # Information-gain aggregation mode (always 2D):
+        #   "local"     — count unknown cells in a fixed radius square around
+        #                 the goal (original ETH-style local IG). Tends to
+        #                 undervalue large rooms because the count saturates
         #                 at π·r²; near small nooks then win on distance.
         #   "floodfill" — connected-component count of unknown cells reachable
         #                 from the goal via 4-connectivity through unknown
         #                 territory, capped at `cfpa2_floodfill_budget` cells
         #                 and `cfpa2_floodfill_max_radius_cells` from the goal.
         #                 Big rooms saturate the budget; small nooks finish
-        #                 well below it → utility now reflects geometric size.
+        #                 well below it → utility reflects geometric size.
         self.declare_parameter("cfpa2_ig_mode", "local")
         self.declare_parameter("cfpa2_floodfill_budget", 2000)
         self.declare_parameter("cfpa2_floodfill_max_radius_cells", 100)
@@ -225,8 +242,7 @@ class CFPA2Coordinator(Node):
         self.declare_parameter("switch_min_dist", 0.35)
         self.declare_parameter("min_assign_distance", 0.30)
 
-        # Algorithm-selection and Level-1 stabilization controls.
-        self.declare_parameter("algorithm_mode", "mtare")
+        # Level-1 stabilization controls.
         self.declare_parameter("goal_lock_sec", 5.0)
         self.declare_parameter("progress_window_sec", 3.0)
         self.declare_parameter("progress_min_delta_m", 0.15)
@@ -309,21 +325,14 @@ class CFPA2Coordinator(Node):
         self.declare_parameter("cfpa2_challenger_streak_required", 3)
         self.declare_parameter("cfpa2_challenger_improvement_factor", 1.20)
         self.declare_parameter("cfpa2_challenger_min_lock_age_sec", 2.0)
-        # Frontier planner mode:
-        #   "greedy"   — pick the single frontier with highest utility (legacy).
-        #                Re-decides every tick → susceptible to sawtooth between
-        #                near-small and far-big frontiers when their utilities
-        #                are close.
-        #   "tsp_topk" — take the top-K frontiers by utility and solve a
-        #                nearest-neighbor TSP starting from the robot. The
-        #                head of that tour becomes the candidate. This picks
-        #                a near frontier when it's on the route to a bigger
-        #                far frontier, suppressing churn and producing roughly
-        #                linear sweep motion through clusters of frontiers.
-        self.declare_parameter("cfpa2_planner_mode", "greedy")
-        # K for tsp_topk. K=5 → 120 permutations, brute force in micro-s.
-        # K too large → top-K includes far/low-utility frontiers that drag
-        # the tour out of position.
+        # Frontier planner: take the top-K frontiers by utility and solve a
+        # nearest-neighbor TSP starting from the robot. The head of that
+        # tour becomes the candidate. Picks a near frontier when it's on
+        # the route to a bigger far frontier, suppressing churn and giving
+        # roughly linear sweep motion through clusters of frontiers.
+        # K=5 → 120 permutations, brute force in microseconds. K too large
+        # would pull in far/low-utility frontiers that drag the tour out of
+        # position.
         self.declare_parameter("cfpa2_tsp_k", 5)
         # Stranded-frontier abort radius: if NO current frontier candidate is
         # within this distance of the held goal, the held goal is declared
@@ -418,13 +427,6 @@ class CFPA2Coordinator(Node):
             int(self.get_parameter("frontier_raw_overfetch_min").value),
         )
         self.goal_topic_suffix = str(self.get_parameter("goal_topic_suffix").value)
-        # output_mode used to be a parameter (cfpa2_single_robot.yaml + ROS
-        # param) with values 'waypoint_coord' (default) and 'exact_split'
-        # (split publish into way_point_tare + relocation_goal_point for
-        # the legacy mtare planner). exact_split was removed 2026-05-10
-        # along with the rest of the mtare path. Kept as a literal so log
-        # lines that reference it don't break.
-        self.output_mode = "waypoint_coord"
         # Validate planning_map_topic_suffix: must start with '/' and be non-empty
         # (we concatenate with /<ns>{suffix}). Empty / malformed values silently
         # fall back to the legacy /map topic.
@@ -433,12 +435,6 @@ class CFPA2Coordinator(Node):
             _pm = "/" + _pm if _pm else "/map"
         self.planning_map_topic_suffix = _pm
         self.nav_status_topic_suffix = str(self.get_parameter("nav_status_topic_suffix").value)
-        self.use_shared_map = bool(self.get_parameter("use_shared_map").value)
-        self.shared_map_topic = str(self.get_parameter("shared_map_topic").value)
-        self.shared_map_wait_sec = max(0.0, float(self.get_parameter("shared_map_wait_sec").value))
-        self.shared_map_local_patch_radius_m = max(
-            0.0, float(self.get_parameter("shared_map_local_patch_radius_m").value)
-        )
         self.free_value = int(self.get_parameter("free_value").value)
         self.unknown_value = int(self.get_parameter("unknown_value").value)
         self.occ_thresh = int(self.get_parameter("occupancy_block_threshold").value)
@@ -453,17 +449,6 @@ class CFPA2Coordinator(Node):
         self.cfpa2_reachability_allow_unknown = bool(
             self.get_parameter("cfpa2_reachability_allow_unknown").value
         )
-        # 3D IG params (cached; node restart required to change, per CFPA2 convention).
-        _igd = str(self.get_parameter("ig_dimension").value).strip().lower()
-        if _igd not in ("2d", "3d"):
-            self.get_logger().warn(f"ig_dimension='{_igd}' invalid, falling back to '2d'")
-            _igd = "2d"
-        self.ig_dimension = _igd
-        _v3s = str(self.get_parameter("voxels_3d_topic_suffix").value).strip()
-        if not _v3s.startswith("/"):
-            _v3s = "/" + _v3s if _v3s else "/voxels_3d"
-        self.voxels_3d_topic_suffix = _v3s
-        self.cfpa2_ig_height_m = max(0.1, float(self.get_parameter("cfpa2_ig_height_m").value))
         _ig_mode = str(self.get_parameter("cfpa2_ig_mode").value).strip().lower()
         if _ig_mode not in ("local", "floodfill"):
             self.get_logger().warn(
@@ -473,22 +458,9 @@ class CFPA2Coordinator(Node):
         self.cfpa2_floodfill_budget = int(max(1, self.get_parameter("cfpa2_floodfill_budget").value))
         self.cfpa2_floodfill_max_radius_cells = int(max(1,
             self.get_parameter("cfpa2_floodfill_max_radius_cells").value))
-        if self.ig_dimension == "3d" and not _HAVE_VOXEL_GRID3D:
-            self.get_logger().error(
-                "ig_dimension='3d' requested but nvblox_frontend_msgs not importable. "
-                "Falling back to 2d. Build nvblox_frontend_msgs and re-source.")
-            self.ig_dimension = "2d"
         self.switch_hysteresis = max(0.0, float(self.get_parameter("switch_hysteresis").value))
         self.switch_min_dist = max(0.1, float(self.get_parameter("switch_min_dist").value))
         self.min_assign_distance = max(0.0, float(self.get_parameter("min_assign_distance").value))
-
-        # algorithm_mode used to be a parameter with values cfpa2 / mui_tare /
-        # mtare / committed. The mui_tare / mtare / committed implementations
-        # were removed 2026-05-10 (dead since the algorithm_mode override
-        # was hardcoded to "cfpa2" months ago, with mtare_ros2 msg unavailable
-        # at runtime). The attribute is kept as a literal for log lines and
-        # policy_reason strings that already expect it.
-        self.algorithm_mode = "cfpa2"
 
         self.goal_lock_sec = max(0.0, float(self.get_parameter("goal_lock_sec").value))
         self.progress_window_sec = max(0.5, float(self.get_parameter("progress_window_sec").value))
@@ -551,12 +523,6 @@ class CFPA2Coordinator(Node):
             0.0, float(self.get_parameter("cfpa2_challenger_min_lock_age_sec").value))
         self.cfpa2_stale_frontier_radius_m = max(
             0.05, float(self.get_parameter("cfpa2_stale_frontier_radius_m").value))
-        _planner_mode = str(self.get_parameter("cfpa2_planner_mode").value).strip().lower()
-        if _planner_mode not in ("greedy", "tsp_topk"):
-            self.get_logger().warn(
-                f"cfpa2_planner_mode='{_planner_mode}' invalid, falling back to 'greedy'")
-            _planner_mode = "greedy"
-        self.cfpa2_planner_mode = _planner_mode
         self.cfpa2_tsp_k = max(1, int(self.get_parameter("cfpa2_tsp_k").value))
         self.cfpa2_min_utility = float(self.get_parameter("cfpa2_min_utility").value)
         self.cfpa2_sigma_overlap_m = max(0.0, float(self.get_parameter("cfpa2_sigma_overlap_m").value))
@@ -755,11 +721,6 @@ class CFPA2Coordinator(Node):
         )
 
         self.maps: dict[str, OccupancyGrid] = {}
-        self.shared_map: Optional[OccupancyGrid] = None
-        # Per-ns cached 3D voxel grid for ig_dimension == "3d". Stores a tuple
-        # (voxel_size, ox, oy, oz, nx, ny, nz, data_np_int8) so the IG sampler
-        # can do constant-time numpy slicing without re-decoding the ROS msg.
-        self.voxels_3d: dict[str, tuple[float, float, float, float, int, int, int, np.ndarray]] = {}
         self.odoms: dict[str, Odometry] = {}
         self.nav_status: dict[str, dict[str, Any]] = {}
         self.nav_status_rx_time_ns: dict[str, int] = {}
@@ -821,8 +782,6 @@ class CFPA2Coordinator(Node):
             ns: 0 for ns in self.namespaces
         }
 
-        self._warned_missing_shared_map = False
-        self._shared_map_fallback_active = False
         self._cfpa2_last_close_stop_log_ns = 0
         self._start_ns = self.get_clock().now().nanoseconds
         self._summary_interval_sec = 10.0
@@ -863,13 +822,6 @@ class CFPA2Coordinator(Node):
             self.get_logger().info(
                 f"[{ns}] planning map ← {map_topic} "
                 f"(occ_thresh={self.occ_thresh}, unknown={self.unknown_value})")
-            if self.ig_dimension == "3d":
-                v3d_topic = f"/{ns}{self.voxels_3d_topic_suffix}"
-                self.create_subscription(
-                    _VoxelGrid3DMsg, v3d_topic, lambda m, n=ns: self._voxels_3d_cb(m, n), 1)
-                self.get_logger().info(
-                    f"[{ns}] 3D IG voxels ← {v3d_topic} "
-                    f"(cylinder height={self.cfpa2_ig_height_m:.2f}m)")
             self.create_subscription(Odometry, f"/{ns}/odom/nav", lambda m, n=ns: self._odom_cb(m, n), 10)
             self.create_subscription(
                 String,
@@ -885,14 +837,11 @@ class CFPA2Coordinator(Node):
             )
             self.goal_pubs[ns] = self.create_publisher(PointStamped, f"/{ns}{self.goal_topic_suffix}", 10)
             self.goal_marker_pubs[ns] = self.create_publisher(Marker, f"/{ns}/mtare_goal_marker", 10)
-        if self.use_shared_map:
-            self.create_subscription(OccupancyGrid, self.shared_map_topic, self._shared_map_cb, 1)
 
         self.timer = self.create_timer(1.0 / self.publish_rate, self._tick)
         self.get_logger().info(f"[planner_startup] {self._startup_label} initialized.")
         self.get_logger().info(
             f"{self._planner_desc} started for {self.namespaces}\n"
-            f"  mode={self.algorithm_mode}  output={self.output_mode}\n"
             f"  ── Utility weights ──\n"
             f"    w_ig={self.cfpa2_w_ig:.2f}  w_c={self.cfpa2_w_c:.2f}  "
             f"w_sw={self.cfpa2_w_sw:.2f}  w_momentum={self.cfpa2_w_momentum:.2f}  "
@@ -920,26 +869,6 @@ class CFPA2Coordinator(Node):
 
     def _map_cb(self, msg: OccupancyGrid, ns: str) -> None:
         self.maps[ns] = msg
-
-    def _voxels_3d_cb(self, msg, ns: str) -> None:  # msg: VoxelGrid3D
-        # Cache as a numpy view so the IG sampler can slice in O(window).
-        # Layout matches the VoxelGrid3D.msg contract:
-        #   data[k * size_x * size_y + j * size_x + i]
-        # with -1=unknown, 0=free, 100=occupied.
-        nx, ny, nz = int(msg.size_x), int(msg.size_y), int(msg.size_z)
-        expected = nx * ny * nz
-        if len(msg.data) != expected:
-            self.get_logger().warn(
-                f"[{ns}] voxels_3d size mismatch: header says {nx}x{ny}x{nz}={expected}, "
-                f"got {len(msg.data)}; dropping")
-            return
-        arr = np.frombuffer(bytes(msg.data), dtype=np.int8).reshape((nz, ny, nx))
-        self.voxels_3d[ns] = (
-            float(msg.voxel_size),
-            float(msg.origin.x), float(msg.origin.y), float(msg.origin.z),
-            nx, ny, nz,
-            arr,
-        )
 
     def _odom_cb(self, msg: Odometry, ns: str) -> None:
         self.odoms[ns] = msg
@@ -1097,15 +1026,6 @@ class CFPA2Coordinator(Node):
             f"({current_goal[0]:.2f},{current_goal[1]:.2f}) for {bl_sec:.1f}s."
         )
 
-    def _shared_map_cb(self, msg: OccupancyGrid) -> None:
-        self.shared_map = msg
-        if self._shared_map_fallback_active:
-            self.get_logger().info(
-                f"Shared map received on {self.shared_map_topic}; switching to shared-map coordination."
-            )
-        self._warned_missing_shared_map = False
-        self._shared_map_fallback_active = False
-
     @staticmethod
     def _grid_index(x: int, y: int, w: int) -> int:
         return y * w + x
@@ -1219,27 +1139,6 @@ class CFPA2Coordinator(Node):
             occ_threshold=occ_threshold,
         )
 
-    def _build_fallback_map(self) -> Optional[OccupancyGrid]:
-        return build_fallback_map(
-            namespaces=self.namespaces,
-            maps=self.maps,
-            unknown_value=self.unknown_value,
-            free_value=self.free_value,
-            occ_threshold=self.occ_thresh,
-        )
-
-    def _build_shared_with_local_patches(self, shared_msg: OccupancyGrid) -> OccupancyGrid:
-        return build_shared_with_local_patches(
-            shared_map=shared_msg,
-            namespaces=self.namespaces,
-            maps=self.maps,
-            odoms=self.odoms,
-            local_patch_radius_m=self.shared_map_local_patch_radius_m,
-            unknown_value=self.unknown_value,
-            free_value=self.free_value,
-            occ_threshold=self.occ_thresh,
-        )
-
     def _extract_frontiers(self, msg: OccupancyGrid) -> list[tuple[float, float]]:
         w = int(msg.info.width)
         h = int(msg.info.height)
@@ -1284,6 +1183,43 @@ class CFPA2Coordinator(Node):
         return min(map_cells, requested)
 
     def _filter_dead_frontiers(
+        self, points: list[tuple[float, float]], msg: OccupancyGrid
+    ) -> list[tuple[float, float]]:
+        # Fast path: C++ accelerator. Loop body is O(N · R²) with R up to
+        # ~10 cells and N up to ~30 frontier candidates per tick; on aarch64
+        # the Python version is the second-largest tick chunk after IG.
+        if (
+            _GRID_OPS_LIB is not None
+            and hasattr(_GRID_OPS_LIB, "filter_dead_frontiers")
+            and points
+            and self.cfpa2_frontier_min_unknown_cells > 0
+        ):
+            w = int(msg.info.width)
+            h = int(msg.info.height)
+            res = float(msg.info.resolution)
+            if res > 0:
+                ox = float(msg.info.origin.position.x)
+                oy = float(msg.info.origin.position.y)
+                r_cells = max(1, int(round(self.cfpa2_frontier_unknown_check_radius_m / res)))
+                n = len(points)
+                in_x = (ctypes.c_float * n)(*(p[0] for p in points))
+                in_y = (ctypes.c_float * n)(*(p[1] for p in points))
+                out_x = (ctypes.c_float * n)()
+                out_y = (ctypes.c_float * n)()
+                grid_np = np.array(msg.data, dtype=np.int8)
+                n_out = _GRID_OPS_LIB.filter_dead_frontiers(
+                    grid_np.ctypes.data_as(ctypes.POINTER(ctypes.c_int8)),
+                    w, h, res, ox, oy,
+                    ctypes.c_int8(int(self.occ_thresh)),
+                    int(r_cells),
+                    int(self.cfpa2_frontier_min_unknown_cells),
+                    in_x, in_y, n,
+                    out_x, out_y,
+                )
+                return [(float(out_x[i]), float(out_y[i])) for i in range(n_out)]
+        return self._filter_dead_frontiers_py(points, msg)
+
+    def _filter_dead_frontiers_py(
         self, points: list[tuple[float, float]], msg: OccupancyGrid
     ) -> list[tuple[float, float]]:
         """Drop centroids whose surrounding has too few "live" unknowns.
@@ -1355,6 +1291,27 @@ class CFPA2Coordinator(Node):
     def _cluster_representatives(
         self, points: list[tuple[float, float]], cluster_radius_m: float
     ) -> list[tuple[float, float]]:
+        # Fast path: C++ accelerator. Greedy O(N²) clustering with N up to
+        # ~max_targets (1500). On Orin Nano this was ~25 ms per tick; the
+        # C++ port collapses to sub-ms.
+        if (
+            _GRID_OPS_LIB is not None
+            and hasattr(_GRID_OPS_LIB, "cluster_representatives")
+            and points
+            and cluster_radius_m > 0.0
+        ):
+            n = len(points)
+            in_x = (ctypes.c_float * n)(*(p[0] for p in points))
+            in_y = (ctypes.c_float * n)(*(p[1] for p in points))
+            out_x = (ctypes.c_float * n)()
+            out_y = (ctypes.c_float * n)()
+            n_out = _GRID_OPS_LIB.cluster_representatives(
+                in_x, in_y, n,
+                ctypes.c_float(float(cluster_radius_m)),
+                out_x, out_y,
+            )
+            return [(float(out_x[i]), float(out_y[i])) for i in range(n_out)]
+
         if not points or cluster_radius_m <= 0.0:
             return points
         r2 = cluster_radius_m * cluster_radius_m
@@ -2450,7 +2407,7 @@ class CFPA2Coordinator(Node):
                 f"age={age_txt}s{speed_txt} [{policy}]{top_txt}"
             )
         self.get_logger().info(
-            f"ASSIGN [{self.algorithm_mode}] targets={targets_total}\n  " + "\n  ".join(parts)
+            f"ASSIGN [cfpa2] targets={targets_total}\n  " + "\n  ".join(parts)
         )
 
     def _map_cell_stats(self, msg: OccupancyGrid) -> tuple[int, int, int]:
@@ -2496,8 +2453,6 @@ class CFPA2Coordinator(Node):
         parts = [
             f"NO_GOAL[{reason}]",
             f"planning_map(free={p_free} occ={p_occ} unk={p_unk})",
-            f"use_shared_map={self.use_shared_map}",
-            f"shared_map_ready={self.shared_map is not None}",
         ]
         for ns in self.namespaces:
             frontier_n = len(per_ns_targets.get(ns, []))
@@ -2933,13 +2888,6 @@ class CFPA2Coordinator(Node):
         goal: tuple[float, float],
         ns: Optional[str] = None,
     ) -> float:
-        # Dispatch on ig_dimension. When "3d" and we have a cached voxel grid
-        # for this ns, count unknown voxels in a vertical cylinder above the
-        # goal XY. Otherwise fall back to the 2D unknown-cell square count.
-        if self.ig_dimension == "3d" and ns is not None and ns in self.voxels_3d:
-            return self._frontier_information_gain_3d(ns, goal)
-
-        # --- 2D path ---
         # Floodfill mode: connected-component size of unknown region reachable
         # from the goal cell. Rewards frontiers that open into large rooms vs
         # small nooks, because nooks saturate well below the budget cap while
@@ -3037,63 +2985,54 @@ class CFPA2Coordinator(Node):
                 q.append((nx, ny))
         return float(gain)
 
-    def _frontier_information_gain_3d(
-        self, ns: str, goal: tuple[float, float]
-    ) -> float:
-        """Count unknown voxels in a vertical cylinder above goal XY.
-
-        Cylinder radius is taken from the same `_adaptive_exploration_gain_radius_cells`
-        knob as the 2D path (in voxel-grid units), and the height is the full
-        `cfpa2_ig_height_m` from the bottom of the published voxel slab upward.
-        Numpy slicing keeps this O(window_volume); no per-call ctypes round-trip.
-        Returns float (not int) to match the existing utility-formula expectations.
-        """
-        entry = self.voxels_3d.get(ns)
-        if entry is None:
-            return 0.0
-        vs, ox, oy, oz, nx, ny, nz, data = entry
-        gx_f = (goal[0] - ox) / vs
-        gy_f = (goal[1] - oy) / vs
-        gx = int(round(gx_f - 0.5))
-        gy = int(round(gy_f - 0.5))
-        # Radius in voxel cells. Reuse the 2D adaptive knob so increasing it
-        # widens BOTH the 2D square and the 3D cylinder consistently.
-        r = int(max(1, self._adaptive_exploration_gain_radius_cells))
-        x0 = max(0, gx - r); x1 = min(nx, gx + r + 1)
-        y0 = max(0, gy - r); y1 = min(ny, gy + r + 1)
-        if x0 >= x1 or y0 >= y1:
-            return 0.0
-        # Height window: full slab in z, capped by `cfpa2_ig_height_m` if smaller.
-        kz_max = min(nz, int(math.ceil(self.cfpa2_ig_height_m / vs)))
-        if kz_max <= 0:
-            return 0.0
-        sub = data[:kz_max, y0:y1, x0:x1]  # shape (kz, dy, dx)
-        # Optional circular mask (square is the default for budget reasons,
-        # matching the 2D path). To enable: uncomment the mask block below.
-        unknown_count = int(np.count_nonzero(sub == self.unknown_value))
-        return float(unknown_count)
-
     def _batch_frontier_information_gain(
         self,
         msg: OccupancyGrid,
         goals: list[tuple[float, float]],
         ns: Optional[str] = None,
     ) -> list[float]:
-        """Batch info-gain for all goals at once (C++ accelerated).
-
-        When ig_dimension == "3d" the C accelerator is bypassed (it only knows
-        2D OccupancyGrids); we route to the Python 3D cylinder counter instead.
-        """
+        """Batch info-gain for all goals at once (C++ accelerated)."""
         if not goals:
             return []
-        # 3D path: numpy slicing per goal. Negligible Python overhead since
-        # the cylinder window is tiny (~r² × kz, e.g. 9×9×20 = 1620 voxels).
-        if self.ig_dimension == "3d" and ns is not None and ns in self.voxels_3d:
-            return [self._frontier_information_gain_3d(ns, g) for g in goals]
-
-        # Floodfill mode bypasses the C local-window accelerator. Each call
-        # is O(budget); for budget=2000 and ~30 frontiers that's ~60ms.
+        # Floodfill mode: prefer the C accelerator when present. On Orin
+        # Nano the Python path was the dominant chunk of the tick budget
+        # (30 goals × ~40 ms Python BFS = 1.2 s); the C++ batch path
+        # collapses that to ~30 ms total. Falls back to Python if the
+        # legacy .so doesn't expose the symbol yet.
         if self.cfpa2_ig_mode == "floodfill":
+            if (
+                _GRID_OPS_LIB is not None
+                and hasattr(_GRID_OPS_LIB, "batch_info_gain_floodfill")
+            ):
+                w = int(msg.info.width)
+                h = int(msg.info.height)
+                n = len(goals)
+                grid_np = np.array(msg.data, dtype=np.int8)
+                ox = float(msg.info.origin.position.x)
+                oy = float(msg.info.origin.position.y)
+                res = float(msg.info.resolution)
+                gx_arr = (ctypes.c_float * n)(*(g[0] for g in goals))
+                gy_arr = (ctypes.c_float * n)(*(g[1] for g in goals))
+                gains_out = (ctypes.c_float * n)()
+                # The scratch buffer is reused across calls via a generation
+                # counter inside the C++ side, but the buffer itself must
+                # persist between calls so we keep it on the instance.
+                want = w * h
+                cached = getattr(self, "_floodfill_scratch", None)
+                if cached is None or cached.size < want:
+                    self._floodfill_scratch = np.zeros(want, dtype=np.int32)
+                    cached = self._floodfill_scratch
+                _GRID_OPS_LIB.batch_info_gain_floodfill(
+                    grid_np.ctypes.data_as(ctypes.POINTER(ctypes.c_int8)),
+                    w, h, res, ox, oy,
+                    gx_arr, gy_arr, n,
+                    int(self.cfpa2_floodfill_budget),
+                    int(self.cfpa2_floodfill_max_radius_cells),
+                    ctypes.c_int8(self.unknown_value),
+                    cached.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+                    gains_out,
+                )
+                return [float(gains_out[i]) for i in range(n)]
             return [self._frontier_information_gain_floodfill(msg, g) for g in goals]
 
         w = int(msg.info.width)
@@ -3162,10 +3101,6 @@ class CFPA2Coordinator(Node):
             return -1e18
         info_gain = self._frontier_information_gain(map_msg, goal, ns=ns)
         # Reject frontiers with negligible info-gain (tiny slivers near walls).
-        # NOTE: 3D IG counts unknown voxels in a cylinder; expected magnitude is
-        # O(r²·kz) ≈ 100s–1000s on a sparse map, so the same '3' threshold gates
-        # only truly-empty IG. If you tighten/loosen, do so in proportion to
-        # exploration_gain_radius_cells × cfpa2_ig_height_m / voxel_size.
         if info_gain < 3:
             return -1e18
         switch_penalty = self._cfpa2_switch_penalty(ns, goal)
@@ -3675,59 +3610,22 @@ class CFPA2Coordinator(Node):
 
     def _tick_impl(self) -> None:
         now_ns = self.get_clock().now().nanoseconds
-        using_shared_map = self.use_shared_map and self.shared_map is not None
-        target_map: OccupancyGrid
-        if self.use_shared_map:
-            if using_shared_map:
-                target_map = self.shared_map  # type: ignore[assignment]
-                self._warned_missing_shared_map = False
-                self._shared_map_fallback_active = False
-            else:
-                waited_sec = (now_ns - self._start_ns) / 1e9
-                if waited_sec >= self.shared_map_wait_sec:
-                    # Fail-open: continue coordinated assignment on local map inputs
-                    # until shared map becomes available.
-                    fallback_map = self._build_fallback_map()
-                    if fallback_map is None:
-                        if now_ns - self._last_prereq_warn_ns > int(2e9):
-                            self.get_logger().warn(
-                                "Shared-map fallback active but local maps are still unavailable; "
-                                "waiting for /<ns>/map inputs."
-                            )
-                            self._last_prereq_warn_ns = now_ns
-                        return
-                    target_map = fallback_map
-                    if not self._shared_map_fallback_active:
-                        self.get_logger().warn(
-                            f"Shared map not available on {self.shared_map_topic} after {waited_sec:.1f}s; "
-                            "falling back to per-robot maps."
-                        )
-                        self._shared_map_fallback_active = True
-                else:
-                    if not self._warned_missing_shared_map:
-                        self.get_logger().warn(
-                            f"Waiting for shared map on {self.shared_map_topic}; "
-                            f"fallback in {max(0.0, self.shared_map_wait_sec - waited_sec):.1f}s."
-                        )
-                        self._warned_missing_shared_map = True
-                    return
-        else:
-            if any(ns not in self.maps for ns in self.namespaces):
-                if now_ns - self._last_prereq_warn_ns > int(2e9):
-                    missing_maps = [ns for ns in self.namespaces if ns not in self.maps]
-                    self.get_logger().warn(
-                        f"Waiting for map topics from: {missing_maps}; no M-TARE goals will be published yet."
-                    )
-                    self._last_prereq_warn_ns = now_ns
-                return
-            fallback_map = self._build_fallback_map()
-            if fallback_map is None:
-                return
-            target_map = fallback_map
-
-        planning_map = target_map
-        if using_shared_map:
-            planning_map = self._build_shared_with_local_patches(target_map)
+        # Each per-namespace decision below reads `self.maps[ns]` directly.
+        # We only need one OccupancyGrid for the viz publishers
+        # (coordinator_map / robot_markers / frontier_markers) — pick the
+        # first available ns's map. Multi-robot fusion (a merged grid
+        # across namespaces) was removed 2026-05-19 along with the
+        # shared_map feature; the joint allocator never actually needed
+        # a fused planning map, just each robot's own.
+        if any(ns not in self.maps for ns in self.namespaces):
+            if now_ns - self._last_prereq_warn_ns > int(2e9):
+                missing_maps = [ns for ns in self.namespaces if ns not in self.maps]
+                self.get_logger().warn(
+                    f"Waiting for map topics from: {missing_maps}; no CFPA2 goals will be published yet."
+                )
+                self._last_prereq_warn_ns = now_ns
+            return
+        planning_map = self.maps[self.namespaces[0]]
 
         # Stash for _set_active_goal's pivot-clearance check (so the
         # goal-change lock has access to the current map without
@@ -3748,7 +3646,7 @@ class CFPA2Coordinator(Node):
 
         for ns in self.namespaces:
             self._prune_blacklist(ns, now_ns)
-            reached_map = planning_map if using_shared_map else self.maps.get(ns)
+            reached_map = self.maps.get(ns)
             self._update_reached_goal_blacklist(ns, now_ns, reached_map)
 
         per_ns_targets: dict[str, list[tuple[float, float]]] = {}
@@ -3756,11 +3654,8 @@ class CFPA2Coordinator(Node):
             map_msg = self.maps.get(ns)
             per_ns_targets[ns] = self._extract_frontiers(map_msg) if map_msg is not None else []
 
-        if using_shared_map:
-            targets = self._extract_frontiers(planning_map)
-        else:
-            merge_res = max(0.1, float(planning_map.info.resolution) * 2.0)
-            targets = self._merge_targets([per_ns_targets[ns] for ns in self.namespaces], merge_res)
+        merge_res = max(0.1, float(planning_map.info.resolution) * 2.0)
+        targets = self._merge_targets([per_ns_targets[ns] for ns in self.namespaces], merge_res)
 
         self._publish_frontier_markers(planning_map, targets)
 
@@ -3797,7 +3692,7 @@ class CFPA2Coordinator(Node):
         for ns in self.namespaces:
             od = self.odoms[ns]
             # When shared map is unavailable we fail-open to per-robot maps.
-            cost_map = planning_map if using_shared_map else self.maps.get(ns)
+            cost_map = self.maps.get(ns)
             if cost_map is None:
                 dist_maps[ns] = {}
                 continue
@@ -3818,8 +3713,8 @@ class CFPA2Coordinator(Node):
 
         if len(self.namespaces) == 2:
             ns_a, ns_b = self.namespaces[0], self.namespaces[1]
-            map_a = planning_map if using_shared_map else self.maps.get(ns_a)
-            map_b = planning_map if using_shared_map else self.maps.get(ns_b)
+            map_a = self.maps.get(ns_a)
+            map_b = self.maps.get(ns_b)
 
             utilities_a: dict[tuple[float, float], float] = {}
             utilities_b: dict[tuple[float, float], float] = {}
@@ -3972,7 +3867,7 @@ class CFPA2Coordinator(Node):
 
             forced_switch_namespaces: set[str] = set(local_nav_forced_switch_namespaces)
             for ns in self.namespaces:
-                recovery_map = planning_map if using_shared_map else self.maps.get(ns)
+                recovery_map = self.maps.get(ns)
                 forced_goal = self._maybe_force_cfpa2_stuck_recovery(
                     ns=ns,
                     now_ns=now_ns,
@@ -3998,7 +3893,7 @@ class CFPA2Coordinator(Node):
             for ns in self.namespaces:
                 candidate = candidate_goals.get(ns)
                 held = self.last_goal.get(ns)
-                safety_map = planning_map if using_shared_map else self.maps.get(ns)
+                safety_map = self.maps.get(ns)
                 if (
                     held is not None
                     and safety_map is not None
@@ -4131,7 +4026,7 @@ class CFPA2Coordinator(Node):
 
             per_ns_reachable: dict[str, int] = {}
             for ns in self.namespaces:
-                msg = planning_map if using_shared_map else self.maps.get(ns)
+                msg = self.maps.get(ns)
                 if msg is None:
                     per_ns_reachable[ns] = 0
                     continue
@@ -4203,7 +4098,7 @@ class CFPA2Coordinator(Node):
             best_score = -1e18
 
             for ns in list(unassigned):
-                msg = planning_map if using_shared_map else self.maps.get(ns)
+                msg = self.maps.get(ns)
                 if msg is None:
                     continue
                 dist_map = dist_maps[ns]
@@ -4280,7 +4175,7 @@ class CFPA2Coordinator(Node):
                 self._set_policy_reason(ns, "hold/no_candidate")
                 goal = held
             else:
-                msg_for_ns = planning_map if using_shared_map else self.maps.get(ns)
+                msg_for_ns = self.maps.get(ns)
                 if msg_for_ns is None:
                     held = self.last_goal.get(ns)
                     if held is None:
@@ -4310,7 +4205,7 @@ class CFPA2Coordinator(Node):
 
         per_ns_reachable: dict[str, int] = {}
         for ns in self.namespaces:
-            msg = planning_map if using_shared_map else self.maps.get(ns)
+            msg = self.maps.get(ns)
             if msg is None:
                 per_ns_reachable[ns] = 0
                 continue

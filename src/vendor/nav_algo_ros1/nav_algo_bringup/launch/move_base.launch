@@ -1,0 +1,40 @@
+<launch>
+  <!--
+    move_base bringup wiring our two plugins:
+      Global: nav_algo_smac_ros1/SmacLatticePlannerROS
+      Local:  nav_algo_mppi_ros1/MPPIControllerROS
+
+    Costmap StaticLayer consumes /robot/traversability_grid which is
+    published by trav_pipeline_ros1 (elevation_mapping_cupy_ros1 +
+    grid_map_filters chain). Run that stack BEFORE this launch.
+
+    Topic remap convention matches the Nav2 sim:
+      goal_pose     → /robot/goal_pose       (publisher: CFPA2 bridge or rviz)
+      cmd_vel       → /robot/cmd_vel         (consumer: Go2 SDK / go2w router)
+      /odom         → /robot/odom/nav        (publisher: fast_lio_tf_adapter)
+  -->
+
+  <arg name="robot_ns" default="robot"/>
+
+  <group ns="$(arg robot_ns)">
+    <node pkg="move_base" type="move_base" name="move_base" output="screen">
+      <param name="base_global_planner" value="nav_algo_smac_ros1/SmacLatticePlannerROS"/>
+      <param name="base_local_planner"  value="nav_algo_mppi_ros1/MPPIControllerROS"/>
+
+      <!-- Top-level move_base params (frequencies, recovery flags) -->
+      <rosparam file="$(find nav_algo_bringup)/config/move_base_params.yaml" command="load"/>
+
+      <!-- Costmap configs -->
+      <rosparam file="$(find nav_algo_bringup)/config/costmap_common_params.yaml" command="load" ns="global_costmap"/>
+      <rosparam file="$(find nav_algo_bringup)/config/costmap_common_params.yaml" command="load" ns="local_costmap"/>
+      <rosparam file="$(find nav_algo_bringup)/config/global_costmap_params.yaml" command="load"/>
+      <rosparam file="$(find nav_algo_bringup)/config/local_costmap_params.yaml"  command="load"/>
+
+      <!-- Plugin-specific params: loaded under the plugin's name (~/<plugin>/...).
+           SmacLatticePlannerROS is referenced as global_planner_name "GridBased"
+           in Nav2 yaml; here we just use the wrapper's namespace. -->
+      <rosparam file="$(find nav_algo_bringup)/config/smac_lattice_params.yaml"   command="load"/>
+      <rosparam file="$(find nav_algo_bringup)/config/mppi_controller_params.yaml" command="load"/>
+    </node>
+  </group>
+</launch>

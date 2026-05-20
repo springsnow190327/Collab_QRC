@@ -61,16 +61,28 @@ MID360_PITCH = 0.263591
 
 def main():
     rospy.init_node("collab_qrc_static_tf_aliases", anonymous=False)
+    base_frame = rospy.get_param("~base_frame", "base_link")
+    planning_base_frame = rospy.get_param("~planning_base_frame", base_frame)
+    body_frame = rospy.get_param("~body_frame", "body")
+    imu_frame = rospy.get_param("~imu_frame", "imu")
+    lidar_frame = rospy.get_param("~lidar_frame", "lidar")
+    livox_frame = rospy.get_param("~livox_frame", "livox_mid360")
+    world_frame = rospy.get_param("~world_frame", "world")
+    map_frame = rospy.get_param("~map_frame", "map")
+    odom_frame = rospy.get_param("~odom_frame", "odom")
     pub = rospy.Publisher("/tf_static", TFMessage, queue_size=10, latch=True)
 
     msg = TFMessage()
-    msg.transforms.append(make_tf("map",       "odom"))
-    msg.transforms.append(make_tf("base_link", "imu",  x=-0.026, y=0.0, z=0.042))
-    msg.transforms.append(make_tf("imu",       "body"))
-    msg.transforms.append(make_tf("base_link", "lidar",
+    msg.transforms.append(make_tf(map_frame, world_frame))
+    msg.transforms.append(make_tf(map_frame, odom_frame))
+    if planning_base_frame != base_frame:
+        msg.transforms.append(make_tf(base_frame, planning_base_frame))
+    msg.transforms.append(make_tf(base_frame, imu_frame, x=-0.026, y=0.0, z=0.042))
+    msg.transforms.append(make_tf(base_frame, body_frame))
+    msg.transforms.append(make_tf(planning_base_frame, lidar_frame,
                                   x=0.161, y=0.0, z=0.123,
                                   roll=MID360_ROLL, pitch=MID360_PITCH))
-    msg.transforms.append(make_tf("base_link", "livox_mid360",
+    msg.transforms.append(make_tf(planning_base_frame, livox_frame,
                                   x=0.161, y=0.0, z=0.123,
                                   roll=MID360_ROLL, pitch=MID360_PITCH))
 

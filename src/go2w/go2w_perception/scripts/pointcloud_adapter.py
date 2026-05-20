@@ -106,13 +106,22 @@ class PointCloudAdapter(Node):
             0, self.num_rings - 1
         )
 
-        # Time field: Gazebo gpu_ray captures all points instantaneously,
-        # but Fast-LIO needs varying per-point timestamps for scan sorting and
-        # motion undistortion.  The span must be small to minimize distortion:
-        # 10ms total → 0.5mm at 0.5m/s (vs original 100ms → 5cm → doubled walls).
+        # Time field: MuJoCo's lidar plugin assembles all points in a SINGLE
+        # physics step → genuinely instantaneous in sim. Fast-LIO needs a
+        # non-zero spread to keep its internal point-sorting happy, but the
+        # spread acts as the deskew window. We previously used 10 ms × azimuth,
+        # which (a) assumes a Velodyne-style left-to-right sweep that doesn't
+        # match Mid-360's Risley non-repetitive pattern, and (b) under fast
+        # rotation caused Fast-LIO to wrong-deskew points by up to ±3°,
+        # producing the spiral-fan smear in the trav grid (2026-05-20).
+        #
+        # Shrink the synthetic span to 100 µs (0.1 ms). At 30 °/s rotation,
+        # the resulting deskew correction is at most 0.003° → invisible.
+        # If/when we sim a real Risley-time-stamped Mid-360 source, replace
+        # this synthetic mapping with the genuine per-ray timestamps.
         azimuth = np.arctan2(y, x)  # -pi to pi
         azimuth_normalized = (azimuth + math.pi) / (2.0 * math.pi)  # 0 to 1
-        time_offset = (azimuth_normalized * 10000.0).astype(np.float32)  # 0-10ms in μs
+        time_offset = (azimuth_normalized * 100.0).astype(np.float32)  # 0-100 µs (was 0-10 ms)
 
         # Build output: x(4) y(4) z(4) intensity(4) time(4) ring(2) padding(2) = 24 bytes
         out_point_step = 24

@@ -121,6 +121,10 @@ def _single_robot_node_for_tick(
     node._ramp_goal_by_ns = {}
     node._ramp_goal_rx_ns = {}
     node._active_goal_is_ramp = {ns: False}
+    # Peer-coordination filter state (PR-4) — tests bypass __init__ so we
+    # must initialise these explicitly. Fail-open: no peer claims received.
+    node._peer_blocked_frontiers = []
+    node._peer_blocked_received_ns = 0
 
     node.get_clock = lambda: _Clock()
     node.get_logger = lambda: _Logger()

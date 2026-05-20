@@ -4,17 +4,34 @@
   # ROBOT CONFIGURATION
   #-------------------------------------------------------------------------------
 RobotParams:
-  type:               kGroundRobot
-  # Go2 (Menagerie): body 0.60 × 0.30 × 0.27 m. We add margin to 0.6 × 0.4 × 0.3
-  # so the planner's footprint clearance includes leg sweep.
-  size:               [0.6, 0.4, 0.3]
+  # Use GBPlanner3's native aerial/free-space collision model for the high-level
+  # exploration planner.  The MuJoCo/Go2 execution stack remains ground-based:
+  # only x/y/yaw waypoints are passed to Nav2 MPPI, whose costmap + safety
+  # shield keep the real robot dynamics and collision checking unchanged.
+  #
+  # The upstream kGroundRobot mode depends on a dense elevation_map layer.  In
+  # this flat MuJoCo maze the Mid-360-style point cloud gives reliable wall
+  # surfaces but sparse floor elevation, so the ground-mode sampler repeatedly
+  # rejects every vertex before GBPlanner3 can produce an autonomous path.
+  type:               kAerialRobot
+  # High-level exploration validity model. The common executor's Nav2 MPPI
+  # costmap + safety shield handle the real Go2 footprint at execution time;
+  # GBPlanner3 only proposes x/y/yaw exploration targets. Keep this compact,
+  # but not a point robot: over-compressing the box and lifting the center to
+  # the sensor plane made the TSDF free-space check sample mostly unknown wall
+  # voxels in the demo3 maze.
+  size:               [0.30, 0.22, 0.10]
   size_extension_min: [0.0, 0.0, 0.0]
-  size_extension:     [0.15, 0.15, 0.0]
+  size_extension:     [0.0, 0.0, 0.0]
+  # The ROS1 common-executor wrapper projects odometry onto a common SE(2)
+  # planning layer before it reaches GBPlanner3.  Keep the GBPlanner3 box
+  # centered on that planning layer; adding another z offset moves the
+  # collision samples into sparse wall-volume voxels and collapses RRG growth.
   center_offset:      [0.0, 0.0, 0.0]
   relax_ratio:        0.5
   bound_mode:         kExtendedBound
   # Tighter than smb_arl (0.5/2.0/0.05) — Go2 is a smaller footprint.
-  safety_extension:   [0.4, 0.4, 0.05]
+  safety_extension:   [0.02, 0.02, 0.01]
 #-------------------------------------------------------------------------------
 # SENSOR CONFIGURATION
 #  sensor_list: Define a set of sensors relevant to the exploration task.
@@ -100,23 +117,26 @@ BoundedSpaceParams:
     # max_val:        [7.5, 7.5, 7.0]
     # min_val:        [-10.0, -10.0, -0.5]
     # max_val:        [10.0, 10.0, 0.5]
-    min_val:        [-20.0, -20.0, -2.0]
-    max_val:        [20.0, 20.0, 2.0]
+    # Keep the local RRG window close to the demo3-style maze scale.  The
+    # upstream UGV config uses a 40x40x4 m window; with dual ROS1 bridges and
+    # MuJoCo this made each GBPlanner3 planning call exceed a 90 s smoke run.
+    min_val:        [-10.0, -8.0, 0.05]
+    max_val:        [10.0, 8.0, 0.45]
     # min_val:        [-20.0, -20.0, -4.0]
     # max_val:        [20.0, 20.0, 4.0]
     # min_val:        [-10.0, -10.0, -4.0]
     # max_val:        [10.0, 10.0, 4.0]
-    min_extension:  [-20.0, -20.0, -20.0]
-    max_extension:  [20.0, 20.0, 20.0]
+    min_extension:  [-10.0, -8.0, -1.0]
+    max_extension:  [10.0, 8.0, 1.0]
   LocalSearch:
     type:           kCuboid
-    min_val:        [-50.0, -50.0, -1.0]
-    max_val:        [50.0, 50.0, 1.0]
+    min_val:        [-12.0, -10.0, 0.00]
+    max_val:        [12.0, 10.0, 0.55]
   # Adaptive OBB:
   LocalAdaptiveExp:
     type:           kCuboid
-    min_val:        [-10.0, -10.0, -0.75]
-    max_val:        [10.0, 10.0, 0.75]
+    min_val:        [-10.0, -10.0, -0.5]
+    max_val:        [10.0, 10.0, 0.5]
 NoGainZones:
   g1:  # Back
     type:           kCuboid
@@ -217,10 +237,10 @@ PlanningParams:
   edge_length_min:  0.2
   edge_length_max:  4.0
   edge_overshoot:   0.0 # m - Account for possible tracking error by collision checking on an extended edge
-  num_vertices_max: 400 # 400 # graph building stops if these many vertices are added 
-  num_edges_max:    10000 # graph building stops if these many edges are added
-  num_loops_cutoff: 2000 # Maximum iterations in which no vertices or edges are added to the graph
-  num_loops_max:    100000 # Maximum iterations possible for graph building
+  num_vertices_max: 160 # graph building stops if these many vertices are added
+  num_edges_max:    4000 # graph building stops if these many edges are added
+  num_loops_cutoff: 700 # Maximum iterations in which no vertices or edges are added to the graph
+  num_loops_max:    4000 # Maximum iterations possible for graph building
   nearest_range:    4.0 # The max range within which a new vertex can be connected to an existing vertex
   nearest_range_min: 0.2 # >= edge_length_min
   nearest_range_max: 4.0 # <= edge_length_max
@@ -229,17 +249,21 @@ PlanningParams:
   exp_gain_voxel_size: 0.8 # used if use_ray_model_for_volumetric_gain is false
   # Gains:
   path_length_penalty: 0.01 # 0.4
-  path_direction_penalty: 0.2 # 0.01
+  path_direction_penalty: 0.03 # 0.01
   allow_sudden_dir_change: true
   occupied_voxel_gain: 0.0
-  free_voxel_gain:  0.0 # prefer directions towards more free voxels in case of the dead-end
+  free_voxel_gain:  1.0 # prefer directions towards more free voxels in case of the dead-end
   unknown_voxel_gain: 60.0
   global_graph_odom_dist: 1.0
-  select_closest_frontier: true
+  # In common-executor benchmarking, a sub-meter "closest frontier" is often
+  # inside Nav2's goal tolerance and becomes a no-op.  Use GBPlanner3's native
+  # volumetric information gain so the high-level planner selects real
+  # exploratory branches while Nav2 still owns local execution.
+  select_closest_frontier: false
 
-  traverse_length_max: 3.0 # Maximum length of the best path will be truncated to for actual traversal
+  traverse_length_max: 5.0 # Maximum length of the best path will be truncated to for actual traversal
   traverse_time_max: 5000.0
-  path_safety_enhance_enable: true
+  path_safety_enhance_enable: false
   augment_free_voxels_time: 3
   free_frustum_before_planning: false
   freespace_cloud_enable: false
@@ -248,8 +272,8 @@ PlanningParams:
   clustering_radius: 0.5
   path_interpolation_distance: -1.0 # 0.5
 
-  max_ground_height: 1.0 # All points will be projected to this height from ground
-  robot_height: 0.75  # Height of robot's base frame from ground
+  max_ground_height: 0.45 # Go2 common-executor planning layer above the local floor
+  robot_height: 0.45  # Height used by GBPlanner3's high-level validity model
   max_inclination: rad(20.0*pi/180)
   
   time_budget_limit: 5000 # seconds
@@ -273,8 +297,13 @@ PlanningParams:
   auto_opening_path_approval: true
   max_opening_height: 20.0
 
-  box_check_method: 0
-  line_check_method: 1
+  # Use single-point ESDF checks for sampled vertices and direct ESDF checks
+  # for edges.  The previous full-box voxel check rejects nearly all samples in
+  # the MuJoCo/Fast-LIO maze because sparse floor/self returns keep the start
+  # volume partially unknown; Nav2 MPPI + safety shield still enforce the real
+  # Go2 execution footprint.
+  box_check_method: 1
+  line_check_method: 2
 
   add_only_frontiers_to_global_graph: true
 
@@ -302,12 +331,16 @@ PlanningParams:
   #   min_val:        [-2.4, -1.9, -2.0]
   #   max_val:        [2.4, 1.9, 2.0]
   
-  # BWT
-  compartment_centers: [0.0, -5.0, 2.0]
+  # demo3_mixed and generated benchmark mazes share a 24 m x 16 m world
+  # envelope.  The upstream BWT compartment centered at (0, -5) clipped
+  # robot_a at y~=2.0 onto the compartment boundary, so GBPlanner3 could not
+  # grow a local graph for that robot.  This bounds the full benchmark maze
+  # instead of a route or a robot-specific corridor.
+  compartment_centers: [12.0, 0.0, 1.0]
   compartment_dimensions:
     type:           kCuboid
-    min_val:        [-7.0, -7.0, -2.5]
-    max_val:        [7.0, 7.0, 2.5]
+    min_val:        [-12.5, -8.5, -1.5]
+    max_val:        [12.5, 8.5, 2.0]
   # Chem plant
   # compartment_centers: [1.0, 2.0, 2.5]
   # compartment_dimensions:

@@ -513,6 +513,11 @@ def build_dual_robot_stack(
             stack_actions,
             {
                 "initial_pose_guard_node": initial_pose_guard_node,
+                # Exposed for cross-host lifecycle gating (2026-05-20):
+                # callers can RegisterEventHandler(OnProcessExit(stand_up_node,
+                # on_exit=[wait_for_settle])) to chain a settle gate that
+                # runs only AFTER stand-up is physically complete.
+                "stand_up_node": stand_up_node,
             },
         )
     return stack_actions

@@ -14,9 +14,15 @@ Output (saved to --out npz):
     H, W : int
 """
 import argparse
+import sys
+import types
 from pathlib import Path
 
 import numpy as np
+
+# Stub open3d.ml (its eager import pulls a newer sklearn that breaks against
+# system numpy 1.x). We only use core geometry. See polyfit_lite.py.
+sys.modules.setdefault("open3d.ml", types.ModuleType("open3d.ml"))
 import open3d as o3d
 
 

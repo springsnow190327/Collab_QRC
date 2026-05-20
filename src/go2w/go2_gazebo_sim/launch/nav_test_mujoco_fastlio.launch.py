@@ -469,13 +469,14 @@ def _launch_setup(context):
     nav_delay = slam_delay + 3.0
 
     if explore:
+        cfpa2_exec_suffix = LaunchConfiguration("cfpa2_executable_suffix").perform(context)
         actions.append(
             TimerAction(
                 period=nav_delay,
                 actions=[
                     Node(
                         package="cfpa2_collaborative_autonomy",
-                        executable="cfpa2_single_robot_node",
+                        executable=f"cfpa2_single_robot_node{cfpa2_exec_suffix}",
                         name="cfpa2_single_robot",
                         parameters=(
                             [cfpa2_config_path]
@@ -1208,6 +1209,12 @@ def generate_launch_description():
         DeclareLaunchArgument("ramp_goal_stale_sec", default_value="1.5"),
         DeclareLaunchArgument("ramp_force_max_vx_mps", default_value="0.30"),
         DeclareLaunchArgument("ramp_force_max_yaw_rate_rps", default_value="0.20"),
+        DeclareLaunchArgument(
+            "cfpa2_executable_suffix",
+            default_value="",
+            description="Suffix appended to cfpa2_single_robot_node "
+                        "(use '_cpp' for the pure-C++ rclcpp port).",
+        ),
         DeclareLaunchArgument("far_goal_topic", default_value="",
                               description="Override topic FAR subscribes to for the "
                               "global goal (normally CFPA2 → /{ns}/way_point_coord). "
