@@ -25,6 +25,8 @@ Data layout note (empirically verified):
   (both axes flip to go from max→min to min→max; no transpose needed).
 """
 
+import math
+
 import numpy as np
 
 import rclpy
@@ -74,6 +76,38 @@ class GridMapToOccupancyGrid(Node):
         self.seed_max_clear_cost = int(
             self.declare_parameter("seed_max_clear_cost", 50).value
         )
+        # Inner "core" footprint disk that is ALWAYS cleared free, even over
+        # lethal cells. The robot is physically standing on these cells, so any
+        # lethal there is self-paint (the robot's own body/legs returning LiDAR
+        # points the elevation map can't tell from an obstacle) or stale. The
+        # outer seed disk (robot_seed_radius_m) stays conservative (only clears
+        # ≤ seed_max_clear_cost) so it never erases a real wall the robot is
+        # driving alongside. Keep the core ≤ the robot's circumscribed radius
+        # (~0.40 m) so it can't clear a genuine obstacle the robot isn't on.
+        self.robot_core_clear_radius_m = float(
+            self.declare_parameter("robot_core_clear_radius_m", 0.40).value
+        )
+        # Persistent visited-corridor mask. The robot physically occupied every
+        # cell along its trajectory, so those cells are GROUND-TRUTH traversable
+        # forever — a robot cannot stand inside a wall. Without this, the
+        # Mid-360 blind disk (~3.25 m) leaves the trail behind the robot as
+        # UNKNOWN in the elevation map; with allow_unknown=false the CFPA2
+        # reachability BFS then can't flow back along the trail and the reachable
+        # component collapses to a local bubble (run23: 73/73 frontiers
+        # "unreachable", robot circling +x). We OR the swept capsule between
+        # consecutive poses into a persistent mask and force those cells FREE on
+        # every publish, immune to the rolling-grid re-clearing them to unknown.
+        # Radius = robot circumscribed half-extent + small margin; narrow on
+        # purpose so it carves a connected centerline corridor, never a wall.
+        self.visited_corridor_enabled = bool(
+            self.declare_parameter("visited_corridor_enabled", True).value
+        )
+        self.visited_corridor_radius_m = float(
+            self.declare_parameter("visited_corridor_radius_m", 0.45).value
+        )
+        self._visited_mask: np.ndarray | None = None
+        self._visited_prev_cx: float | None = None
+        self._visited_prev_cy: float | None = None
         self.ramp_override_enabled = bool(
             self.declare_parameter("ramp_override_enabled", False).value
         )
@@ -545,22 +579,104 @@ class GridMapToOccupancyGrid(Node):
             )
             return
 
+        cx = float(tf.transform.translation.x)
+        cy = float(tf.transform.translation.y)
+        # Tier 1: inner core — unconditional clear (covers self-painted lethal
+        # at the robot's own footprint so SmacHybrid's start pose is never in
+        # collision). max_clear_cost 101 ⇒ clears every value incl. lethal 100.
+        core_changed = 0
+        if self.robot_core_clear_radius_m > 0.0:
+            core_changed = stamp_free_disk(
+                cost,
+                origin_x=float(occ.info.origin.position.x),
+                origin_y=float(occ.info.origin.position.y),
+                resolution=float(occ.info.resolution),
+                center_x=cx,
+                center_y=cy,
+                radius_m=self.robot_core_clear_radius_m,
+                max_clear_cost=101,
+            )
+        # Tier 2: outer seed — conditional (only unknown / ≤ max_clear_cost), so
+        # the blind disk below the sensor reads free without erasing real walls.
         changed = stamp_free_disk(
             cost,
             origin_x=float(occ.info.origin.position.x),
             origin_y=float(occ.info.origin.position.y),
             resolution=float(occ.info.resolution),
-            center_x=float(tf.transform.translation.x),
-            center_y=float(tf.transform.translation.y),
+            center_x=cx,
+            center_y=cy,
             radius_m=self.robot_seed_radius_m,
             max_clear_cost=self.seed_max_clear_cost,
         )
+        changed += core_changed
         if changed > 0:
             self.get_logger().debug(
                 f"seeded {changed} robot-footprint cells free at "
                 f"({tf.transform.translation.x:.2f}, "
                 f"{tf.transform.translation.y:.2f})"
             )
+
+        # Persistent visited corridor: stamp the swept capsule between the
+        # previous and current robot pose into a permanent mask, then force
+        # every visited cell FREE. Ground truth — the robot was physically
+        # there — so this can never erase a real wall; it only repairs the
+        # blind-zone holes the rolling elevation map leaves behind the robot.
+        if self.visited_corridor_enabled:
+            self._stamp_visited_corridor(cost, occ, cx, cy)
+
+    def _stamp_visited_corridor(
+        self,
+        cost: np.ndarray,
+        occ: OccupancyGrid,
+        cx: float,
+        cy: float,
+    ) -> None:
+        if cost.ndim != 2:
+            return
+        if self._visited_mask is None or self._visited_mask.shape != cost.shape:
+            self._visited_mask = np.zeros(cost.shape, dtype=bool)
+            self._visited_prev_cx = None
+            self._visited_prev_cy = None
+
+        res = float(occ.info.resolution)
+        ox = float(occ.info.origin.position.x)
+        oy = float(occ.info.origin.position.y)
+        if res <= 0.0:
+            return
+        rad_cells = max(1, int(round(self.visited_corridor_radius_m / res)))
+        H, W = cost.shape
+
+        def stamp_disk(wx: float, wy: float) -> None:
+            cc = int((wx - ox) / res)
+            cr = int((wy - oy) / res)
+            r0 = max(0, cr - rad_cells)
+            r1 = min(H - 1, cr + rad_cells)
+            c0 = max(0, cc - rad_cells)
+            c1 = min(W - 1, cc + rad_cells)
+            if r0 > r1 or c0 > c1:
+                return
+            rr = np.arange(r0, r1 + 1)[:, None]
+            ccc = np.arange(c0, c1 + 1)[None, :]
+            disk = ((rr - cr) ** 2 + (ccc - cc) ** 2) <= (rad_cells * rad_cells)
+            self._visited_mask[r0 : r1 + 1, c0 : c1 + 1] |= disk
+
+        # Interpolate the segment from the previous pose so fast motion or a
+        # slow publish rate can never leave a gap in the corridor.
+        if self._visited_prev_cx is not None:
+            px, py = self._visited_prev_cx, self._visited_prev_cy
+            seg = math.hypot(cx - px, cy - py)
+            n = max(1, int(seg / (res * 0.5)) + 1)
+            for i in range(n + 1):
+                t = i / n
+                stamp_disk(px + (cx - px) * t, py + (cy - py) * t)
+        else:
+            stamp_disk(cx, cy)
+        self._visited_prev_cx = cx
+        self._visited_prev_cy = cy
+
+        # Force visited cells free in the published grid (immune to the rolling
+        # grid re-marking them unknown once the robot moves on).
+        cost[self._visited_mask] = 0
 
 
 def main(args=None) -> None:

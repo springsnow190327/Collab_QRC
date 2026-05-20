@@ -23,9 +23,18 @@ void distance_transform_range(
 
   if (sx < 0 || sx >= W || sy < 0 || sy >= H) return;
 
+  // NOTE: no `v >= 0` lower bound. The only negative OccupancyGrid value is
+  // -1 (unknown); blocking it must be done via `unknown_val`, NOT a blanket
+  // `v >= 0`. With the old `v >= 0` check, allow_unknown=true (which the
+  // caller signals by passing unknown_val=-127 so that -1 is no longer "the
+  // unknown marker") was a NO-OP: -1 still failed `v >= 0` and the BFS never
+  // flooded unknown → CFPA2 could never reach frontiers across unexplored
+  // space → robot froze at the first corner (2026-05-20). Dropping the lower
+  // bound makes allow_unknown work: unknown_val=-1 still blocks -1
+  // (allow_unknown=false), unknown_val=-127 lets -1 through (allow_unknown=true).
   auto is_free = [&](int idx) -> bool {
     const int8_t v = grid[idx];
-    return v != unknown_val && v >= 0 && v < occ_threshold;
+    return v != unknown_val && v < occ_threshold;
   };
 
   int sidx = sy * W + sx;

@@ -72,12 +72,17 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument(
             "robot_seed_radius_m",
             default_value=PythonExpression([
-                "'2.0' if '", LaunchConfiguration("explore"), "' == 'false' else '0.65'"
+                "'3.5' if '", LaunchConfiguration("explore"), "' == 'false' else '3.5'"
             ]),
-            description="Initial cleared-disk radius (m) seeded around the "
-                        "robot in /robot/traversability_grid. Larger in manual "
-                        "mode so a first user-clicked goal can leave the spawn "
-                        "pose before elevation_mapping has filled in around it."),
+            description="Forced-free disk radius (m) seeded around the robot in "
+                        "/robot/traversability_grid every frame (CONDITIONAL: "
+                        "clears unknown / cost<=seed_max_clear_cost, never lethal). "
+                        "MUST cover the Mid-360 geometric blind disk (~3.25 m: "
+                        "V-FOV starts ~-7deg → ground first visible ~3 m out). "
+                        "Below that, the robot's tiny seed bubble is isolated "
+                        "from the sensed-free ring by the unknown blind ring → "
+                        "BFS (allow_unknown=false) can't cross → robot trapped "
+                        "at spawn, CFPA2 finds no reachable frontier (2026-05-20)."),
         DeclareLaunchArgument(
             "upper_bound_clearance", default_value="true",
             description="Enable Miki et al. 2022 Sec. II-H upper_bound overhang "
@@ -123,6 +128,14 @@ def generate_launch_description() -> LaunchDescription:
                         "elevation_mapping_cupy/config/core. Point at a "
                         "fine-tuned file (e.g. training_runs/weights_*.dat) "
                         "to A/B test without touching the baseline."),
+        DeclareLaunchArgument(
+            "cfpa2_config_overlay", default_value=cfpa2_demo_ramp_overlay,
+            description="Absolute path to a CFPA2 param overlay YAML applied "
+                        "on top of cfpa2_single_robot.yaml. Default = the "
+                        "demo_ramp overlay (16 m ramp box). For the ops2 "
+                        "building corridor pass cfpa2_single_robot_ops2.yaml "
+                        "(allow_unknown=false, unlimited goal distance) — see "
+                        "scripts/launch/nav_test_slam_ops2_v4_go2.sh."),
     ]
 
     # Reuse the full fastlio launch — it handles MuJoCo, Point-LIO/Fast-LIO,
@@ -155,12 +168,12 @@ def generate_launch_description() -> LaunchDescription:
             "ramp_goal_stale_sec": "3.0",
             "ramp_force_max_vx_mps": "0.17",
             "ramp_force_max_yaw_rate_rps": "0.20",
-            # demo_ramp has 2 m corridors flanked by lethal walls; base CFPA2
-            # frontier filters (0.35 m clearance + 20 live unknowns) reject
-            # every corridor frontier and report no_frontiers. Overlay
-            # tightens those to match the scene geometry. See the yaml header
-            # for rationale.
-            "cfpa2_config_overlay": cfpa2_demo_ramp_overlay,
+            # CFPA2 param overlay (default demo_ramp; ops2 wrapper passes
+            # cfpa2_single_robot_ops2.yaml). demo_ramp tightens frontier
+            # filters for 2 m ramp corridors; ops2 disables allow_unknown
+            # (no leak through unknown behind hand-walls) + unlimited goal
+            # distance for the 70 m corridor. See each yaml's header.
+            "cfpa2_config_overlay": LaunchConfiguration("cfpa2_config_overlay"),
         }.items(),
     )
 
@@ -340,18 +353,19 @@ def generate_launch_description() -> LaunchDescription:
             # otherwise unknown holes and one-frame obstacle hits make the
             # traversability display change shape continuously.
             "fixed_grid_enabled": True,
-            # 100×40 m world-fixed window at 0.10 m/cell. demo_ramp (16×16) and
-            # slam_ops2 (80×32) both fit inside; before, the 30×30 default cut
-            # off the ops2 corridor edges and surfaced as a phantom black
-            # boundary in RViz.
-            # 200×200 m world-fixed grid at 0.10 m/cell. Centred near the
-            # ops2 building so any spawn in [-100, +100]×[-100, +100] sits
-            # inside. demo_ramp + slam_ops2 both fit comfortably. Cost: ~4 MB
-            # per published OccupancyGrid msg (2000×2000 int8).
-            "fixed_origin_x": -100.0,
-            "fixed_origin_y": -100.0,
-            "fixed_width_cells": 2000,
-            "fixed_height_cells": 2000,
+            # 100×100 m world-fixed grid at 0.10 m/cell, centred at the origin
+            # (spawn). Covers slam_ops2 (80×32 m) AND the full ±35 m corridor
+            # exploration target with margin (x,y ∈ [-50,+50]). demo_ramp
+            # (16×16) fits too.
+            # 2026-05-20: shrunk from 200×200 m (2000² = 4 MB/msg). The huge
+            # grid (a) rendered black in RViz near GL_MAX_TEXTURE_SIZE, (b)
+            # caused cross-host DDS backpressure, and (c) made SmacHybrid's
+            # allow_unknown search wander a 4 M-cell costmap → ~17 s planner
+            # timeouts (the NO_PLAN stuck loop). 1000² = 1 MB/msg, ~4× cheaper.
+            "fixed_origin_x": -50.0,
+            "fixed_origin_y": -50.0,
+            "fixed_width_cells": 1000,
+            "fixed_height_cells": 1000,
             "unknown_clears_history": False,
             # Preserve high-but-traversable costs (e.g. elevation/cliff
             # stability cost 90). Only true OccupancyGrid lethal cells are

@@ -188,6 +188,28 @@ void CFPA2Coordinator::declare_all_parameters(
   declare_parameter<double>("cfpa2_w_momentum", 2.0);
   declare_parameter<double>("cfpa2_momentum_alpha", 1.5);
   declare_parameter<double>("cfpa2_momentum_beta", 2.0);
+  // High-IG unreachable-region override (extent-completeness). When the robot
+  // has reduced its reachable region to small interior pockets (best reachable
+  // IG < override_min_ig) but a much larger unexplored region exists across an
+  // unreachable gap (e.g. the −x corridor in the V-shaped ops2 building), snap
+  // the largest such unreachable frontier to its nearest reachable cell and
+  // commit there — driving the robot toward the big unexplored region instead
+  // of grinding explored nooks forever. Disabled by default; ops2 overlay
+  // enables it. See the Pass-1 block + 2026-05-20 notes.
+  declare_parameter<bool>("cfpa2_explore_unreachable_override", false);
+  declare_parameter<double>("cfpa2_override_min_ig", 350.0);
+  declare_parameter<double>("cfpa2_override_dominance", 1.8);
+  // Extent-seek (bidirectional-coverage completeness). The ops2 building is
+  // V-shaped from spawn; greedy exploration exhausts ONE arm (reaches x≈+34)
+  // and either grinds its explored pockets or wedges in the far corner, never
+  // returning for the other arm. Extent-seek tracks the robot's PHYSICALLY
+  // traversed x-extent and, once one ±x extreme is reached (|x| ≥
+  // extent_target_x), redirects toward the unreached extreme by committing to
+  // the frontier furthest in that direction (snapped to a reachable cell if
+  // needed). It fires at extent_target_x (< the corner-wedge point) so the
+  // robot turns around while still mobile. Disabled by default; ops2 enables.
+  declare_parameter<bool>("cfpa2_extent_seek_enabled", false);
+  declare_parameter<double>("cfpa2_extent_target_x", 32.0);
   declare_parameter<double>("cfpa2_frontier_cluster_radius_m", 1.0);
   declare_parameter<double>("cfpa2_frontier_unknown_check_radius_m", 0.40);
   declare_parameter<int>("cfpa2_frontier_min_unknown_cells", 20);
@@ -330,6 +352,16 @@ void CFPA2Coordinator::read_all_parameters()
   cfpa2_w_momentum_ = std::max(0.0, get_parameter("cfpa2_w_momentum").as_double());
   cfpa2_momentum_alpha_ = std::max(0.0, get_parameter("cfpa2_momentum_alpha").as_double());
   cfpa2_momentum_beta_ = std::max(0.0, get_parameter("cfpa2_momentum_beta").as_double());
+  cfpa2_explore_unreachable_override_ =
+      get_parameter("cfpa2_explore_unreachable_override").as_bool();
+  cfpa2_override_min_ig_ =
+      std::max(0.0, get_parameter("cfpa2_override_min_ig").as_double());
+  cfpa2_override_dominance_ =
+      std::max(1.0, get_parameter("cfpa2_override_dominance").as_double());
+  cfpa2_extent_seek_enabled_ =
+      get_parameter("cfpa2_extent_seek_enabled").as_bool();
+  cfpa2_extent_target_x_ =
+      std::max(0.0, get_parameter("cfpa2_extent_target_x").as_double());
   cfpa2_frontier_cluster_radius_m_ =
       std::max(0.0, get_parameter("cfpa2_frontier_cluster_radius_m").as_double());
   cfpa2_frontier_unknown_check_radius_m_ =
@@ -1405,6 +1437,7 @@ void CFPA2Coordinator::tick_impl()
 
   // Pass 1: per-ns utility lists (filtered + scored, sorted desc).
   std::unordered_map<std::string, UtilityList> utils_by_ns;
+  std::unordered_map<std::string, bool> forced_goal_by_ns;
   std::unordered_map<std::string, std::unordered_map<int, int>> dist_maps_by_ns;
   for (const auto & ns : namespaces_) {
     if (odoms_.find(ns) == odoms_.end()) continue;
@@ -1414,15 +1447,236 @@ void CFPA2Coordinator::tick_impl()
     prune_blacklist(ns, now_ns);
     UtilityList util;
     util.reserve(targets.size());
+    int rej_peer = 0, rej_bl = 0, rej_reach = 0, rej_clear = 0, rej_util = 0;
+    double best_reach_ig = 0.0;
+    // Primary pass: only REAL reachable frontiers (keeps the fast beeline —
+    // the robot commits to its connected reachable region's best frontier).
     for (const auto & g : targets) {
-      if (is_goal_peer_claimed(g)) continue;
-      if (is_blacklisted(ns, g, now_ns)) continue;
-      if (!goal_reachable(maps_[ns], dist_map, g)) continue;
+      if (is_goal_peer_claimed(g)) { ++rej_peer; continue; }
+      if (is_blacklisted(ns, g, now_ns)) { ++rej_bl; continue; }
+      if (!goal_reachable(maps_[ns], dist_map, g)) { ++rej_reach; continue; }
       if (!goal_has_obstacle_clearance(maps_[ns], g.first, g.second,
-            cfpa2_goal_obstacle_clearance_m_)) continue;
+            cfpa2_goal_obstacle_clearance_m_)) { ++rej_clear; continue; }
       const double u = cfpa2_single_utility(ns, g, maps_[ns], dist_map);
-      if (u < cfpa2_min_utility_) continue;
+      if (u < cfpa2_min_utility_) { ++rej_util; continue; }
       util.push_back({g, u});
+      const double ig = frontier_information_gain(maps_[ns], g);
+      if (ig > best_reach_ig) best_reach_ig = ig;
+    }
+
+    bool used_fallback = false;
+    // ── EXTENT-SEEK (highest priority): bidirectional ±x coverage ──────────
+    // Track the robot's PHYSICALLY traversed x-extent. Once one extreme is
+    // reached (|x| ≥ extent_target_x) but the other isn't, commit to the
+    // frontier furthest toward the unreached extreme (reachable → drive there
+    // directly; else snap the furthest unreachable frontier to its nearest
+    // reachable cell). Fires at extent_target_x, BELOW the far-corner wedge
+    // point, so the robot turns around while still mobile and heads to the
+    // other arm — directly satisfying the "span +35 → −35" goal instead of
+    // exhausting/wedging one arm. A single dominating goal = stable (no thrash).
+    if (cfpa2_extent_seek_enabled_) {
+      const auto rr = robot_xy(ns);
+      double & rxmin = reached_x_min_.try_emplace(ns, rr.first).first->second;
+      double & rxmax = reached_x_max_.try_emplace(ns, rr.first).first->second;
+      rxmin = std::min(rxmin, rr.first);
+      rxmax = std::max(rxmax, rr.first);
+      int seek_dir = 0;
+      const bool plus_done = rxmax >= cfpa2_extent_target_x_;
+      const bool minus_done = rxmin <= -cfpa2_extent_target_x_;
+      if (plus_done && !minus_done) seek_dir = -1;
+      else if (minus_done && !plus_done) seek_dir = +1;
+      if (seek_dir != 0) {
+        bool have = false; Goal pick{0.0, 0.0}; bool pick_reach = false;
+        double ext = (seek_dir < 0) ? 1e18 : -1e18;
+        // DIRECTIONAL GUARD: only consider goals that are actually in the seek
+        // direction RELATIVE TO THE ROBOT. Without this, "min-x reachable
+        // frontier" picks a +x frontier (e.g. +10.25) when ALL −x frontiers are
+        // unreachable, sending the robot the wrong way → it alternates with the
+        // snapped −x goal every tick (run27 GOAL_SENT thrash −8.35 ↔ +10.25) and
+        // never commits. With the guard, only −x-of-robot goals qualify, so the
+        // snapped −x goal wins consistently → stable single goal → robot drives
+        // −x. Among qualifying candidates pick the one FURTHEST in seek dir.
+        auto consider = [&](const Goal & g, bool reach) {
+          if (seek_dir < 0 && g.first >= rr.first) return;   // not −x of robot
+          if (seek_dir > 0 && g.first <= rr.first) return;   // not +x of robot
+          if ((seek_dir < 0 && g.first < ext) ||
+              (seek_dir > 0 && g.first > ext)) {
+            ext = g.first; pick = g; have = true; pick_reach = reach;
+          }
+        };
+        // (1) Reachable frontiers that lie in the seek direction.
+        for (const auto & g : targets) {
+          if (is_goal_peer_claimed(g) || is_blacklisted(ns, g, now_ns)) continue;
+          if (frontier_information_gain(maps_[ns], g) < 3.0) continue;
+          if (!goal_reachable(maps_[ns], dist_map, g)) continue;
+          consider(g, true);
+        }
+        // (2) The furthest-in-seek-dir UNREACHABLE frontier, snapped to its
+        //     nearest reachable cell (lets the robot push toward an unentered
+        //     corridor even when no reachable frontier lies that way).
+        {
+          double uext = (seek_dir < 0) ? 1e18 : -1e18; Goal uf{0.0, 0.0};
+          bool huf = false;
+          for (const auto & g : targets) {
+            if (is_goal_peer_claimed(g) || is_blacklisted(ns, g, now_ns)) continue;
+            if (frontier_information_gain(maps_[ns], g) < 3.0) continue;
+            if (goal_reachable(maps_[ns], dist_map, g)) continue;
+            if ((seek_dir < 0 && g.first < uext) ||
+                (seek_dir > 0 && g.first > uext)) {
+              uext = g.first; uf = g; huf = true;
+            }
+          }
+          if (huf) {
+            const int gw = static_cast<int>(maps_[ns].info.width);
+            const double gres =
+                std::max(1e-3, static_cast<double>(maps_[ns].info.resolution));
+            const int smr = static_cast<int>(80.0 / gres);
+            const long smr2 = static_cast<long>(smr) * static_cast<long>(smr);
+            const auto gg = world_to_grid(maps_[ns], uf.first, uf.second);
+            if (gg.has_value()) {
+              const int gi = gg->first, gj = gg->second;
+              long bd = smr2 + 1; int bidx = -1;
+              for (const auto & kv : dist_map) {
+                const int ci = kv.first % gw, cj = kv.first / gw;
+                const long d2 = static_cast<long>(ci - gi) * (ci - gi) +
+                                static_cast<long>(cj - gj) * (cj - gj);
+                if (d2 < bd) { bd = d2; bidx = kv.first; }
+              }
+              if (bidx >= 0) {
+                consider(Goal{
+                    static_cast<double>(maps_[ns].info.origin_x) +
+                        (bidx % gw + 0.5) * gres,
+                    static_cast<double>(maps_[ns].info.origin_y) +
+                        (bidx / gw + 0.5) * gres}, false);
+              }
+            }
+          }
+        }
+        // (3) Guaranteed candidate: the furthest-in-seek-dir REACHABLE cell
+        //     from dist_map (raw cell, never a blacklisted frontier) so
+        //     extent-seek ALWAYS has a goal in the seek direction and can never
+        //     fall through to a +x primary frontier while seeking −x.
+        {
+          const int gw = static_cast<int>(maps_[ns].info.width);
+          const double gres =
+              std::max(1e-3, static_cast<double>(maps_[ns].info.resolution));
+          double cell_ext = (seek_dir < 0) ? 1e18 : -1e18; int cidx = -1;
+          for (const auto & kv : dist_map) {
+            const double wx = static_cast<double>(maps_[ns].info.origin_x) +
+                (kv.first % gw + 0.5) * gres;
+            if (seek_dir < 0 ? wx < cell_ext : wx > cell_ext) {
+              cell_ext = wx; cidx = kv.first;
+            }
+          }
+          if (cidx >= 0) {
+            consider(Goal{
+                static_cast<double>(maps_[ns].info.origin_x) +
+                    (cidx % gw + 0.5) * gres,
+                static_cast<double>(maps_[ns].info.origin_y) +
+                    (cidx / gw + 0.5) * gres}, false);
+          }
+        }
+        // Commit: NO blacklist check — the extent-seek goal is a strategic
+        // must-go. Blacklisting it (a false positive from thrash-induced
+        // non-progress) was breaking the challenger streak and letting the +x
+        // primary goal back in (run28 −8.35 ↔ +36.05 thrash). Nav2 CAN path to
+        // it (verified ComputePathToPose OK 364 poses), so commit it.
+        if (have && distance_robot_to_goal(ns, pick) >= min_assign_distance_) {
+          util.clear();
+          util.push_back({pick, 1e9});   // dominate everything; single stable goal
+          used_fallback = true;
+          if (now_ns - last_no_goal_debug_ns_ >
+              static_cast<std::uint64_t>(debug_no_goal_log_interval_sec_ * 1e9)) {
+            last_no_goal_debug_ns_ = now_ns;
+            CFPA2_LOG_WARN(log_facade_,
+                "[%s] EXTENT-SEEK dir=%+d reached_x=[%.1f,%.1f] -> goal "
+                "(%.1f,%.1f) %s", ns.c_str(), seek_dir, rxmin, rxmax,
+                pick.first, pick.second, pick_reach ? "reachable" : "snapped");
+          }
+        }
+      }
+    }
+
+    // UNREACHABLE-region redirect (fallback + extent-completeness override):
+    //  (a) FALLBACK — util empty: the robot exhausted its connected reachable
+    //      component; every remaining frontier is across an unentered corridor
+    //      that reads unreachable (Mid-360 blind zone fragments the trail).
+    //  (b) OVERRIDE — util non-empty but the best reachable frontier is a small
+    //      explored-interior pocket (best_reach_ig < override_min_ig) WHILE a
+    //      much larger unexplored region exists across an unreachable gap (the
+    //      −x corridor in the V-shaped ops2 building). Greedy nearest-first
+    //      otherwise grinds +x pockets forever and never returns for −x (run24:
+    //      path 54→176 m, x_max pinned 32.6, x_min stuck −2.9). The override
+    //      makes CFPA2 information-gain-greedy: prefer the BIG unexplored region
+    //      over scraps. Gated on cfpa2_explore_unreachable_override (ops2 only).
+    //
+    // In BOTH cases: find the single highest-IG UNREACHABLE frontier, snap it
+    // to its nearest reachable cell, and commit to that one cell. IG-only +
+    // single-goal = deterministic & stable (no velocity-dependent momentum flip,
+    // no nearest-of-topK jump → no GOAL_SENT thrash). Its snapped cell LEADS the
+    // robot toward the big region; once those cells get sensed they become
+    // reachable → the normal path (momentum now HELPING the −x heading) resumes.
+    const bool consider_redirect = !used_fallback && !targets.empty() &&
+        (util.empty() ||
+         (cfpa2_explore_unreachable_override_ &&
+          best_reach_ig < cfpa2_override_min_ig_));
+    if (consider_redirect) {
+      // Single highest-IG UNREACHABLE frontier (deterministic winner).
+      double best_un_ig = 0.0; Goal best_un{0.0, 0.0}; bool have_un = false;
+      for (const auto & g : targets) {
+        if (is_goal_peer_claimed(g) || is_blacklisted(ns, g, now_ns)) continue;
+        if (goal_reachable(maps_[ns], dist_map, g)) continue;  // unreachable only
+        const double ig = frontier_information_gain(maps_[ns], g);
+        if (ig > best_un_ig) { best_un_ig = ig; best_un = g; have_un = true; }
+      }
+      // Commit if: util empty (any unreachable beats freezing), OR the big
+      // region dominates the best reachable pocket by override_dominance.
+      const bool dominates = util.empty() ||
+          best_un_ig > std::max(cfpa2_override_min_ig_,
+                                best_reach_ig * cfpa2_override_dominance_);
+      if (have_un && best_un_ig >= 3.0 && dominates) {
+        const int gw = static_cast<int>(maps_[ns].info.width);
+        const double gres =
+            std::max(1e-3, static_cast<double>(maps_[ns].info.resolution));
+        const int snap_max_r_cells = static_cast<int>(60.0 / gres);
+        const long snap_max_r2 =
+            static_cast<long>(snap_max_r_cells) * static_cast<long>(snap_max_r_cells);
+        const auto gg = world_to_grid(maps_[ns], best_un.first, best_un.second);
+        if (gg.has_value()) {
+          const int gi = gg->first, gj = gg->second;
+          long best_d2 = snap_max_r2 + 1; int best_idx = -1;
+          for (const auto & kv : dist_map) {
+            const int ci = kv.first % gw, cj = kv.first / gw;
+            const long d2 = static_cast<long>(ci - gi) * (ci - gi) +
+                            static_cast<long>(cj - gj) * (cj - gj);
+            if (d2 < best_d2) { best_d2 = d2; best_idx = kv.first; }
+          }
+          if (best_idx >= 0) {
+            const Goal eff{
+                static_cast<double>(maps_[ns].info.origin_x) +
+                    (best_idx % gw + 0.5) * gres,
+                static_cast<double>(maps_[ns].info.origin_y) +
+                    (best_idx / gw + 0.5) * gres};
+            const auto pc = grid_path_cost_m(maps_[ns], dist_map, eff);
+            if (!is_blacklisted(ns, eff, now_ns) && pc.has_value() && *pc > 0.0 &&
+                distance_robot_to_goal(ns, eff) >= min_assign_distance_) {
+              util.clear();                       // override the small pockets
+              util.push_back({eff, cfpa2_w_ig_ * best_un_ig});
+              used_fallback = true;
+            }
+          }
+        }
+      }
+    }
+    if (util.empty() && !targets.empty() &&
+        now_ns - last_no_goal_debug_ns_ >
+          static_cast<std::uint64_t>(debug_no_goal_log_interval_sec_ * 1e9)) {
+      last_no_goal_debug_ns_ = now_ns;
+      CFPA2_LOG_WARN(log_facade_,
+          "[%s] NO util from %zu targets: rej peer=%d blacklist=%d "
+          "unreachable=%d clearance=%d low_utility=%d (dist_map=%zu cells)",
+          ns.c_str(), targets.size(), rej_peer, rej_bl, rej_reach,
+          rej_clear, rej_util, dist_map.size());
     }
     // STABLE sort by utility desc — matches Python's `sorted(..., key=-u)`.
     // Important: with unstable std::sort, two ticks with the same utility
@@ -1431,6 +1685,13 @@ void CFPA2Coordinator::tick_impl()
     // → fast-BL → endless oscillation. Stable sort fixes this.
     std::stable_sort(util.begin(), util.end(),
         [](const ScoredGoal & a, const ScoredGoal & b) { return a.utility > b.utility; });
+    // In fallback mode keep ONLY the single best (max-IG) snapped goal so the
+    // TSP head can't pick a nearer-but-jumpy alternate and the goal stays put
+    // tick-to-tick (switch-hysteresis then holds it). See STABILITY note.
+    if (used_fallback && util.size() > 1) {
+      util.resize(1);
+    }
+    forced_goal_by_ns[ns] = used_fallback;
     utils_by_ns[ns] = std::move(util);
     dist_maps_by_ns[ns] = std::move(dist_map);
   }
@@ -1523,6 +1784,13 @@ void CFPA2Coordinator::tick_impl()
       candidate = *stuck_pick;
     } else if (forced_switch_set.count(ns) > 0) {
       // Nav-stall blacklisted the held goal upstream — keep `candidate`.
+    } else if (forced_goal_by_ns[ns]) {
+      // Extent-seek / fallback produced a single deterministic strategic goal —
+      // commit it DIRECTLY, bypassing apply_goal_policy. The policy's
+      // stalled→blacklist + challenger-streak logic was thrashing the −x
+      // redirect (blacklisting the −x goal on slow progress → +x primary back
+      // in). The goal is a stable single candidate so there is no jitter risk,
+      // and stuck-recovery above still handles physical wedging.
     } else {
       candidate = apply_goal_policy(
           ns, candidate, cand_score, maps_[ns], dist_map, now_ns, &targets);

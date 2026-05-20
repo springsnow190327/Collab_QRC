@@ -16,6 +16,20 @@ set -u -o pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/_preflight_kill.sh"
 trap '' SIGHUP SIGTERM
 
+# Cross-host hygiene: a stale Jetson HIL stack (orin_nano_hil_jetson.launch.py)
+# on the SAME DDS domain publishes /robot/traversability_grid, /robot/tf,
+# goal_pose, cmd_vel … which fight this desktop-standalone stack → stale trav
+# layer, RViz flashing, goal churn, "unknown goal response" floods (2026-05-20).
+# Best-effort kill it before launching. Skip with SKIP_JETSON_PREFLIGHT=1.
+if [[ "${SKIP_JETSON_PREFLIGHT:-0}" != "1" ]]; then
+  _JET_HOST="${ORIN_IP:-192.168.55.49}"; _JET_USER="${ORIN_USER:-johnpork233}"; _JET_PASS="${JETSON_PASS:-233}"
+  if command -v sshpass >/dev/null 2>&1 && ping -c1 -W1 "${_JET_HOST}" >/dev/null 2>&1; then
+    echo "[preflight] clearing stale Jetson HIL stack at ${_JET_USER}@${_JET_HOST}..."
+    timeout 15 sshpass -p "${_JET_PASS}" ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 \
+      "${_JET_USER}@${_JET_HOST}" 'for pid in $(pgrep -f "orin_nano_hil_jetson|jetson_ws/install|jetson_ws/scripts|grid_map_to_occupancy|elevation_mapping|cfpa2_single|controller_server|planner_server|bt_navigator|fastlio_mapping|filter_chain_runner|static_transform_publisher|cfpa2_to_nav2" 2>/dev/null); do kill -9 $pid 2>/dev/null; done' >/dev/null 2>&1 || true
+  fi
+fi
+
 WS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # Scene variant (POLYFIT_VARIANT, default handwalls):
 #   handwalls — hand-traced collision walls (draw_walls_2d.py, 2026-05-20),
@@ -62,6 +76,12 @@ if [[ -n "${CONDA_PREFIX:-}" ]] && [[ -d "${CONDA_PREFIX}/lib/python3.10/site-pa
 fi
 export FASTRTPS_DEFAULT_PROFILES_FILE="${WS_DIR}/config/fastdds_no_shm.xml"
 export MUJOCO_INIT_KEYFRAME=home
+# Sim test harness: drive /odom/nav from MuJoCo ground truth (not Fast-LIO).
+# Standalone-desktop Fast-LIO isn't lifecycle-gated → it inits gravity during
+# stand-up → z drifts (0.28→1.3 m) → /odom/nav garbage → CFPA2/Nav2 churn.
+# The trav grid is still REAL perception (body-frame cloud + GT TF). Real
+# robot / HIL keeps gated Fast-LIO. Override: SIM_GT_ODOM=0 to use Fast-LIO.
+export SIM_GT_ODOM="${SIM_GT_ODOM:-1}"
 
 echo "=== SLAM ops2 v4 scene + 3D autonomy (Go2) ==="
 echo "  scene: $SCENE"
@@ -91,6 +111,25 @@ if [[ -n "${TRAV_WEIGHTS:-}" ]]; then
   TRAV_WEIGHTS_ARG=("trav_weight_file:=${TRAV_WEIGHTS}")
 fi
 
+# CFPA2 ops2 overlay (allow_unknown=false → no leak through unknown behind
+# hand-walls; unlimited goal distance for the 70 m corridor). Replaces the
+# demo_ramp overlay that nav_test_3d_explore defaults to. Use the installed
+# share path (symlink-install → same file as src) for production parity with
+# the Orin Nano HIL Jetson launch, which loads the same yaml.
+CFPA2_OPS2_OVERLAY="${WS_DIR}/install/cfpa2_collaborative_autonomy/share/cfpa2_collaborative_autonomy/config/cfpa2_single_robot_ops2.yaml"
+if [[ ! -f "${CFPA2_OPS2_OVERLAY}" ]]; then
+  # Fall back to the source-tree copy if the package isn't installed yet.
+  CFPA2_OPS2_OVERLAY="${WS_DIR}/src/collaborative_exploration/cfpa2_collaborative_autonomy/config/cfpa2_single_robot_ops2.yaml"
+fi
+echo "  cfpa2 overlay: ${CFPA2_OPS2_OVERLAY}"
+
+# Use the pure-C++ CFPA2 binary (cfpa2_single_robot_node_cpp). The Python
+# entry point (cfpa2_single_robot_node) is broken post-port — it dies on
+# import ("attempted relative import with no known parent package"). The C++
+# node is the production path (HIL uses it) and correctly loads the ops2
+# overlay. Override with CFPA2_EXEC_SUFFIX= for the (broken) Python node.
+CFPA2_EXEC_SUFFIX="${CFPA2_EXEC_SUFFIX:-_cpp}"
+
 exec ros2 launch go2_gazebo_sim nav_test_3d_explore.launch.py \
   "mujoco_model_path:=${SCENE}" \
   "spawn_x:=0.0" \
@@ -98,5 +137,7 @@ exec ros2 launch go2_gazebo_sim nav_test_3d_explore.launch.py \
   "spawn_yaw:=0.0" \
   "has_wheels:=false" \
   "upper_bound_clearance:=true" \
+  "cfpa2_config_overlay:=${CFPA2_OPS2_OVERLAY}" \
+  "cfpa2_executable_suffix:=${CFPA2_EXEC_SUFFIX}" \
   "${TRAV_WEIGHTS_ARG[@]}" \
   "$@"

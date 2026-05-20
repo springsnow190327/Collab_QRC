@@ -118,6 +118,13 @@ protected:
   double cfpa2_w_momentum_;
   double cfpa2_momentum_alpha_;
   double cfpa2_momentum_beta_;
+  bool cfpa2_explore_unreachable_override_{false};
+  double cfpa2_override_min_ig_{350.0};
+  double cfpa2_override_dominance_{1.8};
+  bool cfpa2_extent_seek_enabled_{false};
+  double cfpa2_extent_target_x_{32.0};
+  std::unordered_map<std::string, double> reached_x_min_;
+  std::unordered_map<std::string, double> reached_x_max_;
   double cfpa2_frontier_cluster_radius_m_;
   double cfpa2_frontier_unknown_check_radius_m_;
   int cfpa2_frontier_min_unknown_cells_;

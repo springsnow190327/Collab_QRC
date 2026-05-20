@@ -652,8 +652,19 @@ def _launch_setup(context):
         )
 
     # -- Sim-specific SLAM odom relay --
+    # SIM_GT_ODOM=1 (sim test harness only): feed /odom/nav from MuJoCo
+    # ground truth instead of Fast-LIO. Fast-LIO in the standalone desktop
+    # sim is NOT lifecycle-gated, so it inits gravity DURING the stand-up leg
+    # motion → z drifts upward (observed 0.28 → 1.3 m, climbing) which makes
+    # /odom/nav garbage for CFPA2/Nav2 progress checks. The body-frame cloud
+    # (cloud_registered_body) is independent of Fast-LIO's global pose, so the
+    # trav grid (built via GT TF + body cloud) stays REAL perception. This
+    # isolates exploration validation from sim-SLAM init flakiness — the
+    # established 2026-05-18 GT-passthrough pattern. The real robot / HIL path
+    # keeps gated Fast-LIO (validated to z=-0.14 m) and ignores this env.
+    _sim_gt_odom = os.environ.get("SIM_GT_ODOM", "0") == "1"
     if enable_slam:
-        if use_fast_lio:
+        if use_fast_lio and not _sim_gt_odom:
             robot_actions.append(
                 build_slam_odom_relay_node(
                     ns=robot_ns,

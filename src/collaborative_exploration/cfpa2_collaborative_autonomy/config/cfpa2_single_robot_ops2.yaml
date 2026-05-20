@@ -1,0 +1,146 @@
+/**:
+  ros__parameters:
+    # ════════════════════════════════════════════════════════════════════
+    # CFPA2 overlay for the ops2 SLAM-reconstructed building (80 × 32 m,
+    # hand-traced collision walls). Used by BOTH the desktop standalone
+    # launcher (nav_test_slam_ops2_v4_go2.sh → nav_test_3d_explore) AND the
+    # Orin Nano HIL Jetson launch, so the two stay in production parity.
+    #
+    # Replaces the demo_ramp overlay for ops2 — demo_ramp was tuned for a
+    # 16 m ramp box and set cfpa2_reachability_allow_unknown=true, which on
+    # the long corridor makes the reachability BFS flood through UNKNOWN
+    # cells around the finite hand-wall ends so frontiers BEYOND a wall look
+    # reachable. Nav2's footprint-aware SmacHybrid then can't path there →
+    # 8 s stuck-recovery → blacklist → cross-wall oscillation. The base
+    # cfpa2_single_robot.yaml is no good either: max_goal_distance 2.5 m
+    # makes exploration stall (the "no_frontiers" trap, CLAUDE.md 2026-05-15
+    # step 8) on a 70 m corridor.
+    # ════════════════════════════════════════════════════════════════════
+
+    # --- map source: Nav2's INFLATED global costmap (= trav grid + inflation)
+    #     so CFPA2 reachability == what Nav2 can actually plan through.
+    planning_map_topic_suffix: /global_costmap/costmap
+
+    # --- reachability: NO leak through unknown (allow_unknown=false). The
+    #     robot navigates to KNOWN-FREE frontier cells at the boundary of its
+    #     connected reachable region; it does NOT plan optimistically into
+    #     unsensed space. allow_unknown=true was tried but Nav2's planner then
+    #     plans through unknown that turns out to have walls → constant replan
+    #     → the robot oscillates near spawn (PLAN_FAILED flood). Connectivity
+    #     into unexplored corridors instead relies on the wide forced-free
+    #     disk (robot_seed_radius_m, see nav_test_3d_explore.launch.py) which
+    #     MUST bridge the Mid-360 blind ring to the sensed-free ring so the
+    #     reachable region grows continuously as the robot advances.
+    cfpa2_reachability_allow_unknown: false
+    # On the global costmap OccupancyGrid (0..100; 99=inscribed, 100=lethal,
+    # 1..98=inflation gradient): block cost >= 70. With inflation_radius 0.40
+    # + cost_scaling 5.0, cost 70 ≈ 0.24 m from a wall, so the BFS keeps the
+    # robot CENTER > ~0.24 m off walls (threads corridors > ~0.48 m). Tighter
+    # than circumscribed (0.40) on purpose: let the robot ATTEMPT tight
+    # corridors and rely on Nav2's footprint check + stuck-recovery to bail
+    # out of genuine dead-ends, instead of pre-pruning reachable corridors.
+    occupancy_block_threshold: 70
+    cfpa2_reachability_occ_threshold: 70
+
+    # --- goal distance: UNLIMITED. With the blind-zone forced-free disk now
+    #     connecting the robot to the sensed-free corridor, the high-IG
+    #     frontiers sit at the corridor openings ~15 m out and are genuinely
+    #     REACHABLE (goal_reachable filters truly-unreachable ones). An 8 m cap
+    #     rejected them while the near 3 m disk-edge frontiers have ~0 IG (only
+    #     the thin blind ring beyond) → CFPA2 found nothing both near AND
+    #     high-value → no goal → robot pinned (2026-05-20). The TSP-top-K head
+    #     still prefers the nearest of the top frontiers, so exploration stays
+    #     incremental down the corridor to the ±35 m ends.
+    cfpa2_max_goal_distance_m: 0.0
+
+    # --- goal safety: ZERO clearance. The robot bootstraps inside a TINY
+    #     (~1 m²) sensed free pocket at spawn (costmap is 98% unknown until it
+    #     moves). Every escape frontier sits right at the pocket boundary, so
+    #     ANY obstacle-clearance (even 1 cell) rejects all of them → CFPA2
+    #     publishes no goal → robot never moves → map never grows (the deadlock
+    #     observed 2026-05-20). The costmap is already inflated, so a frontier
+    #     cell with cost < occ_thresh is inherently off the wall; SmacHybrid's
+    #     footprint check + 0.4 m tolerance are the real safety net.
+    cfpa2_frontier_obstacle_clearance_m: 0.0
+    cfpa2_goal_obstacle_clearance_m: 0.0
+
+    # --- frontier liveness: relaxed for the small bootstrap pocket. A thin
+    #     escape frontier only needs a couple of unknown neighbours to be a
+    #     real exploration target; the open-scene base default (20 cells over
+    #     a 0.40 m window) rejects every frontier in a 1 m² pocket.
+    cfpa2_frontier_unknown_check_radius_m: 0.40
+    cfpa2_frontier_min_unknown_cells: 2
+    cfpa2_frontier_min_cluster_area_m2: 0.02
+    cfpa2_frontier_cluster_radius_m: 1.0
+
+    # --- information gain: MUST be "local". The C++ port's single-call
+    #     frontier_information_gain (used by cfpa2_single_utility in the
+    #     candidate filter) only implements the "local" box-count IG; the
+    #     "floodfill" branch there is a STUB that returns 0.0 → every
+    #     frontier scores info_gain 0 < 3.0 → utility -1e18 → util list
+    #     empty → CFPA2 publishes NO goal → robot frozen (2026-05-20 root
+    #     cause of the no-goal deadlock). Only the batch path implements
+    #     floodfill; the single-call path does not. Use "local".
+    cfpa2_ig_mode: "local"
+    exploration_gain_radius_cells: 30
+
+    # --- goal-switch hysteresis sized for a long corridor (avoid jitter
+    #     between near-equal far frontiers).
+    switch_min_dist: 0.65
+    switch_hysteresis: 0.5
+    reached_blacklist_dist: 0.65
+
+    # --- ramp overlay OFF (ops2 is flat-ish indoor, no scripted ramp goal).
+    ramp_ascent_enabled: false
+
+    # --- give SLAM + trav grid time to warm before first goal.
+    startup_delay_sec: 24.0
+
+    # --- extent-completeness: the ops2 building is V-shaped (handwalls
+    #     x=[-37.3,+41.7], spawn at the middle (0,0)). The +x branch goes
+    #     down-right to x≈+41, the -x branch is a winding diagonal maze to
+    #     x≈-37. Greedy nearest-first exhausts +x (reaches x≈+32) then GRINDS
+    #     the explored +x pockets forever (run24: path 54→176 m, x_max pinned
+    #     32.6, x_min stuck -2.9) because those pockets always have SOME
+    #     reachable low-IG frontier so the empty-util fallback never fires and
+    #     the robot never returns through spawn for -x.
+    #
+    #     The override makes CFPA2 information-gain-greedy: when the best
+    #     REACHABLE frontier IG is below override_min_ig (robot is down to small
+    #     interior pockets) AND a much larger UNREACHABLE region exists (the -x
+    #     corridor, IG dominates by override_dominance×), snap that big region's
+    #     frontier to its nearest reachable cell and commit there — driving the
+    #     robot toward the unexplored -x branch instead of scraps. IG scale =
+    #     count of unknown cells in a (2·gain_radius+1)² = 61² box (max ~3721);
+    #     a leading frontier into open unknown scores >1000, a small pocket
+    #     <300, so min_ig=350 cleanly separates "productive beeline" (no
+    #     override) from "grinding nooks" (override fires).
+    # IG-override DISABLED (superseded by extent-seek below). It redirects -x
+    # whenever the best reachable frontier IG drops < override_min_ig, which is
+    # NOT extent-gated — with inflation_radius 0.16 more of -x reads reachable,
+    # so it fired DURING the +x beeline and thrashed against the +x primary
+    # (run30: goals alternating +37 <-> -16, robot stuck creeping at x=28, never
+    # reached the 31.5 extent-seek trigger). extent-seek fires only AFTER one
+    # extreme is physically reached, so it doesn't pull -x prematurely. Keep the
+    # empty-util fallback (separate, fires only when NO reachable frontier).
+    cfpa2_explore_unreachable_override: false
+    cfpa2_override_min_ig: 350.0
+    cfpa2_override_dominance: 1.8
+
+    # --- extent-seek: directly drive bidirectional ±x coverage. Once the robot
+    #     physically reaches one extreme (|x| ≥ extent_target_x = 32, i.e.
+    #     within 10 % of ±35), redirect toward the UNREACHED extreme by
+    #     committing to the frontier furthest that way (reachable → drive there;
+    #     else snap the furthest unreachable frontier). Fires at x=32 — BELOW
+    #     the ~34 far-corner wedge point seen in run25 — so the robot turns
+    #     around while still mobile instead of wedging in the +x corner and
+    #     chasing high-IG perimeter frontiers (exterior unknown) forever. This
+    #     is the literal "span +35 → −35" objective expressed as a strategy.
+    cfpa2_extent_seek_enabled: true
+    # 31.5 = exactly the 10 % tolerance of +35. The robot CROSSES 31.5 while
+    # still beelining +x (run26 hit 31.79 before stalling), so extent-seek fires
+    # WITH momentum and the robot overshoots ~0.2-0.5 m during the ~2-3 s
+    # challenger switch → x_max settles ~31.7-32 (clean +x pass) AND the turn
+    # toward -x triggers reliably. 32.0 was 0.21 m above run26's 31.79 plateau,
+    # so plus_done never became true and extent-seek never fired.
+    cfpa2_extent_target_x: 31.5
