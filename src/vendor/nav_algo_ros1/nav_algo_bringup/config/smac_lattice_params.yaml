@@ -1,0 +1,40 @@
+# SmacPlannerLattice (global) — numeric values lifted verbatim from
+# nav2_go2_full_stack.yaml's SmacPlannerHybrid block where compatible.
+# (Hybrid → Lattice differs in motion model file; SE2 overlay uses Lattice
+# with the diff 0.5m primitives.)
+SmacLatticePlannerROS:
+  tolerance:                    0.4
+  allow_unknown:                true
+  max_iterations:               1000000
+  max_on_approach_iterations:   1000
+  max_planning_time:            5.0
+  lookup_table_size:            20.0
+  smooth_path:                  true
+  cache_obstacle_heuristic:     false
+
+  # Diff motion primitives at 0.05 m resolution / 0.5 m turning radius —
+  # the SE2 canonical lattice (matches Nav2 sim SE2 overlay). Shipped
+  # under nav_algo_smac_ros1/sample_primitives/.
+  lattice_filepath: ""   # empty → wrapper defaults to package share path
+
+  # Penalties — match Nav2 yaml (SmacPlannerHybrid section, REEDS_SHEPP
+  # search). For SE2 Lattice you can switch reverse_penalty higher to
+  # discourage reverse arcs if the lattice file includes them.
+  reverse_penalty:              2.0
+  change_penalty:               0.0
+  non_straight_penalty:         1.20
+  cost_penalty:                 3.5
+  retrospective_penalty:        0.015
+  rotation_penalty:             5.0
+  analytic_expansion_ratio:     3.5
+  analytic_expansion_max_length: 3.0
+
+  # Diff primitives include forward + backward arcs from the JSON; whether
+  # reverse expansion is allowed in the analytic step is controlled here.
+  allow_reverse_expansion:      false
+
+  smoother:
+    max_iterations:             1000
+    w_smooth:                   0.3
+    w_data:                     0.2
+    tolerance:                  1.0e-10

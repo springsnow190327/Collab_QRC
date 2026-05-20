@@ -184,7 +184,13 @@ def _launch_setup(context):
     go2_gazebo_pkg = get_package_share_directory("go2_gazebo_sim")
     champ_base_pkg = get_package_share_directory("champ_base")
 
-    rviz_config = os.path.join(go2_gazebo_pkg, "rviz", "single_go2w_gazebo_cfpa2.rviz")
+    # Override the default with rviz_config:=<absolute path> launch arg.
+    # nav_test_hil_desktop.sh sets it to .../rviz/nav_test.rviz which has
+    # GridMap displays for elevation_map_raw + filtered + the SetGoal tool
+    # bound to /robot/goal_pose (2D Goal Pose button → Nav2 directly).
+    rviz_config_arg = _get(context, "rviz_config").strip()
+    rviz_config = rviz_config_arg or os.path.join(
+        go2_gazebo_pkg, "rviz", "single_go2w_gazebo_cfpa2.rviz")
     go2w_config_pkg = get_package_share_directory("go2w_config")
     hybrid_motion_config = os.path.join(go2w_config_pkg, "config", "control", "go2w_hybrid_motion.yaml")
     slam_config = os.path.join(go2w_config_pkg, "config", "slam", "pointlio_gazebo.yaml")
@@ -361,10 +367,16 @@ def _launch_setup(context):
     )
 
     if rviz:
+        rviz_tf_remaps = [
+            ("/tf", f"/{robot_ns}/tf"),
+            ("/tf_static", f"/{robot_ns}/tf_static"),
+        ]
         actions.append(
             TimerAction(
                 period=7.0,
-                actions=[build_rviz_node(rviz_config, use_sim_time, name="rviz2_single_go2w")],
+                actions=[build_rviz_node(rviz_config, use_sim_time,
+                                          name="rviz2_single_go2w",
+                                          remappings=rviz_tf_remaps)],
             )
         )
 
@@ -372,39 +384,76 @@ def _launch_setup(context):
     # In MuJoCo the robot is embedded in the MJCF scene. use_mujoco=True skips
     # Gazebo-only nodes (spawn_entity, initial_pose_guard, champ contact_sensor).
     # Contact sensing is handled by mujoco_contact_node instead.
+    # Predefine the wait_for_settle node so the if-enable_assets block can
+    # reference it in its OnProcessExit handler (which fires when
+    # stack_handles["stand_up_node"] exits).
+    _wait_for_settle_imu_topic = f"/{robot_ns}/imu/data"
+    _wait_for_settle_signal = f"/{robot_ns}/platform_ready"
+    wait_for_settle = Node(
+        package="go2w_spawn",
+        executable="wait_for_ready.py",
+        name="wait_for_settle",
+        parameters=[
+            {
+                "mode": "imu_stable",
+                "imu_topic": _wait_for_settle_imu_topic,
+                "angular_velocity_threshold": 0.05,
+                "stable_count": 10,
+                "check_interval_sec": 0.5,
+                "timeout_sec": 60.0,
+                "gate_name": "settle",
+                "signal_topic": _wait_for_settle_signal,
+                "post_signal_linger_sec": 10.0,
+                "use_sim_time": False,
+            }
+        ],
+        output="screen",
+    )
+
     if enable_assets:
+        stack_actions, stack_handles = build_dual_robot_stack(
+            ns=robot_ns,
+            spawn_x=spawn_x,
+            spawn_y=spawn_y,
+            spawn_yaw=spawn_yaw,
+            use_sim_time=use_sim_time,
+            robot_description=robot_description,
+            joints_config=joints_config,
+            links_config=links_config,
+            gait_config=gait_config,
+            ekf_base_to_footprint=ekf_base_to_footprint,
+            ekf_footprint_to_odom=ekf_footprint_to_odom,
+            joint_state_spawner_delay_sec=1.0,
+            effort_spawner_delay_sec=1.2,
+            standup_delay_sec=4.0,
+            pose_guard_hold_sec=12.0,
+            activate_controllers_on_spawn=True,
+            stand_up_joint_preset="go2w" if has_wheels else "go2",
+            cmd_vel_input_topic="cmd_vel_legged",
+            wheel_controller_name=(
+                f"{robot_ns}_wheel_velocity_controller" if has_wheels else ""
+            ),
+            rsp_publish_frequency=100.0,
+            use_mujoco=True,
+            # rl_policy mode owns the leg loop, so skip CHAMP's
+            # quadruped_controller + state_estimator + EKFs. Keep RSP,
+            # controller spawners, and one-shot stand-up trajectory.
+            skip_champ=rl_policy,
+            return_handles=True,
+        )
+        actions.append(TimerAction(period=5.0, actions=stack_actions))
+        # Cross-host lifecycle handshake (2026-05-20):
+        # stand_up_node (patched to block 20s until trajectory complete) exits
+        # → start wait_for_settle (tighter |ω|<0.05 for 5s) → publish latched
+        # /robot/platform_ready → Jetson run_jetson_hil.sh exec's autonomy
+        # launch only AFTER receiving this signal. Solves the Fast-LIO
+        # IMU-init-during-stand-up failure (z drifted to +6m).
         actions.append(
-            TimerAction(
-                period=5.0,
-                actions=build_dual_robot_stack(
-                    ns=robot_ns,
-                    spawn_x=spawn_x,
-                    spawn_y=spawn_y,
-                    spawn_yaw=spawn_yaw,
-                    use_sim_time=use_sim_time,
-                    robot_description=robot_description,
-                    joints_config=joints_config,
-                    links_config=links_config,
-                    gait_config=gait_config,
-                    ekf_base_to_footprint=ekf_base_to_footprint,
-                    ekf_footprint_to_odom=ekf_footprint_to_odom,
-                    joint_state_spawner_delay_sec=1.0,
-                    effort_spawner_delay_sec=1.2,
-                    standup_delay_sec=4.0,
-                    pose_guard_hold_sec=12.0,
-                    activate_controllers_on_spawn=True,
-                    stand_up_joint_preset="go2w" if has_wheels else "go2",
-                    cmd_vel_input_topic="cmd_vel_legged",
-                    wheel_controller_name=(
-                        f"{robot_ns}_wheel_velocity_controller" if has_wheels else ""
-                    ),
-                    rsp_publish_frequency=100.0,
-                    use_mujoco=True,
-                    # rl_policy mode owns the leg loop, so skip CHAMP's
-                    # quadruped_controller + state_estimator + EKFs. Keep RSP,
-                    # controller spawners, and one-shot stand-up trajectory.
-                    skip_champ=rl_policy,
-                ),
+            RegisterEventHandler(
+                OnProcessExit(
+                    target_action=stack_handles["stand_up_node"],
+                    on_exit=[wait_for_settle],
+                )
             )
         )
 
@@ -431,6 +480,10 @@ def _launch_setup(context):
         ],
         output="screen",
     )
+
+    # (Second gate `wait_for_settle` is defined earlier — moved above the
+    # build_dual_robot_stack block so its name is in scope when we wire the
+    # OnProcessExit handler against stack_handles["stand_up_node"].)
 
     # ── Robot actions: started once platform is ready ──
     robot_actions = []
@@ -700,6 +753,7 @@ def _launch_setup(context):
             "cfpa2_w_c": cfpa2_w_c,
             "cfpa2_w_momentum": cfpa2_w_momentum,
             "cfpa2_min_utility": cfpa2_min_utility,
+            "cfpa2_executable_suffix": _get(context, "cfpa2_executable_suffix"),
         }
         if cfpa2_switch_hysteresis:
             nav_args["cfpa2_switch_hysteresis"] = cfpa2_switch_hysteresis
@@ -779,6 +833,10 @@ def generate_launch_description():
             DeclareLaunchArgument("use_sim_time", default_value="true"),
             DeclareLaunchArgument("gui", default_value="true"),
             DeclareLaunchArgument("rviz", default_value="true"),
+            DeclareLaunchArgument(
+                "rviz_config", default_value="",
+                description="Absolute path to .rviz config; empty → default "
+                            "single_go2w_gazebo_cfpa2.rviz"),
             DeclareLaunchArgument("cleanup_stale", default_value="true"),
             DeclareLaunchArgument("enable_assets", default_value="true"),
             DeclareLaunchArgument("enable_perception", default_value="true"),
@@ -831,6 +889,12 @@ def generate_launch_description():
             DeclareLaunchArgument("map_frame", default_value="world"),
             DeclareLaunchArgument("waypoint_input_suffix", default_value="/way_point_coord"),
             DeclareLaunchArgument("cfpa2_goal_topic_suffix", default_value="/way_point_coord"),
+            DeclareLaunchArgument(
+                "cfpa2_executable_suffix",
+                default_value="",
+                description="Suffix appended to cfpa2_single_robot_node "
+                            "(use '_cpp' for the pure-C++ rclcpp port).",
+            ),
             DeclareLaunchArgument("cfpa2_switch_hysteresis", default_value=""),
             DeclareLaunchArgument("max_linear_speed", default_value=""),
             DeclareLaunchArgument("require_settle_before_motion", default_value=""),

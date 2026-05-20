@@ -31,7 +31,6 @@
     # Reading Nav2's inflated costmap aligns CFPA2's "reachable" with Nav2's
     # "plannable" so picked goals are immediately path-able.
     planning_map_topic_suffix: /global_costmap/costmap
-    ig_dimension: 2d
     cfpa2_frontier_min_cluster_area_m2: 0.04
     # Down from 0.20 → 0.10 (1 cell @ 0.10m res). Narrow corridors in slam_ops2
     # are 0.30-0.50m wide; with 2-cell clearance the centroid was within range
@@ -82,13 +81,10 @@
     # now reflects geometric room size rather than local unknown density. Fixes
     # the slam_ops2 behaviour where the robot kept picking small nearby nooks
     # over big-but-farther rooms.
-    # Planner mode: TSP-of-top-K beats greedy max-utility on slam_ops2's
-    # multi-room layout. Greedy was flipping between a near-small frontier
-    # and a far-big one every tick (sawtooth motion → churn). TSP picks
-    # the head of the nearest-neighbor tour through the top-K candidates,
-    # which is "the frontier on the route to the big payoff", and across
-    # ticks the tour stays stable so commit naturally works.
-    cfpa2_planner_mode: "tsp_topk"
+    # Planner: TSP-of-top-K. Picks the head of the nearest-neighbor tour
+    # through the top-K utility candidates so the robot heads to "the
+    # frontier on the route to the big payoff"; tour stays stable across
+    # ticks so commit naturally works.
     cfpa2_tsp_k: 5
     cfpa2_ig_mode: "floodfill"
     cfpa2_floodfill_budget: 2000

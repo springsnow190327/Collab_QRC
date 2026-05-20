@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>nav_algo_core</name>
+  <version>0.0.1</version>
+  <description>
+    ROS 1 Noetic port of the algorithmic core of Nav2 Humble's
+    SmacPlannerLattice + MPPIController. This package builds a pure C++
+    static library (no node, no ROS publishers/subscribers). The Smac and
+    MPPI ROS plugins (nav_algo_smac_ros1, nav_algo_mppi_ros1) link against
+    this library and expose nav_core::BaseGlobalPlanner / BaseLocalPlanner
+    interfaces.
+  </description>
+  <maintainer email="zhuhanshan12@outlook.com">Hanshang Zhu</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>roscpp</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <depend>costmap_2d</depend>
+  <depend>angles</depend>
+  <depend>libompl-dev</depend>
+  <depend>eigen</depend>
+</package>

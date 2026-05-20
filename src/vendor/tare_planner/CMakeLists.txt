@@ -30,11 +30,26 @@ find_package(pcl_conversions REQUIRED)
 find_package(pcl_ros REQUIRED)
 find_package(Eigen3 REQUIRED)
 
+set(TARE_ORTOOLS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/or-tools" CACHE PATH
+  "Path to OR-Tools tree containing include/ and lib/")
+if(NOT EXISTS "${TARE_ORTOOLS_ROOT}/include/ortools/constraint_solver/routing.h")
+  message(FATAL_ERROR
+    "OR-Tools headers not found. Set -DTARE_ORTOOLS_ROOT=/path/to/or-tools "
+    "with include/ortools and lib/libortools.so.")
+endif()
+if(NOT EXISTS "${TARE_ORTOOLS_ROOT}/lib/libortools.so")
+  message(FATAL_ERROR
+    "OR-Tools library not found. Set -DTARE_ORTOOLS_ROOT=/path/to/or-tools "
+    "with include/ortools and lib/libortools.so.")
+endif()
+set(CMAKE_BUILD_RPATH "${TARE_ORTOOLS_ROOT}/lib")
+set(CMAKE_INSTALL_RPATH "${TARE_ORTOOLS_ROOT}/lib")
+
  include_directories(
   ${catkin_INCLUDE_DIRS}
   ${PCL_INCLUDE_DIRS}
   include
-  ${CMAKE_CURRENT_SOURCE_DIR}/or-tools/include
+  ${TARE_ORTOOLS_ROOT}/include
   ${EIGEN3_INCLUDE_DIR}
   /opt/ros/humble/include
   # /usr/local/include
@@ -71,7 +86,7 @@ ament_target_dependencies(pointcloud_utils rclcpp std_msgs nav_msgs geometry_msg
 
 add_library(tsp_solver src/tsp_solver/tsp_solver.cpp)
 ament_target_dependencies(tsp_solver rclcpp std_msgs nav_msgs geometry_msgs sensor_msgs tf2_ros tf2_geometry_msgs tf2)
-target_link_libraries(tsp_solver ${catkin_LIBRARIES} ${CMAKE_CURRENT_SOURCE_DIR}/or-tools/lib/libortools.so)
+target_link_libraries(tsp_solver ${catkin_LIBRARIES} ${TARE_ORTOOLS_ROOT}/lib/libortools.so)
 
 add_library(viewpoint src/viewpoint/viewpoint.cpp)
 ament_target_dependencies(viewpoint rclcpp std_msgs nav_msgs geometry_msgs sensor_msgs tf2_ros tf2_geometry_msgs tf2)
@@ -152,5 +167,4 @@ install(DIRECTORY data/
       )
 
 ament_package()
-
 

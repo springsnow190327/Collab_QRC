@@ -1,0 +1,11 @@
+<class_libraries>
+  <library path="cuda_mppi_controller">
+    <class type="nav2_mppi_controller_cuda_plugin::CudaMPPIController"
+           base_class_type="nav2_core::Controller">
+      <description>
+        CUDA-accelerated MPPI controller for Nav2. Drop-in for
+        nav2_mppi_controller::MPPIController; enable via `use_cuda: true`.
+      </description>
+    </class>
+  </library>
+</class_libraries>

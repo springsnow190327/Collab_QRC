@@ -1,0 +1,13 @@
+<library path="lib/libnav_algo_mppi_ros1">
+  <class name="nav_algo_mppi_ros1/MPPIControllerROS"
+         type="nav_algo_mppi_ros1::MPPIControllerROS"
+         base_class_type="nav_core::BaseLocalPlanner">
+    <description>
+      ROS 1 wrapper around the ported Nav2 Humble MPPIController.
+      Math layer = nav_algo_core's mppi::Optimizer + CriticManager
+      (8 critics) + PathHandler, byte-identical to Humble upstream.
+      This plugin handles move_base coupling: tf lookups, current pose +
+      velocity tracking, cmd_vel output, goal-reached check.
+    </description>
+  </class>
+</library>

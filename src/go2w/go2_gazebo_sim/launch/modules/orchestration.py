@@ -3,7 +3,8 @@
 from launch_ros.actions import Node
 
 
-def build_rviz_node(rviz_file: str, use_sim_time, condition=None, namespace: str | None = None, name: str = "rviz2"):
+def build_rviz_node(rviz_file: str, use_sim_time, condition=None, namespace: str | None = None,
+                    name: str = "rviz2", remappings: list | None = None):
     kwargs = {
         "package": "rviz2",
         "executable": "rviz2",
@@ -16,4 +17,6 @@ def build_rviz_node(rviz_file: str, use_sim_time, condition=None, namespace: str
         kwargs["namespace"] = namespace
     if condition is not None:
         kwargs["condition"] = condition
+    if remappings:
+        kwargs["remappings"] = remappings
     return Node(**kwargs)

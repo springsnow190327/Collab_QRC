@@ -5,10 +5,6 @@
     - robot
     publish_rate: 2.0
     verbose_logs: false
-    use_shared_map: false
-    shared_map_topic: /disco_slam/global_map
-    shared_map_wait_sec: 8.0
-    shared_map_local_patch_radius_m: 2.5
     goal_topic_suffix: /way_point_coord
     planning_map_topic_suffix: /traversability_grid
     marker_frame_override: map
@@ -56,7 +52,6 @@
     adaptive_min_max_targets: 80
     adaptive_min_exploration_gain_radius_cells: 20
     adaptive_max_skip_ticks: 3
-    ig_dimension: 2d
     cfpa2_max_goal_distance_m: 2.5
     # Ramp-ascent goals are an optional overlay feature. Keep the base CFPA2
     # policy scene-agnostic; demo-specific ramp behavior must be enabled from a

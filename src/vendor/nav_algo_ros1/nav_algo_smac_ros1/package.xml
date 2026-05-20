@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>nav_algo_smac_ros1</name>
+  <version>0.0.1</version>
+  <description>
+    ROS 1 nav_core::BaseGlobalPlanner plugin wrapping the ported Nav2
+    Humble SmacPlannerLattice algorithm. Math is byte-identical to the
+    Humble plugin (the algorithm core lives in nav_algo_core); this package
+    only provides the move_base-side plumbing (parameter loading, costmap
+    coupling, plan publishing).
+  </description>
+  <maintainer email="zhuhanshan12@outlook.com">Hanshang Zhu</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>roscpp</depend>
+  <depend>rospack</depend>
+  <depend>pluginlib</depend>
+  <depend>nav_core</depend>
+  <depend>costmap_2d</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>angles</depend>
+  <depend>nav_algo_core</depend>
+  <depend>libompl-dev</depend>
+  <depend>eigen</depend>
+
+  <export>
+    <nav_core plugin="${prefix}/plugin.xml"/>
+  </export>
+</package>

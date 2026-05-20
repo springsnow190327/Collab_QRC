@@ -1,23 +1,36 @@
 <?xml version="1.0"?>
 <package format="3">
   <name>cfpa2_collaborative_autonomy</name>
-  <version>0.1.0</version>
-  <description>ROS2 CFPA2 coordinator node for dual-robot frontier assignment with space-time A* local waypointing.</description>
+  <version>0.2.0</version>
+  <description>
+    CFPA2 frontier allocator: coordinator + per-robot tick loops for
+    2D dual-robot exploration with space-time A* local waypointing.
+    Hot-path numerics (frontier extraction, BFS, info-gain, dead-frontier
+    filter, cluster representatives) are in a ctypes-loaded C++ library;
+    orchestration is still Python and pending a full rclcpp Node port.
+  </description>
   <maintainer email="hz@example.com">hz</maintainer>
   <license>MIT</license>
 
-  <buildtool_depend>ament_python</buildtool_depend>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_python</buildtool_depend>
 
-  <depend>rclpy</depend>
+  <!-- C++ runtime -->
+  <depend>rclcpp</depend>
   <depend>geometry_msgs</depend>
   <depend>nav_msgs</depend>
+  <depend>std_msgs</depend>
   <depend>visualization_msgs</depend>
-  <depend>nvblox_frontend_msgs</depend>
+  <depend>cfpa2_peer_coordination_msgs</depend>
+
+  <!-- Python runtime -->
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
 
   <export>
-    <build_type>ament_python</build_type>
+    <build_type>ament_cmake</build_type>
   </export>
 </package>

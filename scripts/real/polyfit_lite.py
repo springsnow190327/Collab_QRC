@@ -29,9 +29,17 @@ Usage:
 import argparse
 import json
 import math
+import sys
+import types
 from pathlib import Path
 
 import numpy as np
+
+# open3d.__init__ eagerly imports open3d.ml, which pulls in a newer sklearn
+# whose array_api_compat fails against the system numpy 1.x (`module 'numpy'
+# has no attribute '_CopyMode'`). We don't use open3d.ml — stub it out before
+# importing open3d so the core geometry/RANSAC/DBSCAN API loads cleanly.
+sys.modules.setdefault("open3d.ml", types.ModuleType("open3d.ml"))
 import open3d as o3d
 
 
@@ -125,6 +133,21 @@ def main():
                          "either x or y of plane frame")
     ap.add_argument("--name", default="ops2_polyfit",
                     help="prefix for emitted geom names")
+    # 2026-05-20: inlier clustering. RANSAC inliers for one plane are often
+    # scattered across the building (e.g. the left + right corridor walls are
+    # COPLANAR, so one RANSAC plane catches both). Taking the AABB over all of
+    # them produces a single 47m box that bridges the corridor gap and blocks
+    # the path. DBSCAN-clustering the inliers in the plane frame and emitting
+    # one tight box per cluster preserves the gap.
+    ap.add_argument("--cluster-eps", type=float, default=0.6,
+                    help="DBSCAN epsilon (m) for splitting coplanar inliers "
+                         "into separate wall segments. 0 disables clustering.")
+    ap.add_argument("--cluster-min-pts", type=int, default=30,
+                    help="DBSCAN min points per cluster")
+    # Clamp wall vertical extent so misfit planes don't make 10m-tall slabs.
+    ap.add_argument("--max-wall-height", type=float, default=4.0,
+                    help="clamp a wall box's vertical (world-z) extent to this "
+                         "many meters, anchored at the cluster's min-z. 0 = off.")
     args = ap.parse_args()
 
     in_path = Path(args.input)
@@ -167,30 +190,62 @@ def main():
         if len(inlier_pts) < args.min_inliers:
             print(f"  plane[{k}]: only {len(inlier_pts)} inliers (<{args.min_inliers}); stop")
             break
-        center_world, R, ext_xy = fit_plane_local_frame(inlier_pts, normal)
-        if ext_xy[0] < args.min_extent or ext_xy[1] < args.min_extent:
-            # Too small to be a real surface; discard but still remove from pool.
-            mask = np.ones(len(remaining), dtype=bool)
-            mask[inliers] = False
-            remaining = remaining[mask]
-            print(f"  plane[{k}]: discarded ({len(inlier_pts)} inliers, "
-                  f"extent={ext_xy[0]:.2f}×{ext_xy[1]:.2f} m too small)")
-            continue
-        quat = R_to_quat(R)
-        planes.append({
-            "id": len(planes),
-            "n_inliers": int(len(inlier_pts)),
-            "normal": normal.tolist(),
-            "center": center_world.tolist(),
-            "size_xyz": [
-                float(ext_xy[0] / 2.0),
-                float(ext_xy[1] / 2.0),
-                float(args.box_thickness / 2.0),
-            ],
-            "quat_wxyz": list(quat),
-        })
-        print(f"  plane[{k}] kept: {len(inlier_pts):,} inliers  "
-              f"extent={ext_xy[0]:.2f}×{ext_xy[1]:.2f}m  "
+        # Split coplanar inliers into spatially-separate clusters so a single
+        # RANSAC plane that caught both sides of a corridor becomes 2 tight
+        # boxes (gap preserved) instead of one corridor-spanning slab.
+        if args.cluster_eps > 0.0:
+            cl_pcd = o3d.geometry.PointCloud()
+            cl_pcd.points = o3d.utility.Vector3dVector(inlier_pts)
+            labels = np.asarray(cl_pcd.cluster_dbscan(
+                eps=args.cluster_eps, min_points=args.cluster_min_pts))
+            unique = [lbl for lbl in set(labels.tolist()) if lbl >= 0]
+            clusters = [inlier_pts[labels == lbl] for lbl in unique]
+            if not clusters:  # all noise → fall back to whole-plane box
+                clusters = [inlier_pts]
+        else:
+            clusters = [inlier_pts]
+
+        n_emitted = 0
+        for cl_pts in clusters:
+            if len(cl_pts) < args.cluster_min_pts:
+                continue
+            center_world, R, ext_xy = fit_plane_local_frame(cl_pts, normal)
+            if ext_xy[0] < args.min_extent or ext_xy[1] < args.min_extent:
+                continue
+
+            sx = float(ext_xy[0] / 2.0)
+            sy = float(ext_xy[1] / 2.0)
+            # Clamp wall vertical extent: find which in-plane axis is most
+            # vertical (largest |world-z| component of its column in R) and
+            # cap that half-size, re-anchoring the box center at the cluster's
+            # min-z + half the clamped height so it grows UP from the floor.
+            if args.max_wall_height > 0.0:
+                col_x_z = abs(R[2, 0])  # world-z component of local-x axis
+                col_y_z = abs(R[2, 1])  # world-z component of local-y axis
+                half_h = args.max_wall_height / 2.0
+                if col_x_z > col_y_z and (2 * sx) > args.max_wall_height:
+                    z_min = float(cl_pts[:, 2].min())
+                    sx = half_h
+                    center_world = center_world.copy()
+                    center_world[2] = z_min + half_h
+                elif col_y_z >= col_x_z and (2 * sy) > args.max_wall_height:
+                    z_min = float(cl_pts[:, 2].min())
+                    sy = half_h
+                    center_world = center_world.copy()
+                    center_world[2] = z_min + half_h
+
+            quat = R_to_quat(R)
+            planes.append({
+                "id": len(planes),
+                "n_inliers": int(len(cl_pts)),
+                "normal": normal.tolist(),
+                "center": center_world.tolist(),
+                "size_xyz": [sx, sy, float(args.box_thickness / 2.0)],
+                "quat_wxyz": list(quat),
+            })
+            n_emitted += 1
+        print(f"  plane[{k}]: {len(inlier_pts):,} inliers → {len(clusters)} "
+              f"cluster(s) → {n_emitted} box(es)  "
               f"normal=({normal[0]:+.2f},{normal[1]:+.2f},{normal[2]:+.2f})")
         # Remove inliers
         mask = np.ones(len(remaining), dtype=bool)

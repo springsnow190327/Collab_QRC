@@ -1,0 +1,171 @@
+# Collab_QRC common-executor config for upstream GBPlanner2.
+#
+# This keeps GBPlanner2 as an autonomous high-level exploration planner while
+# the robot dynamics, MuJoCo scene, Fast-LIO, Nav2 MPPI controller, safety
+# shield, and metrics remain owned by the ROS2 Collab_QRC stack.
+RobotParams:
+  # Use GBPlanner2's native free-space/aerial validity model for high-level
+  # exploration, matching the GBPlanner3 common-executor baseline.  The Go2
+  # remains ground-executed by Nav2 MPPI + the safety shield downstream; this
+  # planner only proposes autonomous x/y/yaw exploration targets.
+  #
+  # The upstream kGroundRobot mode depends on a dense elevation-map layer.  In
+  # the flat MuJoCo maze, the lidar stream is reliable for wall TSDF/free-space
+  # carving but sparse for ground elevation, so the ground-mode sampler can
+  # reject all candidate vertices before a trajectory is produced.
+  type:               kAerialRobot
+  size:               [0.30, 0.22, 0.10]
+  size_extension_min: [0.0, 0.0, 0.0]
+  size_extension:     [0.0, 0.0, 0.0]
+  center_offset:      [0.0, 0.0, 0.0]
+  relax_ratio:        0.5
+  bound_mode:         kExtendedBound
+  safety_extension:   [0.02, 0.02, 0.01]
+
+SensorParams:
+  sensor_list:      ["VLP16"]
+  VLP16:
+    type:           kLidar
+    max_range:      20.0
+    center_offset:  [0.0, 0.0, 0.0]
+    rotations:      [0.0, 0.0, 0.0]
+    # Match the simulated 360 deg LiDAR coverage used by the other planners.
+    fov:            [rad(2.0*pi), rad(pi/2)]
+    resolution:     [rad(10.0*pi/180), rad(10.0*pi/180)]
+    frontier_percentage_threshold: 0.05
+
+BoundedSpaceParams:
+  Global:
+    type:           kCuboid
+    min_val:        [-1000.0, -1000.0, -30.0]
+    max_val:        [1000.0, 1000.0, 30.0]
+  Local:
+    type:           kCuboid
+    # Keep the planner sampling window aligned with demo3_mixed-scale mazes so
+    # planner CPU load is comparable to the existing GBPlanner3 baseline.
+    min_val:        [-10.0, -8.0, 0.05]
+    max_val:        [10.0, 8.0, 0.75]
+    min_extension:  [-10.0, -8.0, -1.0]
+    max_extension:  [10.0, 8.0, 1.0]
+  LocalSearch:
+    type:           kCuboid
+    min_val:        [-12.0, -10.0, 0.00]
+    max_val:        [12.0, 10.0, 0.85]
+  LocalAdaptiveExp:
+    type:           kCuboid
+    min_val:        [-10.0, -8.0, -0.25]
+    max_val:        [10.0, 8.0, 0.85]
+
+NoGainZones:
+  g1:
+    type:           kCuboid
+    min_val:        [-50.0, -50.0, -20.0]
+    max_val:        [2.0, 50.0, 20.0]
+
+RandomSamplerParams:
+  SamplerForExploration:
+    X:
+      pdf_type:       kUniform
+      sample_mode:    kLocal
+    Y:
+      pdf_type:       kUniform
+      sample_mode:    kLocal
+    Z:
+      pdf_type:       kUniform
+      sample_mode:    kLocal
+    Heading:
+      pdf_type:       kUniform
+      sample_mode:    kManual
+      min_val:        rad(-pi)
+      max_val:        rad(pi)
+  SamplerForSearching:
+    X:
+      pdf_type:       kUniform
+      sample_mode:    kLocal
+    Y:
+      pdf_type:       kUniform
+      sample_mode:    kLocal
+    Z:
+      pdf_type:       kUniform
+      sample_mode:    kLocal
+    Heading:
+      pdf_type:       kUniform
+      sample_mode:    kManual
+      min_val:        rad(-pi)
+      max_val:        rad(pi)
+  SamplerForAdaptiveExp:
+    X:
+      pdf_type:       kUniform
+      sample_mode:    kLocal
+    Y:
+      pdf_type:       kUniform
+      sample_mode:    kLocal
+    Z:
+      pdf_type:       kUniform
+      sample_mode:    kLocal
+    Heading:
+      pdf_type:       kUniform
+      sample_mode:    kManual
+      min_val:        rad(-pi)
+      max_val:        rad(pi)
+
+PlanningParams:
+  type:             kBasicExploration
+  rr_mode:          kGraph
+  exp_sensor_list:  ["VLP16"]
+  v_max:            1.0
+  v_homing_max:     0.9
+  yaw_rate_max:     0.9
+  edge_length_min:  0.2
+  edge_length_max:  4.0
+  edge_overshoot:   0.0
+  num_vertices_max: 160
+  num_edges_max:    4000
+  num_loops_cutoff: 700
+  num_loops_max:    4000
+  nearest_range:    4.0
+  nearest_range_min: 0.2
+  nearest_range_max: 4.0
+  use_current_state: true
+  augment_free_voxels_time: 1
+  free_frustum_before_planning: false
+  use_ray_model_for_volumetric_gain: true
+  path_length_penalty: 0.01
+  path_direction_penalty: 0.03
+  hanging_vertex_penalty: 5.0
+  exp_gain_voxel_size: 0.8
+  occupied_voxel_gain: 0.0
+  free_voxel_gain:  0.0
+  unknown_voxel_gain: 60.0
+  nonuniform_ray_cast: true
+  ray_cast_step_size_multiplier: 1.0
+  freespace_cloud_enable: false
+  leafs_only_for_volumetric_gain: false
+  cluster_vertices_for_gain: true
+  clustering_radius: 0.5
+  max_ground_height: 0.7
+  robot_height: 0.15
+  max_inclination: rad(25.0*pi/180)
+  interpolate_projection_distance: false
+  yaw_tangent_correction: false
+  traverse_length_max: 6.0
+  traverse_time_max: 40.0
+  path_safety_enhance_enable: true
+  path_interpolation_distance: 0.5
+  auto_global_planner_enable: true
+  relaxed_corridor_multiplier: 1.5
+  homing_backward: false
+  auto_homing_enable: false
+  time_budget_limit: 3600
+  global_frame_id: world
+  global_path_inclination_check: false
+  go_home_if_fully_explored: false
+  geofence_checking_enable: false
+
+AdaptiveObbParams:
+  type: kPca
+  local_pointcloud_range: 20.0
+  bounding_box_size_max: 20
+
+GeofenceParams:
+  AreaList: []

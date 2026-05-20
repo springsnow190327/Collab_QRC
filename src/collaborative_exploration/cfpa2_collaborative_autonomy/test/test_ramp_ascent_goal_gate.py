@@ -204,14 +204,7 @@ def test_active_ramp_goal_does_not_use_frontier_reached_blacklist_radius():
         def warn(self, *_args, **_kwargs):
             pass
 
-    class _Tracker:
-        _tracked = []
-
-        def record_attempt(self, _goal):
-            return None
-
     node.get_logger = lambda: _Logger()
-    node._cluster_tracker = _Tracker()
     node.odoms["robot"].pose.pose.position.x = 5.42
     node.odoms["robot"].pose.pose.position.y = -0.48
 
