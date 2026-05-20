@@ -1,0 +1,33 @@
+# Shared costmap parameters between global and local. Mirrors the
+# corresponding subset of Nav2's nav2_go2_full_stack.yaml.
+
+# Robot footprint — same Go2 rectangle as the Nav2 sim yaml (~0.64×0.36m
+# after 2026-05-18 tightening). consider_footprint=true on MPPI side, so
+# this polygon is the actual collision envelope (not robot_radius).
+footprint: "[[0.32, 0.18], [0.32, -0.18], [-0.32, -0.18], [-0.32, 0.18]]"
+footprint_padding: 0.03   # synced to Nav2 yaml 2026-05-20
+
+# Layers: just static (reads /<ns>/traversability_grid from trav_pipeline_ros1)
+# + inflation. The 12-layer ETH+CNN+ramp_safe pipeline already produced the
+# fused trav_grid upstream, so costmap_2d's role here is purely to consume
+# that OccupancyGrid and apply the same InflationLayer Nav2 uses.
+plugins:
+  - {name: static_layer,     type: "costmap_2d::StaticLayer"}
+  - {name: inflation_layer,  type: "costmap_2d::InflationLayer"}
+
+static_layer:
+  map_topic: /robot/traversability_grid
+  subscribe_to_updates: true
+  track_unknown_space: true
+  use_maximum: false
+  trinary_costmap: false
+  unknown_cost_value: 255
+
+inflation_layer:
+  # 2026-05-20: synced to Nav2 yaml's -x-corridor fix. The winding -x corridor
+  # is a 1.0 m physical lane; inflation_radius 0.20 left only 1.0-2*0.20=0.60 m
+  # cost-0 < the robot's 0.64 m turning envelope -> wedged in chicanes. 0.16 ->
+  # 0.68 m cost-0 lane. consider_footprint=true (MPPI) stays the exact collision
+  # guard. (Was 0.20/5.0; Nav2 nav2_go2_full_stack.yaml is now 0.16/6.0.)
+  inflation_radius: 0.16
+  cost_scaling_factor: 6.0

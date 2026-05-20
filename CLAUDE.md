@@ -4,6 +4,51 @@ Multi-robot autonomy with Unitree Go2W wheeled-legged quadrupeds + Go2 walking q
 
 Door task (Phase 2 dual-robot VLM coordination) and the legacy A*/default Python nav backends were removed in the 2026-05 cleanup; see [CLAUDE1.md](CLAUDE1.md) for Phase 1 VLM exploration history, Phase 2 FSM archive, archived 2026-04 operational notes, and the deletion log.
 
+## Active state (2026-05-20 night) — FULL autonomy stack running NATIVE on the real Go2 Orin NX (ROS 1 Noetic, no bridge) — verified real-time end-to-end
+
+**The milestone:** the entire autonomy stack now runs **onboard the real Go2's Jetson Orin NX 16 GB** in native ROS 1 Noetic — SLAM (Point-LIO) + traversability (elevation_mapping_cupy + CNN) + Nav2-port nav (SmacLattice global + **CUDA-MPPI** local via `move_base`) + CFPA2 frontier exploration (C++). No ros1_bridge in the data path; the laptop is only NAT internet + SSH (+ RViz2 during HIL). Consolidated catkin workspace at `/home/unitree/autonomous_exploration_zhu/`, mirrored to the repo at [`jetson_ws/`](jetson_ws/README.md).
+
+### Verified real-time on the bench (robot standing, joints locked — pure data-flow validation)
+
+| Topic | Rate | Source |
+|---|---|---|
+| `/livox/imu` | 200 Hz | Mid-360 |
+| `/robot/Odometry` | 10 Hz | Point-LIO (no z-drift) |
+| `/robot/odom/nav` | 10 Hz | topic_tools relay (Odometry→odom/nav) |
+| `/robot/cloud_registered_body` | 10 Hz | Point-LIO |
+| `/robot/traversability_grid` | 5 Hz | elevation_mapping_cupy + filter |
+| `/robot/move_base/global_costmap/costmap` | 2 Hz | move_base (trav grid static layer) |
+| `/robot/cmd_vel` | 20 Hz | move_base (SmacLattice + CUDA-MPPI) |
+| `/robot/way_point_coord` | 2 Hz | CFPA2 (tick p95 0.3 ms) |
+
+All 12 nodes alive, zero DEAD, TF `map→camera_init→body→base_link` connected. **Orin NX resource use with the full stack live: RAM 6.6/15.4 GB, CPU < 33 %, GPU < 19 %, 56 °C, 6.6 W — enormous headroom** (CUDA-MPPI is nearly free on the Orin Ampere GPU; C++ CFPA2 + Point-LIO iVox leave the CPU mostly idle).
+
+### NX hardware / OS
+- `unitree@192.168.123.18` (pwd in gitignored [`scripts/real/.orin_nx_cheatsheet.md`](scripts/real/.orin_nx_cheatsheet.md)). Ubuntu 20.04 aarch64, JetPack 5.1.1 / L4T R35.3.1 / CUDA 11.4 / Python 3.8, ROS Noetic.
+- NX has **no internet** on the Go2 net; share the laptop's via iptables NAT (recipe in cheatsheet). Go2 Type-C is a USB data port, **not** video-out — drive the NX headless over SSH.
+- USB-Ethernet dongle (ASIX AX88179) flaps intermittently → all NX ops use detached `setsid` scripts + short-connection retries so an SSH drop never kills onboard work.
+
+### What it took (the hard parts, full detail in [`jetson_ws/README.md`](jetson_ws/README.md) + the cheatsheet)
+- **CFPA2 Noetic port**: 6 `ros1/` adapter headers (clock/logger/conversions/goal_publisher/visualizer/param_facade) mirroring `ros2/`, behind `#ifdef CFPA2_ROS1`. The ROS 2 Humble build is byte-for-byte unchanged (verified — colcon builds cfpa2 clean). `package_ros1.xml`/`CMakeLists_ros1.txt` swap-in; `cfpa2_peer_coordination_msgs` `builtin_interfaces/Time`→`time`; ament-python `cfpa2_peer_coordination` `CATKIN_IGNORE`'d.
+- **Build-dep marathon**: grid_map suite, OMPL, move_base/nav_core/costmap_2d, **xtensor 0.24.7 + xtl 0.7.5 vendored into `/usr/local`** (not in focal apt), nlohmann-json, CUDA on PATH (nvcc 11.4 not on default PATH).
+- **nvcc 11.4 parse bug**: `rclcpp::Logger logger_{rclcpp::get_logger("…")}` (brace-init) is mis-parsed by nvcc's host preprocessor after the full ROS header set → collapses to `logger_rclcpp`. Isolated to brace-init (console.h/node_handle.h alone are fine; the combination + brace-init breaks). Fix: copy-init `= rclcpp::get_logger(…)` in 6 nav_algo_core headers (math-neutral; g++/nvcc/ROS2 all accept).
+- **sm_89 unsupported by CUDA 11.4**: `nav_algo_mppi_cuda` gencode is now CUDA-version-gated — sm_87 always, sm_89 only ≥11.8, sm_120 only ≥12.8.
+- **trav CNN runtime chain**: cupy-cuda11x, **torch (NVIDIA jp512 cp38 wheel)**, simple_parsing/ruamel/shapely/sklearn, **scipy==1.10.1** (system 1.3.3's `np.typeDict` is gone in numpy 1.24 → cupy import crash), ros_numpy patches: `np.float`→`float` AND **sort PointFields by offset** (Point-LIO's `cloud_registered_body` lists fields out of offset order → `fields_to_dtype` itemsize≠point_step → "buffer size must be a multiple of element size"). emc API: `_map.input`→`_map.input_pointcloud`; config needs `channels: []`.
+- **Wiring**: CFPA2 reads pose from `/<ns>/odom/nav` (hardcoded) → topic_tools relay from Point-LIO's `/Odometry`. CFPA2 ops2 overlay's `planning_map_topic_suffix=/global_costmap/costmap` is Nav2 naming; ROS 1 move_base nests costmaps under `/move_base/…`, so the onboard launcher overrides it to `/traversability_grid` (CFPA2 plans on the trav grid directly). CFPA2 yamls (`/**:ros__parameters:`) are flattened for rosparam via [`scripts/real/generate_cfpa2_ros1_yaml.py`](scripts/real/generate_cfpa2_ros1_yaml.py).
+- **exec-bit gotcha**: rsync drops `+x` on `trav_pipeline_ros1/scripts/*.py` → roslaunch "Cannot locate node". `chmod +x` after every deploy.
+
+### Files / entry points
+- [`jetson_ws/`](jetson_ws/) — deployment snapshot of the NX catkin ws (flat `src/`). [`jetson_ws/README.md`](jetson_ws/README.md) = packages, data flow, build, run, gotchas.
+- [`scripts/real/onboard_autonomy_noetic.sh`](scripts/real/onboard_autonomy_noetic.sh) — onboard full-stack orchestrator (roscore→livox→Point-LIO→TFs→trav→move_base→CFPA2→bridge→odom relay). `explore=false` for nav-only, `slam=fastlio` to swap SLAM, `stop` to tear down.
+- [`scripts/real/generate_cfpa2_ros1_yaml.py`](scripts/real/generate_cfpa2_ros1_yaml.py) — flatten CFPA2 ROS 2 yamls → ROS 1 rosparam.
+- `jetson_ws/src/trav_pipeline_ros1/scripts/cfpa2_to_movebase_bridge.py` — CFPA2 `way_point_coord` (PointStamped) → `move_base_simple/goal` (PoseStamped) with goal-change suppression + move_base `/status` ABORTED→nav_status fast-blacklist.
+- **Repo cleanup**: removed redundant `src/vendor/{point_lio_ros1,trav_pipeline_ros1,elevation_mapping_cupy_ros1,fast_lio_ros1}` (now canonical in `jetson_ws/`). **KEPT `src/vendor/nav_algo_ros1`** — the ROS 2 `nav2_mppi_controller_cuda_plugin` compiles its `.cu` sources directly from there. `deploy_noetic_to_jetson.sh` marked SUPERSEDED.
+
+### Open / next
+- **HIL viz**: C++ ROS 1→ROS 2 bridge for viz topics (map/costmap/cloud/path/tf/cmd_vel) + RViz2 on the laptop, so the operator sees everything while compute stays on the NX. Then a full "sim" dry-run on the ops2-v4 scene (`nav_test_slam_ops2_v4_go2`) to measure load/trajectory/dataset.
+- **Real walk**: unlock joints, robot on ground, clear area, e-stop ready → same `onboard_autonomy_noetic.sh explore=true`. cmd_vel already streams; unlocking lets the robot drive CFPA2 frontiers.
+- **`/robot/elevation_map_raw`** shows no `rostopic hz` (the GridMap may publish under a different name / lower rate) — the downstream `/traversability_grid` flows at 5 Hz so nav is unaffected, but worth confirming the raw layer name during the HIL run.
+
 ## Active state (2026-05-20 cont.) — Desktop ops2 standalone exploration UNSTUCK: 8-bug cascade fixed, robot now autonomously explores the corridor
 
 Goal: make the Go2 autonomously explore the ops2 building corridor end-to-end on the **desktop standalone** stack (`scripts/launch/nav_test_slam_ops2_v4_go2.sh`, all-in-one — MuJoCo + Fast-LIO + elevation/trav + Nav2 + CFPA2, no Jetson). The robot was pinned at spawn (0,0). Fixed a cascade of independent bugs, each masking the next; the robot now navigates frontier-by-frontier down the corridor. Built a reusable auto-diagnosis + cleanup toolchain along the way.

@@ -72,6 +72,27 @@ source install/setup.bash
 ./scripts/debug/analyze_lidar_odom_drops.py                          # per-scan latency, dropped-frame stats
 ```
 
+### Onboard autonomy — full stack native on the Go2 Orin NX (ROS 1 Noetic)
+
+The **entire** autonomy stack runs onboard the real Go2's Jetson Orin NX 16 GB in
+native ROS 1 Noetic — **no ros1_bridge in the data path**. SLAM (Point-LIO) +
+traversability (elevation_mapping_cupy + CNN) + nav (Nav2 SmacLattice + **CUDA-MPPI**
+ported to `move_base`) + CFPA2 frontier exploration (C++). Verified real-time on
+the bench (CPU < 33 %, GPU < 19 %, 56 °C). Workspace mirror: **[jetson_ws/](jetson_ws/README.md)**.
+
+```bash
+# On the NX (consolidated catkin ws /home/unitree/autonomous_exploration_zhu/):
+scripts/onboard_autonomy_noetic.sh                 # full stack, autonomous explore
+scripts/onboard_autonomy_noetic.sh explore=false   # nav only (manual goals)
+scripts/onboard_autonomy_noetic.sh slam=fastlio    # FAST-LIO instead of Point-LIO
+scripts/onboard_autonomy_noetic.sh stop
+```
+
+Full build/deploy recipe + the cross-distro port notes (CFPA2 hexagonal `#ifdef
+CFPA2_ROS1`, nvcc 11.4 brace-init fix, sm_87 CUDA gating, trav CNN runtime deps)
+live in [jetson_ws/README.md](jetson_ws/README.md) and the gitignored
+`scripts/real/.orin_nx_cheatsheet.md` (contains the robot password).
+
 Debug dashboards auto-start:
 
 - Door task: <http://127.0.0.1:8080>
@@ -104,6 +125,11 @@ Collab_QRC/
 
   external/                        gitignored — fetch_slam_backends.sh pulls Swarm-LIO2,
                                    dynamic_lio, ERASOR, Livox-SDK into here
+
+  jetson_ws/                       Go2 Orin NX onboard catkin workspace mirror (ROS 1 Noetic)
+    README.md                      Packages, data flow, build/deploy/run, port gotchas
+    src/                           Flat catkin src: Point-LIO, livox, elevation_mapping_cupy,
+                                   trav_pipeline_ros1, nav_algo_ros1, cfpa2_* (deployment snapshot)
 
   scripts/
     launch/      User-invoked sim entry points (nav_test_*, door_demo, vlm_demo, swarm_lio2)

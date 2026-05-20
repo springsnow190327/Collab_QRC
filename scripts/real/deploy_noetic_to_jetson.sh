@@ -1,4 +1,13 @@
 #!/usr/bin/env bash
+# ⚠️ SUPERSEDED (2026-05-20) by the consolidated jetson_ws/ workflow.
+# This script targets the OLD ~/noetic_fastlio_ws/ split workspace and rsyncs
+# from src/vendor/{point_lio_ros1,trav_pipeline_ros1,elevation_mapping_cupy_ros1,
+# fast_lio_ros1} — directories that were REMOVED when jetson_ws/ became the
+# canonical deployment snapshot. For the current full-autonomy onboard stack on
+# the Go2 Orin NX (/home/unitree/autonomous_exploration_zhu/), use jetson_ws/ —
+# see jetson_ws/README.md for deploy + build + run. Kept here for historical
+# reference of the FAST-LIO/Point-LIO bring-up sequence only.
+#
 # deploy_noetic_to_jetson.sh — rsync ROS 1 FAST-LIO2 + livox_ros_driver2 to the
 # Go2 Jetson into a SEPARATE Noetic catkin workspace (~/noetic_fastlio_ws/).
 #
