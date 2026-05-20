@@ -90,8 +90,15 @@ To separate navigation from exploration, CFPA2 + bridge + watchdog were killed a
 
 The robot is **not hitting walls** (MuJoCo `contacts: 2` = the 2 foot-floor pairs; `/mujoco/contacts` shows only `floor↔foot`), but the **lethal/high-cost region over-paints free space** — the red band in RViz is too wide, eating the green corridor.
 
-- Root cause measured: **Nav2's inflation_layer**, not the trav grid. Trav grid is ~binary (free 56 k / lethal 20 k / ~1 k gradient) with a healthy 1.0 m physical corridor; the global costmap (static trav + inflation) crushes the threadable lane to 0.5 m. → `inflation_radius 0.28 → 0.16` (this commit).
-- **If the trav grid lethal itself looks too thick on the real robot** (walls painted wider than physical), that's an upstream tune: `grid_map_to_occupancy_grid` free/lethal thresholds, or `elevation_mapping` / filter_chain wall-cost width — NOT inflation. Left as a next step; measure trav lethal-to-lethal vs the real wall before touching it.
+**Causal chain (operator correction — the trav grid is the root, not just inflation):** the global costmap's `static_layer` reads `map_topic: /robot_b/traversability_grid` and **copies the trav grid's lethal cells verbatim**; the `inflation_layer` then inflates *around* them. So any free→lethal over-painting in the trav grid is not merely inherited by the costmap — it is **amplified** (a false-lethal cell gets a full inflation halo on top). Tuning `inflation_radius` only treats the symptom.
+
+Two distinct effects, don't conflate them:
+1. **At the −8.4 chicane** the trav corridor was genuinely **1.0 m lethal-to-lethal** (those lethal cells = real walls), and Nav2 inflation crushed the threadable lane to 0.5 m → `inflation_radius 0.28 → 0.16` is the correct fix *there*.
+2. **In open areas** (the operator's room screenshot) flat free floor shows red — the **trav grid itself marks free→lethal**. Inflation tuning will NOT fix this; it's upstream in the trav pipeline.
+
+**ROOT FOUND + FIXED (probed `/robot/elevation_map_filtered` layers live):** the OccupancyGrid is thresholded from `trav_eth = (1−slope_cost)·(1−step_cost)·(1−wall_cost)` (lethal when < 0.05). Probe of the lethal cells: **91% were wall_cost-driven** (mean wall_cost 0.95); only 2% were open-floor slope/step noise; open floor (wall_cost<0.2) was 99.3% non-lethal (mean slope 2.4°, step 1.8cm). So it is NOT noise — it is **`wall_cost_dilated` (filter10, `maxOfFinites` `window_size:5` = ±0.20m at 0.10m/cell)** spreading real-wall lethal **±0.20m into adjacent free space** (every wall painted 0.40m fatter than physical). The costmap static_layer copies it and inflation halos around it → amplified. **Fix: `window_size 5 → 3`** (±0.10m) — keeps the wall rim lethal (the unreachable wall-top interior reading free is harmless behind the rim), frees 0.10m/side back into the corridor. Re-probe confirmed wall-driven lethal dropped 91%→70%. `consider_footprint` + Nav2 inflation remain the clearance guards.
+
+**Remaining secondary (minor):** ~4% of open floor near the robot reads lethal during *early* sensing (sparse Mid-360 coverage → noisy normals → slope_cost up to ~0.19). Principled fix if it matters on the real robot: a **variance/confidence gate** — mark cells with high elevation `variance` (the layer exists) as UNKNOWN, not lethal, so sparse/noisy sensing never becomes a hard obstacle. Left as a next step (it's gradient, not lethal, for 96% of open floor).
 
 ### Waypoint navigation idea (`navigate_through_poses`) — analysis (operator proposal)
 
