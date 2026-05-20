@@ -42,6 +42,10 @@
     min_valid_distance: 0.30                # match nvblox geometric blind zone
 
     # Map refresh — same cadence the legacy mapper_node ran at.
+    # DO NOT lower update_pose_fps below 10 Hz: it gates the publish loop
+    # in elevation_mapping_cupy (not just a recenter check). Empirical test
+    # 2026-05-20: dropping to 5 Hz halved elevation_map_raw rate
+    # (3.13 → 2.14 Hz on Orin Nano).
     map_acquire_fps: 5.0
     update_variance_fps: 5.0
     update_pose_fps: 10.0

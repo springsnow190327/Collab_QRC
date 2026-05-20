@@ -152,10 +152,29 @@ class StandUpSlowly(Node):
         )
         self.published = True
         self.timer.cancel()
-        
-        # Exit after publishing
-        # self.destroy_node()
-        # rclpy.shutdown()
+
+        # NEW (2026-05-20 lifecycle gating): block until the trajectory is
+        # physically complete before exiting. Phases 1/2/3 are time_from_start
+        # offsets; phase_times[-1] is the END of the longest phase. We then
+        # add a 2s settle buffer for joint controller to converge.
+        # Previously this node exited immediately after publish, which let
+        # downstream wait_for_ready see "stable IMU" (joints not yet moving)
+        # and signal "platform Ready" before stand-up even started — Fast-LIO
+        # then did IMU init during the actual leg motion, computed wrong
+        # gravity vector, and z-drifted to ~6 m over 30 s.
+        trajectory_total_sec = phase_times[-1] + 2.0
+        self.get_logger().info(
+            f"Holding open until trajectory done ({trajectory_total_sec:.1f}s)..."
+        )
+        # Use a separate timer that fires once at the trajectory end.
+        self._exit_timer = self.create_timer(
+            trajectory_total_sec, self._on_trajectory_done)
+
+    def _on_trajectory_done(self):
+        self.get_logger().info("Stand-up trajectory complete — exiting.")
+        self._exit_timer.cancel()
+        # Causes rclpy.spin() in main() to return.
+        raise SystemExit(0)
 
 def main(args=None):
     rclpy.init(args=args)

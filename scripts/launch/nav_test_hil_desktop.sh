@@ -23,11 +23,30 @@ source "$(dirname "${BASH_SOURCE[0]}")/_preflight_kill.sh"
 trap '' SIGHUP SIGTERM
 
 WS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# Scene variant selection:
+#   POLYFIT_VARIANT=clustered (default) — regenerated polyfit walls (2026-05-20):
+#       per-segment DBSCAN clustering + vertical-only + 4m height clamp + dedup.
+#       68 tight wall boxes vs the original 19 oversized 47×10m slabs that
+#       overfit and cut across corridors. Keeps sim-side collision geometry.
+#   POLYFIT_VARIANT=real     — original 19 oversized polyfit walls (legacy).
+#   POLYFIT_VARIANT=nopoly   — no polyfit walls at all (mesh hull only; robot
+#       may clip thin walls). Equivalent to old NO_POLYFIT=1.
+# NO_POLYFIT=1 still honored as a shortcut for nopoly (back-compat).
+#   POLYFIT_VARIANT=handwalls (default) — hand-traced walls (draw_walls_2d.py,
+#       2026-05-20): 33 wall segments drawn by hand on the building heightmap.
+#       Cleanest collision geometry, no auto-fit artifacts. Source artifacts in
+#       bags/meshes/ops2_cuda/handwalls/.
+POLYFIT_VARIANT="${POLYFIT_VARIANT:-handwalls}"
 if [[ "${NO_POLYFIT:-0}" = "1" ]]; then
-  SCENE="${WS_DIR}/src/go2w/go2_gazebo_sim/mujoco/slam_ops2_v4_go2_nopoly.xml"
-else
-  SCENE="${WS_DIR}/src/go2w/go2_gazebo_sim/mujoco/slam_ops2_v4_go2_real.xml"
+  POLYFIT_VARIANT="nopoly"
 fi
+case "${POLYFIT_VARIANT}" in
+  handwalls) SCENE="${WS_DIR}/src/go2w/go2_gazebo_sim/mujoco/slam_ops2_v4_go2_handwalls.xml" ;;
+  clustered) SCENE="${WS_DIR}/src/go2w/go2_gazebo_sim/mujoco/slam_ops2_v4_go2_clustered.xml" ;;
+  nopoly)    SCENE="${WS_DIR}/src/go2w/go2_gazebo_sim/mujoco/slam_ops2_v4_go2_nopoly.xml" ;;
+  real)      SCENE="${WS_DIR}/src/go2w/go2_gazebo_sim/mujoco/slam_ops2_v4_go2_real.xml" ;;
+  *) echo "unknown POLYFIT_VARIANT=${POLYFIT_VARIANT}" >&2; exit 1 ;;
+esac
 
 ROS2_SETUP_BASH="${ROS2_SETUP_BASH:-/opt/ros/humble/setup.bash}"
 safe_source() { set +u; source "$1"; set -u; }
@@ -67,6 +86,12 @@ echo ""
 #   (also: enable_slam=false gates the imu_to_body_tf static off — that
 #    one used to fire in standalone sim to give the scan pipeline a body
 #    frame, but Jetson SLAM publishes camera_init → body itself.)
+# Richer RViz config: nav_test.rviz has GridMap displays for elevation_map_raw
+# / filtered, scan_3d, voxels_cloud, plus the SetGoal tool bound to
+# /robot/goal_pose (2D Goal Pose button → straight to Jetson Nav2). Override
+# with rviz_config:=<abs path> if you want the lighter single_go2w_gazebo_cfpa2.
+HIL_RVIZ_CONFIG="${HIL_RVIZ_CONFIG:-$(ros2 pkg prefix go2_gazebo_sim 2>/dev/null)/share/go2_gazebo_sim/rviz/nav_test.rviz}"
+
 exec ros2 launch go2_gazebo_sim single_go2w_mujoco_cfpa2.launch.py \
   "mujoco_model_path:=${SCENE}" \
   "robot_namespace:=robot" \
@@ -81,4 +106,5 @@ exec ros2 launch go2_gazebo_sim single_go2w_mujoco_cfpa2.launch.py \
   "enable_navigation:=false" \
   "odom_bridge_publish_tf:=false" \
   "cleanup_stale:=true" \
+  "rviz_config:=${HIL_RVIZ_CONFIG}" \
   "$@"

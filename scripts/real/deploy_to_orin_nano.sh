@@ -101,6 +101,14 @@ rsync_to_jetson  src/vendor/elevation_mapping_cupy/elevation_map_msgs       src/
 rsync_to_jetson  src/vendor/elevation_mapping_cupy/elevation_mapping_cupy   src/vendor/elevation_mapping_cupy/
 rsync_to_jetson  src/vendor/elevation_mapping_cupy/sensor_processing        src/vendor/elevation_mapping_cupy/
 
+# Nav2 CUDA-MPPI vendored controller (Optimizer with cuda_backend_ hook) +
+# nav_algo_mppi_cuda CUDA kernels (consumed by the plugin via relative path).
+# COLCON_IGNORE the rest of nav_algo_ros1/ — those are ROS 1 catkin packages.
+rsync_to_jetson  src/vendor/nav2_mppi_controller_cuda                       src/vendor/
+$SSH "mkdir -p ${JETSON_WS}/src/vendor/nav_algo_ros1"
+rsync_to_jetson  src/vendor/nav_algo_ros1/nav_algo_mppi_cuda                src/vendor/nav_algo_ros1/
+$SSH "touch ${JETSON_WS}/src/vendor/nav_algo_ros1/COLCON_IGNORE"
+
 # ── Collab autonomy ───────────────────────────────────────────────────
 echo ""
 echo "── collaborative_exploration/ ──"
@@ -110,11 +118,18 @@ rsync_to_jetson  src/collaborative_exploration/cfpa2_peer_coordination_msgs     
 rsync_to_jetson  src/collaborative_exploration/trav_cost_filters                 src/collaborative_exploration/
 rsync_to_jetson  src/collaborative_exploration/slam_backend_adapters             src/collaborative_exploration/
 
+# ── Native ROS 2 CUDA-MPPI plugin (top-level src/, not under vendor/) ──
+rsync_to_jetson  src/nav2_mppi_controller_cuda_plugin                       src/
+
 # ── Configs needed onboard ────────────────────────────────────────────
 echo ""
 echo "── configs ──"
 rsync_to_jetson  src/go2w/go2w_config/config/nav                              config/
 rsync_to_jetson  scripts/runtime/fast_lio_tf_adapter.py                       scripts/runtime/
+# Explore-mode runtime nodes (started by orin_nano_hil_jetson.launch.py when
+# explore:=true): CFPA2→Nav2 goal bridge + plan→planned_path relay for RViz.
+rsync_to_jetson  scripts/runtime/cfpa2_to_nav2_bridge.py                      scripts/runtime/
+rsync_to_jetson  scripts/runtime/path_relay.py                                scripts/runtime/
 
 # ── HIL launchers (we'll author these in the runbook) ─────────────────
 echo ""
@@ -138,11 +153,12 @@ if [[ "$DO_BUILD" == "true" && "$DRY_RUN" != "true" ]]; then
   $SSH "
     set -e
     source /opt/ros/humble/setup.bash
+    export PATH=/usr/local/cuda/bin:\$PATH
     cd ${JETSON_WS}
     colcon build --symlink-install \
-      --packages-up-to elevation_mapping_cupy cfpa2_collaborative_autonomy cfpa2_peer_coordination trav_cost_filters point_lio \
+      --packages-up-to elevation_mapping_cupy cfpa2_collaborative_autonomy cfpa2_peer_coordination trav_cost_filters point_lio nav2_mppi_controller_cuda_plugin \
       --cmake-args -DCMAKE_BUILD_TYPE=Release \
-      2>&1 | tail -40
+      2>&1 | tail -50
   "
 fi
 

@@ -8,6 +8,7 @@ from functools import partial
 from typing import Dict, List
 
 import rclpy
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.node import Node
 from rclpy.qos import QoSPresetProfiles
 from ament_index_python.packages import get_package_share_directory
@@ -105,6 +106,18 @@ class ElevationMappingNode(Node):
             automatically_declare_parameters_from_overrides=True,
             allow_undeclared_parameters=False
         )
+
+        # Async-on-Orin patch (2026-05-20): split callback groups so the
+        # heavy cloud callback doesn't block the publish / pose / variance
+        # timers. cloud → MutuallyExclusive so Kalman-update calls serialize
+        # w.r.t. each other (the underlying ElevationMap.update_with_kernels
+        # is not concurrency-safe). Timers → Reentrant so they can overlap
+        # with each other AND with cloud-fusion while cupy launches + TF
+        # lookups + DDS sends release the GIL. Combined with
+        # MultiThreadedExecutor in main(), this unblocks the Orin Nano
+        # single-thread bottleneck (3 Hz publish → 5 Hz target).
+        self._cloud_cb_group = MutuallyExclusiveCallbackGroup()
+        self._timer_cb_group = ReentrantCallbackGroup()
 
         self.root = get_package_share_directory("elevation_mapping_cupy")
         weight_file = os.path.join(self.root, "config/core/weights.dat")
@@ -375,6 +388,7 @@ class ElevationMappingNode(Node):
                 topic_name,
                 partial(self.pointcloud_callback, sub_key=key),
                 qos_profile,
+                callback_group=self._cloud_cb_group,
             )
 
     def channel_info_callback(self, msg: ChannelInfo, sub_key: str) -> None:
@@ -410,28 +424,33 @@ class ElevationMappingNode(Node):
             fps = pub_config.get("fps", 1.0)
             timer = self.create_timer(
                 1.0 / fps,
-                partial(self.publish_map, key=pub_key)
+                partial(self.publish_map, key=pub_key),
+                callback_group=self._timer_cb_group,
             )
             self._publishers_timers.append(timer)
 
     def register_timers(self) -> None:
         self.time_pose_update = self.create_timer(
             0.1,
-            self.pose_update
+            self.pose_update,
+            callback_group=self._timer_cb_group,
         )
         self.timer_variance = self.create_timer(
             1.0 / self.update_variance_fps,
-            self.update_variance
+            self.update_variance,
+            callback_group=self._timer_cb_group,
         )
         self.timer_time = self.create_timer(
             self.time_interval,
-            self.update_time
+            self.update_time,
+            callback_group=self._timer_cb_group,
         )
         self.timer_cupy_memory_pool = None
         if self.cupy_memory_pool_trim_interval_s > 0.0:
             self.timer_cupy_memory_pool = self.create_timer(
                 self.cupy_memory_pool_trim_interval_s,
-                self.trim_cupy_memory_pool
+                self.trim_cupy_memory_pool,
+                callback_group=self._timer_cb_group,
             )
 
     def register_services(self) -> None:
@@ -808,34 +827,65 @@ class ElevationMappingNode(Node):
             value = f'/{value}'
         return value.rstrip('/')
 
-    def safe_lookup_transform(self, target_frame, source_frame, time):
+    def safe_lookup_transform(self, target_frame, source_frame, time, allow_latest_fallback=False):
+        """Look up TF at `time`. Default: WAIT 200 ms for TF at `time` to
+        arrive. Cross-host HIL latency budget:
+          • cloud captured at MuJoCo (desktop) at sim_time T, DDS hop ~5-30 ms
+          • Fast-LIO processes cloud and emits Odometry stamped T at +30-50 ms
+          • Odometry → fast_lio_tf_adapter → TF camera_init→body stamped T
+          • DDS hop back to elevation_mapping subscriber on Jetson +5-30 ms
+        So between cloud arrival and corresponding TF, wall-clock budget can
+        be 70-130 ms. 50 ms timeout was too tight: instrumentation 2026-05-20
+        showed 100% of clouds dropped at 50 ms. 200 ms covers the worst case
+        with margin; cloud callback runs on MutuallyExclusiveCallbackGroup so
+        other timer callbacks still run during the wait (MultiThreadedExecutor).
+
+        If TF still unavailable after 200 ms, return None — caller must skip
+        the msg rather than apply stale pose (which produces the spiral-fan
+        smear in trav grid during rotation, observed 2026-05-20).
+
+        allow_latest_fallback=True is only for periodic-recenter callers
+        (pose_update timer) that don't need a specific timestamp — they want
+        "where is robot now".
+        """
         try:
             return self._tf_buffer.lookup_transform(
                 target_frame,
                 source_frame,
-                time
+                time,
+                timeout=Duration(seconds=0.20),
             )
-        except tf2_ros.ExtrapolationException:
-            # Time is in the future/past, try with latest available
-            try:
-                return self._tf_buffer.lookup_transform(
-                    target_frame,
-                    source_frame,
-                    rclpy.time.Time()
-                )
-            # NOTE: The second lookup can also throw ExtrapolationException (e.g., TF buffer not populated yet,
-            # or timestamps are discontinuous during sim resets). If we don't catch it here the whole node dies.
-            except (
-                tf2.LookupException,
-                tf2.ConnectivityException,
-                tf2.ExtrapolationException,
-                tf2_ros.ExtrapolationException,
-            ) as e:
-                self.get_logger().warning(
-                    f"Transform from '{source_frame}' to '{target_frame}' not available: {e}",
-                    throttle_duration_sec=5.0
-                )
-                return None
+        except (
+            tf2.LookupException,
+            tf2.ConnectivityException,
+            tf2.ExtrapolationException,
+            tf2_ros.ExtrapolationException,
+            tf2_ros.LookupException,
+        ) as e:
+            if allow_latest_fallback:
+                try:
+                    return self._tf_buffer.lookup_transform(
+                        target_frame, source_frame, rclpy.time.Time())
+                except (
+                    tf2.LookupException, tf2.ConnectivityException,
+                    tf2.ExtrapolationException, tf2_ros.ExtrapolationException,
+                ) as e2:
+                    self.get_logger().warning(
+                        f"Transform from '{source_frame}' to '{target_frame}' "
+                        f"unavailable (both timestamped and latest): {e2}",
+                        throttle_duration_sec=5.0)
+                    return None
+            # Default path: SKIP this frame rather than apply wrong-pose data.
+            # Throttled INFO so we can see how often we drop (not WARN to
+            # avoid spamming during expected startup transient).
+            self._tf_lookup_skip_count = getattr(self, '_tf_lookup_skip_count', 0) + 1
+            if self._tf_lookup_skip_count % 50 == 0:
+                self.get_logger().info(
+                    f"TF lookup skipped {self._tf_lookup_skip_count} cloud(s) "
+                    f"({source_frame}→{target_frame}); cross-host TF lag "
+                    f"exceeded 50 ms timeout. Last error: {type(e).__name__}",
+                    throttle_duration_sec=5.0)
+            return None
         except tf2.LookupException as e:
             # Frame doesn't exist
             self.get_logger().warning(
@@ -995,10 +1045,14 @@ class ElevationMappingNode(Node):
     def pose_update(self) -> None:
         if self._last_t is None:
             return
+        # Periodic map-recenter timer — wants "where is robot now", not a
+        # specific timestamp. allow_latest_fallback=True so it doesn't skip
+        # when cross-host TF lag exceeds the 50 ms timeout.
         transform = self.safe_lookup_transform(
             self.map_frame,
             self.base_frame,
-            self._last_t
+            self._last_t,
+            allow_latest_fallback=True,
         )
         if transform is None:
             # Transform not available, skip pose update
@@ -1026,7 +1080,13 @@ class ElevationMappingNode(Node):
 def main(args=None) -> None:
     rclpy.init(args=args)
     node = ElevationMappingNode()
-    executor = rclpy.executors.SingleThreadedExecutor()
+    # MultiThreaded so cloud callback + 4 timers + publish timers run on
+    # separate threads. Combined with callback_group separation in
+    # ElevationMappingNode.__init__, this unblocks the Orin Nano single-
+    # thread bottleneck (publish-loop limited by serialized cloud work).
+    # num_threads=4 is sufficient: 1 for cloud (serial), 3 for timers
+    # (reentrant). More threads buys nothing because Python GIL.
+    executor = rclpy.executors.MultiThreadedExecutor(num_threads=4)
     executor.add_node(node)
     try:
         executor.spin()

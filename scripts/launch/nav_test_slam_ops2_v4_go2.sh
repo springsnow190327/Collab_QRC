@@ -17,14 +17,25 @@ source "$(dirname "${BASH_SOURCE[0]}")/_preflight_kill.sh"
 trap '' SIGHUP SIGTERM
 
 WS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-# NO_POLYFIT=1 to skip the 19 PolyFit wall boxes (mesh hfield + Sonata
-# instances only). Lighter scene, useful for validating that the trav
-# CNN handles collision via mesh alone.
+# Scene variant (POLYFIT_VARIANT, default handwalls):
+#   handwalls — hand-traced collision walls (draw_walls_2d.py, 2026-05-20),
+#               44 segments. Cleanest geometry, no auto-fit corridor-cutting.
+#               Re-editable source in mujoco/handwalls/ops2_hand_walls.json.
+#   clustered — regenerated polyfit (DBSCAN + vertical-only + height-clamp).
+#   real      — original 19 oversized polyfit slabs (legacy).
+#   nopoly    — mesh hull only, no walls (robot may clip thin walls).
+# NO_POLYFIT=1 is honored as a shortcut for nopoly (back-compat).
+POLYFIT_VARIANT="${POLYFIT_VARIANT:-handwalls}"
 if [[ "${NO_POLYFIT:-0}" = "1" ]]; then
-  SCENE="${WS_DIR}/src/go2w/go2_gazebo_sim/mujoco/slam_ops2_v4_go2_nopoly.xml"
-else
-  SCENE="${WS_DIR}/src/go2w/go2_gazebo_sim/mujoco/slam_ops2_v4_go2_real.xml"
+  POLYFIT_VARIANT="nopoly"
 fi
+case "${POLYFIT_VARIANT}" in
+  handwalls) SCENE="${WS_DIR}/src/go2w/go2_gazebo_sim/mujoco/slam_ops2_v4_go2_handwalls.xml" ;;
+  clustered) SCENE="${WS_DIR}/src/go2w/go2_gazebo_sim/mujoco/slam_ops2_v4_go2_clustered.xml" ;;
+  real)      SCENE="${WS_DIR}/src/go2w/go2_gazebo_sim/mujoco/slam_ops2_v4_go2_real.xml" ;;
+  nopoly)    SCENE="${WS_DIR}/src/go2w/go2_gazebo_sim/mujoco/slam_ops2_v4_go2_nopoly.xml" ;;
+  *) echo "unknown POLYFIT_VARIANT=${POLYFIT_VARIANT}" >&2; exit 1 ;;
+esac
 
 # 3d preflight: kill stale elevation_mapping state + CuPy cache
 for _pat in elevation_mapping_node elevation_mapping_cupy filter_chain_runner \

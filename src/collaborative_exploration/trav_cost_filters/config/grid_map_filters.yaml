@@ -36,7 +36,7 @@
           algorithm: area
           input_layer: elevation
           output_layers_prefix: normal_vectors_
-          radius: 0.25
+          radius: 0.15
           normal_vector_positive_axis: z
 
       # 2. slope angle = acos(normal_z), in radians (0=flat, pi/2=vertical).
@@ -59,28 +59,6 @@
       # 4. roughness: std-dev of elevation in a 5-cell window (≈0.50 m diameter).
       #    SlidingWindowMathExpressionFilter handles NaN holes via meanOfFinites.
       filter4:
-        name: roughness
-        type: gridMapFilters/SlidingWindowMathExpressionFilter
-        params:
-          input_layer: elevation
-          output_layer: roughness
-          expression: sqrt(meanOfFinites(square(elevation - meanOfFinites(elevation))))
-          compute_empty_cells: false
-          edge_handling: crop
-          window_size: 5
-
-      # 5. roughness_cost: linear 0 -> 1 over 0 -> 0.05 m RMS. Critical val
-      #    chosen so a clean ramp (~0 m RMS) is 0 and rocky terrain saturates.
-      filter5:
-        name: roughness_cost
-        type: gridMapFilters/MathExpressionFilter
-        params:
-          output_layer: roughness_cost
-          expression: roughness / 0.05
-
-      # 6. step_height: max - min of elevation in a 3-cell window (~0.30 m).
-      #    Catches walls / cliffs that the slope filter would over-rate.
-      filter6:
         name: step_height
         type: gridMapFilters/SlidingWindowMathExpressionFilter
         params:
@@ -96,14 +74,14 @@
       #    a smooth ramp traversable while still rejecting a wall/cliff:
       #      residual = max(0, local_max_min - tan(slope) * support_width)
       #    support_width=0.30m matches the 3-cell step window at 0.10m/cell.
-      filter7:
+      filter5:
         name: step_residual
         type: gridMapFilters/MathExpressionFilter
         params:
           output_layer: step_residual
           expression: step_height - tan(slope) * 0.30
 
-      filter8:
+      filter6:
         name: step_residual_clamp_lo
         type: gridMapFilters/ThresholdFilter
         params:
@@ -116,7 +94,7 @@
       #      step_height ≈ tan(14°)·0.20 ≈ 0.05 m
       #      step_residual ≈ 0.05 - tan(14°)·0.30 ≈ -0.02 m  -> clamped to 0
       #    -> step_cost = 0. Ramp stays traversable.
-      filter9:
+      filter7:
         name: step_cost
         type: gridMapFilters/MathExpressionFilter
         params:
@@ -135,14 +113,14 @@
       #     literally named "filter1", "filter2", ... and breaks at the first
       #     gap. Keys like "filter9b" are silently dropped. We must renumber
       #     to keep filterN contiguous.
-      filter10:
+      filter8:
         name: wall_seed_raw
         type: gridMapFilters/MathExpressionFilter
         params:
           output_layer: wall_seed
           expression: step_height - 0.25
 
-      filter11:
+      filter9:
         name: wall_seed_clamp_lo
         type: gridMapFilters/ThresholdFilter
         params:
@@ -156,7 +134,7 @@
       #     rim grows inward and covers wall tops up to ~60 cm thick. Because
       #     wall_seed is already gated to "step_height > 25 cm", dilating it
       #     does NOT poison ramps (their wall_seed is identically 0).
-      filter12:
+      filter10:
         name: wall_cost_dilated
         type: gridMapFilters/SlidingWindowMathExpressionFilter
         params:
@@ -165,18 +143,34 @@
           expression: maxOfFinites(wall_seed)
           compute_empty_cells: false
           edge_handling: crop
-          window_size: 7
+          window_size: 5
 
       # 12. wall_cost normalization: 0.50 m above-threshold wall height
       #     saturates the cost to 1.0 (hard veto). Smaller values map linearly.
       #     Output to a new layer (not the dilation source) to avoid the
       #     MathExpressionFilter setShared() aliasing pitfall.
-      filter13:
+      filter11:
         name: wall_cost_norm
         type: gridMapFilters/MathExpressionFilter
         params:
           output_layer: wall_cost
           expression: wall_seed_dilated / 0.50
+
+      # CRITICAL clamp — DO NOT REMOVE. wall_seed_dilated can be huge if
+      # a single bad elevation outlier (e.g. SLAM-induced z=-27m cell)
+      # leaks into the step_height window. Without this clamp, wall_cost
+      # ≈ 50, then trav_eth = (1 - 50) = -49 → clamped to 0 → LETHAL,
+      # propagated to 5×5 neighborhood via wall_cost_dilated. Combined
+      # with fixed_grid sticky cells in grid_map_to_occupancy_grid,
+      # those false lethals never clear. The speckled-purple trav grid
+      # from 2026-05-20 was caused by removing this clamp.
+      filter12:
+        name: wall_cost_clamp_hi
+        type: gridMapFilters/ThresholdFilter
+        params:
+          layer: wall_cost
+          upper_threshold: 1.0
+          set_to: 1.0
 
       # 13. trav_eth: multiplicative model — product of (1 - cost_i) over
       #    slope, roughness, residual-step (cliff veto), and wall (vertical
@@ -189,15 +183,15 @@
       #    CRITICAL: use .* (MATLAB element-wise product) not * (matrix multiply).
       #    EigenLab follows MATLAB semantics: A*B = matrix mul → all-NaN for
       #    sparse grids; A.*B = element-wise → correct per-cell traversability.
-      filter14:
+      filter13:
         name: trav_eth
         type: gridMapFilters/MathExpressionFilter
         params:
           output_layer: trav_eth
-          expression: (1.0 - slope_cost) .* (1.0 - roughness_cost) .* (1.0 - step_cost) .* (1.0 - wall_cost)
+          expression: (1.0 - slope_cost) .* (1.0 - step_cost) .* (1.0 - wall_cost)
 
       # 14. Final clamp safety net.
-      filter15:
+      filter14:
         name: trav_eth_clamp_lo
         type: gridMapFilters/ThresholdFilter
         params:
@@ -205,7 +199,7 @@
           lower_threshold: 0.0
           set_to: 0.0
 
-      filter16:
+      filter15:
         name: trav_eth_clamp_hi
         type: gridMapFilters/ThresholdFilter
         params:
@@ -231,114 +225,9 @@
       # zones or platform tops as confidently free.
 
       # slope_floor_margin = clamp((slope - 8deg) / (12deg - 8deg), 0, 1).
-      filter17:
-        name: slope_floor_margin
-        type: gridMapFilters/MathExpressionFilter
-        params:
-          output_layer: slope_floor_margin
-          expression: (slope - 0.13962634015954636) / 0.06981317007977318
-
-      filter18:
-        name: slope_floor_margin_clamp_lo
-        type: gridMapFilters/ThresholdFilter
-        params:
-          layer: slope_floor_margin
-          lower_threshold: 0.0
-          set_to: 0.0
-
-      filter19:
-        name: slope_floor_margin_clamp_hi
-        type: gridMapFilters/ThresholdFilter
-        params:
-          layer: slope_floor_margin
-          upper_threshold: 1.0
-          set_to: 1.0
-
-      # slope_ceiling_margin = clamp((30deg - slope) / (30deg - 24deg), 0, 1).
-      filter20:
-        name: slope_ceiling_margin
-        type: gridMapFilters/MathExpressionFilter
-        params:
-          output_layer: slope_ceiling_margin
-          expression: (0.5235987755982988 - slope) / 0.10471975511965977
-
-      filter21:
-        name: slope_ceiling_margin_clamp_lo
-        type: gridMapFilters/ThresholdFilter
-        params:
-          layer: slope_ceiling_margin
-          lower_threshold: 0.0
-          set_to: 0.0
-
-      filter22:
-        name: slope_ceiling_margin_clamp_hi
-        type: gridMapFilters/ThresholdFilter
-        params:
-          layer: slope_ceiling_margin
-          upper_threshold: 1.0
-          set_to: 1.0
-
-      # step_margin = max(0, 0.06 - step_residual) / 0.06 --- normalised.
-      filter23:
-        name: step_margin
-        type: gridMapFilters/MathExpressionFilter
-        params:
-          output_layer: step_margin
-          expression: (0.06 - step_residual) / 0.06
-
-      filter24:
-        name: step_margin_clamp_lo
-        type: gridMapFilters/ThresholdFilter
-        params:
-          layer: step_margin
-          lower_threshold: 0.0
-          set_to: 0.0
-
-      filter25:
-        name: step_margin_clamp_hi
-        type: gridMapFilters/ThresholdFilter
-        params:
-          layer: step_margin
-          upper_threshold: 1.0
-          set_to: 1.0
-
-      # ramp_safe = trapezoidal_slope_membership * step_margin.
-      filter26:
-        name: ramp_safe_raw
-        type: gridMapFilters/MathExpressionFilter
-        params:
-          output_layer: ramp_safe
-          expression: slope_floor_margin .* slope_ceiling_margin .* step_margin
-
-      filter27:
-        name: ramp_safe_clamp_hi
-        type: gridMapFilters/ThresholdFilter
-        params:
-          layer: ramp_safe
-          upper_threshold: 1.0
-          set_to: 1.0
-
-      # trav_fused = max(CNN, ramp_safe).
-      # EigenLab has no element-wise max — use max(a,b) = 0.5*(a + b + |a-b|).
-      filter28:
-        name: trav_fused
+      filter16:
+        name: trav_fused_alias
         type: gridMapFilters/MathExpressionFilter
         params:
           output_layer: trav_fused
-          expression: 0.5 .* (traversability + ramp_safe + abs(traversability - ramp_safe))
-
-      filter29:
-        name: trav_fused_clamp_lo
-        type: gridMapFilters/ThresholdFilter
-        params:
-          layer: trav_fused
-          lower_threshold: 0.0
-          set_to: 0.0
-
-      filter30:
-        name: trav_fused_clamp_hi
-        type: gridMapFilters/ThresholdFilter
-        params:
-          layer: trav_fused
-          upper_threshold: 1.0
-          set_to: 1.0
+          expression: trav_eth

@@ -206,18 +206,41 @@ def generate_launch_description():
         )
     )
 
-    # 5. filter_chain_runner — DISABLED on Orin Nano.
-    # The 23-stage analytical chain is CPU-bound on Orin Nano: 0.28 Hz output
-    # vs 5 Hz input (each frame ~3.5s single-core 94% CPU). Trav grid ends
-    # up showing 3-second-old elevation → looks noisy in RViz even though
-    # CNN traversability is already in elevation_map_raw at full rate.
-    # We bypass the chain and consume the CNN trav layer directly below.
+    # 5. filter_chain_runner — RE-ENABLED 2026-05-20.
+    # Originally disabled because the 30-stage chain is CPU-bound on Orin
+    # Nano (0.28 Hz output vs 5 Hz input). BUT: without it, only CNN-
+    # processed cells get a non-NaN trav value → grid_map_to_occupancy
+    # treats every other cell as UNKNOWN → trav grid shows huge UNKNOWN
+    # regions even where elevation_map_raw has valid height data. The
+    # analytical fallback (slope_cost × step_cost × roughness_cost →
+    # ramp_safe → trav_fused) fills those cells based on geometry alone,
+    # giving the planner an actionable global_costmap.
+    # The 0.28 Hz limit comes from a per-cell C++ filter loop; for 500m²
+    # mapped area at 0.10m the chain is ~25 k cells per frame, which is
+    # tractable. Watch the output rate via /robot/elevation_map_filtered;
+    # if it stays under 1 Hz on the real scene, fall back to CNN-only by
+    # flipping use_filter_chain=false (see param at end of node block).
+    filter_chain_yaml = os.path.join(
+        get_package_share_directory("trav_cost_filters"),
+        "config", "grid_map_filters.yaml")
+    actions.append(
+        Node(
+            package="trav_cost_filters",
+            executable="filter_chain_runner",
+            name="filter_chain_runner",
+            namespace=ROBOT_NS,
+            output="screen",
+            respawn=True,
+            respawn_delay=3.0,
+            parameters=[filter_chain_yaml, {"use_sim_time": USE_SIM_TIME}],
+            remappings=tf_remaps,
+        )
+    )
 
-    # 6. grid_map_to_occupancy_grid (C++ port) — reads CNN trav directly from
-    # raw map. Bypass filter_chain: input_topic = elevation_map_raw,
-    # layer = traversability. ramp_override needs slope+step_residual from
-    # filter_chain → DISABLED. upper_bound_clearance still works (upper_bound
-    # layer is in raw map).
+    # 6. grid_map_to_occupancy_grid (C++ port) — reads trav_fused (filter
+    # chain output). Was reading elevation_map_raw + 'traversability' (CNN
+    # direct) when filter_chain was disabled; restored to trav_fused so
+    # the analytical fallback fills UNKNOWN cells (2026-05-20).
     #
     # C++ port is the production executable (commit 0393668): 4.6× faster
     # than the Python `grid_map_to_occupancy_grid` (0.59 → 2.72 Hz on
@@ -229,9 +252,9 @@ def generate_launch_description():
             name="grid_map_to_occupancy_grid", namespace=ROBOT_NS,
             parameters=[{
                 "use_sim_time": USE_SIM_TIME,
-                "input_topic": "elevation_map_raw",        # was elevation_map_filtered
+                "input_topic": "elevation_map_filtered",   # filter_chain output
                 "output_topic": "traversability_grid",
-                "traversability_layer": "traversability",  # was trav_fused (CNN direct)
+                "traversability_layer": "trav_fused",      # CNN ∨ ramp_safe fused
                 "free_threshold": 0.60,
                 "lethal_threshold": 0.05,
                 "elevation_cost_enabled": False,
@@ -243,10 +266,22 @@ def generate_launch_description():
                 "robot_frame": "base_link",
                 "robot_seed_radius_m": 2.0,
                 "seed_max_clear_cost": 50,
-                "ramp_override_enabled": False,            # was True (filter_chain dependency)
+                "ramp_override_enabled": True,             # needs filter_chain layers
                 "fixed_grid_enabled": True,
-                "fixed_origin_x": -100.0, "fixed_origin_y": -100.0,
-                "fixed_width_cells": 2000, "fixed_height_cells": 2000,
+                # 50m × 50m at 0.10 m/cell = 500×500 = 250k cells = 250 KB
+                # per OccupancyGrid msg, vs the previous 2000×2000 = 4 MB.
+                # The OLD 200×200m world coverage hit two cliffs simultaneously:
+                # (1) cross-host DDS RELIABLE+TRANSIENT_LOCAL gets backpressured
+                # on 4 MB msgs at 3 Hz → log spam "A message was lost";
+                # (2) RViz tries to render the 2000×2000 grid as a SINGLE
+                # OpenGL texture (`Trying to create a map of size 2000 x 2000
+                # using 1 swatches`) which is at/over GL_MAX_TEXTURE_SIZE on
+                # most GPUs → renders as black / nothing visible.
+                # 50m covers any single bench scene with margin; ops2 indoor
+                # walk hit ~20m max from spawn. Bump back to 100m if a
+                # multi-room mission needs it.
+                "fixed_origin_x": -25.0, "fixed_origin_y": -25.0,
+                "fixed_width_cells": 500, "fixed_height_cells": 500,
                 "unknown_clears_history": False,
                 "occupied_cost_threshold": 100, "free_cost_threshold": 30,
                 "occupied_confirm_hits": 2, "occupied_clear_hits": 0,
@@ -254,7 +289,7 @@ def generate_launch_description():
                 "workspace_mask_enabled": False,
             }],
             remappings=tf_remaps,
-            respawn=False, output="screen",
+            respawn=True, respawn_delay=3.0, output="screen",
         )
     )
 
@@ -307,5 +342,75 @@ def generate_launch_description():
     ])
     # Delay Nav2 so TF + trav grid are warm.
     actions.append(TimerAction(period=10.0, actions=[nav2_group]))
+
+    # 8. CFPA2 frontier exploration — conditional on explore:=true.
+    # When enabled: cfpa2_single_robot_node_cpp picks frontiers from the
+    # INFLATED global_costmap (matches Nav2's reachability) and publishes
+    # /robot/way_point_coord (PointStamped). cfpa2_to_nav2_bridge.py
+    # converts that to /robot/goal_pose (PoseStamped) which bt_navigator
+    # consumes. path_relay.py mirrors /robot/plan → /robot/planned_path
+    # for the legacy RViz display name.
+    explore_cfg = LaunchConfiguration("explore")
+
+    def _add_explore_actions(context, *args, **kwargs):
+        if context.perform_substitution(explore_cfg).lower() not in ("true", "1", "yes"):
+            return []
+        nodes = []
+        # CFPA2 single-robot — C++ binary, reads inflated global_costmap.
+        cfpa2_yaml_path = cfpa2_yaml  # same yaml used everywhere
+        nodes.append(
+            Node(
+                package="cfpa2_collaborative_autonomy",
+                executable="cfpa2_single_robot_node_cpp",
+                name="cfpa2_single_robot",
+                namespace=ROBOT_NS,
+                parameters=[cfpa2_yaml_path, {
+                    "use_sim_time": USE_SIM_TIME,
+                    "robot_namespace": ROBOT_NS,
+                    "namespaces": [ROBOT_NS],
+                    "goal_topic_suffix": "/way_point_coord",
+                    # Read Nav2's INFLATED global_costmap so CFPA2's BFS
+                    # reachability matches what Nav2 can actually plan.
+                    "planning_map_topic_suffix": "/global_costmap/costmap",
+                    "marker_frame_override": "map",
+                }],
+                remappings=tf_remaps,
+                output="screen",
+            ))
+        # CFPA2 → Nav2 goal bridge (PointStamped → PoseStamped).
+        bridge_script = os.path.join(
+            WS, "scripts", "runtime", "cfpa2_to_nav2_bridge.py")
+        nodes.append(
+            ExecuteProcess(
+                cmd=[
+                    "python3", "-u", bridge_script,
+                    "--ros-args",
+                    "-p", f"namespace:={ROBOT_NS}",
+                    "-p", f"use_sim_time:={'true' if USE_SIM_TIME else 'false'}",
+                    "-p", "waypoint_topic:=way_point_coord",
+                ],
+                name=f"cfpa2_to_nav2_bridge_{ROBOT_NS}",
+                output="screen",
+            ))
+        # /plan → /planned_path relay for RViz display compatibility.
+        path_relay_script = os.path.join(
+            WS, "scripts", "runtime", "path_relay.py")
+        if os.path.exists(path_relay_script):
+            nodes.append(
+                ExecuteProcess(
+                    cmd=[
+                        "python3", "-u", path_relay_script,
+                        "--ros-args",
+                        "-p", f"namespace:={ROBOT_NS}",
+                        "-p", f"use_sim_time:={'true' if USE_SIM_TIME else 'false'}",
+                    ],
+                    name=f"path_relay_{ROBOT_NS}",
+                    output="screen",
+                ))
+        # Delay past Nav2 lifecycle activation so global_costmap is publishing.
+        return [TimerAction(period=15.0, actions=nodes)]
+
+    from launch.actions import OpaqueFunction
+    actions.append(OpaqueFunction(function=_add_explore_actions))
 
     return LaunchDescription(args + actions)
