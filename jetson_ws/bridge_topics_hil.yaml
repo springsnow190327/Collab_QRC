@@ -1,0 +1,50 @@
+# bridge_topics_hil.yaml — ros1_bridge parameter_bridge config for the Orin NX
+# HIL bench. Loaded on the NX by:
+#   ros2 run ros1_bridge parameter_bridge __params:=bridge_topics_hil.yaml
+#
+# Topology (see docs/claude/orin_nx_hil_design.md):
+#   LAPTOP (ROS 2 Humble, simulated world)  ⇄  NX (ROS 1 Noetic compute)
+#
+# Direction legend for ros1_bridge:
+#   2to1 = ROS 2 (laptop) → ROS 1 (NX)   — the SENSOR stream into the NX stack
+#   1to2 = ROS 1 (NX) → ROS 2 (laptop)   — cmd_vel + viz back to the laptop
+#
+# CustomMsg requires the from-source ros1_bridge build (Foxy+Noetic livox msgs
+# in the overlay) — the apt binary cannot pair it. See run_nx_hil_bridge.sh.
+
+topics:
+  # ===== SENSORS: laptop (ROS2) → NX (ROS1) =====
+  - topic: /livox/lidar
+    type: livox_ros_driver2/msg/CustomMsg          # ROS 2 type name
+    queue_size: 10
+  - topic: /livox/imu
+    type: sensor_msgs/msg/Imu
+    queue_size: 100
+
+  # ===== CMD_VEL: NX (ROS1) → laptop (ROS2) drives MuJoCo CHAMP =====
+  - topic: /robot/cmd_vel
+    type: geometry_msgs/msg/Twist
+    queue_size: 10
+
+  # ===== VIZ: NX (ROS1) → laptop (ROS2) RViz2 =====
+  - topic: /robot/traversability_grid
+    type: nav_msgs/msg/OccupancyGrid
+    queue_size: 2
+  - topic: /robot/Odometry
+    type: nav_msgs/msg/Odometry
+    queue_size: 10
+  - topic: /robot/cloud_registered_body
+    type: sensor_msgs/msg/PointCloud2
+    queue_size: 2
+  - topic: /robot/plan
+    type: nav_msgs/msg/Path
+    queue_size: 2
+  - topic: /robot/way_point_coord
+    type: geometry_msgs/msg/PointStamped
+    queue_size: 5
+  - topic: /tf
+    type: tf2_msgs/msg/TFMessage
+    queue_size: 100
+  - topic: /tf_static
+    type: tf2_msgs/msg/TFMessage
+    queue_size: 100

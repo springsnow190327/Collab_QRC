@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>pc2_to_livox</name>
+  <version>0.1.0</version>
+  <description>
+    Convert a sensor_msgs/PointCloud2 (e.g. a MuJoCo lidar sim, or any
+    PointXYZI cloud) into a livox_ros_driver2/CustomMsg so a downstream
+    Livox-native SLAM (Point-LIO / FAST-LIO2, lidar_type=1) can consume it.
+
+    Built for the Orin NX / Orin Nano HIL benches where the laptop simulates
+    the physical world: MuJoCo emits PointCloud2, this node repackages it as
+    the raw Mid-360 CustomMsg stream the onboard SLAM expects, and ros1_bridge
+    forwards it to the Jetson. C++ for throughput (runs at 10 Hz on full clouds
+    without hogging the sim host).
+
+    Pure converter: no Livox-SDK, no driver binary. Depends only on the
+    CustomMsg/CustomPoint definitions from the livox_ros_driver2 (msgs-only)
+    package.
+  </description>
+  <maintainer email="hz@example.com">hz</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>livox_ros_driver2</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

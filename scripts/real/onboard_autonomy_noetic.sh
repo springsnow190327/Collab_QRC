@@ -55,6 +55,10 @@ LIVOX_HOST_IP="192.168.123.100"
 LIVOX_NIC=""
 ROS_MASTER_PORT="11311"
 TRAV_WEIGHTS=""                 # empty = pkg default weights
+HIL="false"                     # HIL bench mode: sensors come from ros1_bridge
+                                # (laptop MuJoCo), NOT a real Mid-360. Skips the
+                                # NIC bind + the livox driver; expects the bridge
+                                # (run_nx_hil_bridge.sh) to publish /livox/{lidar,imu}.
 
 # ── Cleanup ──────────────────────────────────────────────────────────
 _kill_stack() {
@@ -89,6 +93,7 @@ for arg in "$@"; do
     port=*)           ROS_MASTER_PORT="${arg#port=}" ;;
     weights=*)        TRAV_WEIGHTS="${arg#weights=}" ;;
     ros_ip=*)         OVERRIDE_ROS_IP="${arg#ros_ip=}" ;;
+    hil=*)            HIL="${arg#hil=}" ;;
     *) echo "WARN: unknown arg '$arg'" >&2 ;;
   esac
 done
@@ -96,22 +101,28 @@ done
 case "$SLAM" in pointlio|fastlio) ;; *) echo "ERROR: slam must be pointlio|fastlio" >&2; exit 1 ;; esac
 case "$EXPLORE" in true|false) ;; *) echo "ERROR: explore must be true|false" >&2; exit 1 ;; esac
 case "$ENABLE_RVIZ" in true|false) ;; *) echo "ERROR: rviz must be true|false" >&2; exit 1 ;; esac
+case "$HIL" in true|false) ;; *) echo "ERROR: hil must be true|false" >&2; exit 1 ;; esac
 
-# ── Mid-360 NIC bind (same logic as onboard_pointlio_noetic.sh) ──────
-if [[ -z "$LIVOX_NIC" ]]; then
-  LIVOX_NIC="$(ip -o link show | awk -F': ' '$2 ~ /^en|^eth/ {print $2; exit}')"
-fi
-if [[ -z "$LIVOX_NIC" ]]; then
-  echo "ERROR: could not auto-detect Ethernet NIC. Pass nic=eth0." >&2
-  exit 1
-fi
-echo "  Ethernet NIC: $LIVOX_NIC"
-if ! ip -4 addr show "$LIVOX_NIC" | grep -q " ${LIVOX_HOST_IP}/"; then
-  echo "  Adding ${LIVOX_HOST_IP}/24 as secondary on $LIVOX_NIC..."
-  sudo -n ip addr add "${LIVOX_HOST_IP}/24" dev "$LIVOX_NIC" 2>/dev/null || \
-    sudo ip addr add "${LIVOX_HOST_IP}/24" dev "$LIVOX_NIC" 2>/dev/null || {
-    echo "  WARN: could not add ${LIVOX_HOST_IP}. Mid-360 bind() may fail." >&2
-  }
+# ── Mid-360 NIC bind (real-LiDAR only; skipped in HIL — sensors come from the
+#    ros1_bridge publishing /livox/{lidar,imu} from the laptop MuJoCo) ──────
+if [[ "$HIL" == "true" ]]; then
+  echo "  HIL mode: skipping Mid-360 NIC bind + livox driver (sensors from bridge)."
+else
+  if [[ -z "$LIVOX_NIC" ]]; then
+    LIVOX_NIC="$(ip -o link show | awk -F': ' '$2 ~ /^en|^eth/ {print $2; exit}')"
+  fi
+  if [[ -z "$LIVOX_NIC" ]]; then
+    echo "ERROR: could not auto-detect Ethernet NIC. Pass nic=eth0." >&2
+    exit 1
+  fi
+  echo "  Ethernet NIC: $LIVOX_NIC"
+  if ! ip -4 addr show "$LIVOX_NIC" | grep -q " ${LIVOX_HOST_IP}/"; then
+    echo "  Adding ${LIVOX_HOST_IP}/24 as secondary on $LIVOX_NIC..."
+    sudo -n ip addr add "${LIVOX_HOST_IP}/24" dev "$LIVOX_NIC" 2>/dev/null || \
+      sudo ip addr add "${LIVOX_HOST_IP}/24" dev "$LIVOX_NIC" 2>/dev/null || {
+      echo "  WARN: could not add ${LIVOX_HOST_IP}. Mid-360 bind() may fail." >&2
+    }
+  fi
 fi
 
 # ── ROS 1 env ────────────────────────────────────────────────────────
@@ -152,6 +163,7 @@ echo "    workspace : $WS_ROOT"
 echo "    namespace : $NAMESPACE"
 echo "    SLAM      : $SLAM ($SLAM_PKG/$SLAM_LAUNCH)"
 echo "    explore   : $EXPLORE (CFPA2 + goal bridge)"
+echo "    HIL       : $HIL $([ "$HIL" = true ] && echo '(sensors from ros1_bridge / laptop MuJoCo)')"
 echo "    ROS_MASTER: $ROS_MASTER_URI"
 echo "    rviz      : $ENABLE_RVIZ"
 echo "  Stop        : Ctrl+C  or  $0 stop"
@@ -177,16 +189,30 @@ rostopic list &>/dev/null || { echo "ERROR: roscore failed (see /tmp/onboard_ros
 echo "      roscore up."
 
 # ── 2. livox_ros_driver2 (Mid-360, CustomMsg) ────────────────────────
-echo "[2/8] livox_ros_driver2 (Mid-360)..."
-nohup roslaunch livox_ros_driver2 msg_MID360.launch \
-  xfer_format:=1 multi_topic:=0 publish_freq:=10.0 output_type:=0 \
-  msg_frame_id:=body rviz_enable:=false rosbag_enable:=false \
-  </dev/null >/tmp/onboard_livox.log 2>&1 &
-disown $! 2>/dev/null || true
-for i in $(seq 1 10); do
-  rostopic info /livox/lidar 2>/dev/null | grep -q "Publishers:" && break; sleep 1
-done
-echo "      /livox/lidar advertised."
+# HIL: the real driver is NOT started — the ros1_bridge publishes /livox/lidar
+# + /livox/imu from the laptop MuJoCo sim. We just wait for them to appear.
+if [[ "$HIL" == "true" ]]; then
+  echo "[2/8] HIL: waiting for bridged /livox/lidar (from laptop MuJoCo via ros1_bridge)..."
+  for i in $(seq 1 60); do
+    rostopic info /livox/lidar 2>/dev/null | grep -q "Publishers:" && break; sleep 1
+  done
+  if rostopic info /livox/lidar 2>/dev/null | grep -q "Publishers:"; then
+    echo "      /livox/lidar present (bridged)."
+  else
+    echo "      WARN: /livox/lidar not seen after 60s — is the laptop sim + bridge up?" >&2
+  fi
+else
+  echo "[2/8] livox_ros_driver2 (Mid-360)..."
+  nohup roslaunch livox_ros_driver2 msg_MID360.launch \
+    xfer_format:=1 multi_topic:=0 publish_freq:=10.0 output_type:=0 \
+    msg_frame_id:=body rviz_enable:=false rosbag_enable:=false \
+    </dev/null >/tmp/onboard_livox.log 2>&1 &
+  disown $! 2>/dev/null || true
+  for i in $(seq 1 10); do
+    rostopic info /livox/lidar 2>/dev/null | grep -q "Publishers:" && break; sleep 1
+  done
+  echo "      /livox/lidar advertised."
+fi
 
 # ── 3. SLAM (Point-LIO default) ──────────────────────────────────────
 echo "[3/8] $SLAM_PKG ($SLAM_LAUNCH, ns=${NAMESPACE})..."
