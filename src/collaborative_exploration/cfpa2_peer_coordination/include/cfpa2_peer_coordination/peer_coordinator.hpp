@@ -226,8 +226,3 @@ private:
 };
 
 } // namespace cfpa2_peer_coordination
-
-
-
-      
-    
