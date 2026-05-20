@@ -198,6 +198,26 @@ qrc_report_and_agenda.md
 /src/vendor/nav2_humble_src/
 /src/vendor/Livox-SDK2/build/
 /src/collaborative_exploration/go2_tare_planner_ros2/generated/tare_planner/or-tools/
+
+# =============================================
+# Vendored ROS 1 Noetic deps (Jetson onboard) — source tracked, but exclude
+# build products, upstream demo GIFs, and unused patches. See
+# src/vendor/VENDORED_ROS1_ORIGINS.txt for upstream URLs/commits.
+# =============================================
+# CMake/colcon build artifacts inside vendored trees
+/src/vendor/nvblox/build/
+/src/vendor/*_ros1/**/build/
+/src/vendor/*_ros1/**/devel/
+/src/vendor/*_ros1/**/install/
+/src/vendor/*_ros1/**/log/
+/src/vendor/gbplanner3_src/**/build/
+/src/vendor/gbplanner3_src/**/devel/
+/src/vendor/gbplanner3_src/**/install/
+/src/vendor/gbplanner3_src/**/log/
+# nvblox upstream README demo GIFs (225 MB, not needed for deployment)
+/src/vendor/nvblox/docs/images/*.gif
+# unused mmWave radar patch (41 MB)
+/src/vendor/gbplanner3_src/unified_autonomy_stack/repos/patches/ws_mmwave_ti_ros.patch
 .local_deps/
 *.deb
 

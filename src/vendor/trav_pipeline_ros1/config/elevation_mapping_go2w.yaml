@@ -1,0 +1,123 @@
+# elevation_mapping_cupy config for real Go2W / Go2 on Jetson Noetic.
+#
+# Loaded by trav_pipeline.launch via <rosparam command="load"> inside the
+# <node ns="robot" name="elevation_mapping"> tag, so all keys land in
+# /robot/elevation_mapping/ and are read as ~param by the node.
+#
+# Mirrors the ROS 2 sim config (elevation_mapping.yaml) but adapted for:
+#   - ROS 1 flat format (no /**:  ros__parameters: wrapper)
+#   - Real Mid-360 mounted on Go2W (z ≈ 0.50 m above floor, pitch +15°)
+#   - Point-LIO frame convention: map→body TF (not map→base_link)
+#   - Ops2 building scene (~60 m corridor, ceilings ~2.5 m)
+#
+# Point-LIO publishes:
+#   /robot/cloud_registered_body  (PointCloud2, body frame)
+#   TF: map → odom → body  (body = Point-LIO's robot frame)
+#   Static TF: body → base_link
+
+map_frame: "map"
+base_frame: "body"
+
+# 60 × 60 m world-fixed window.  At 0.10 m resolution → 600 × 600 cells.
+# Note: elevation_mapping_cupy is ROBOT-CENTRIC (rolling window); the
+# world-fixed output grid is assembled by trav_filter_occ_grid.py.
+map_length: 60.0
+resolution: 0.10
+
+# Height gate: accept points within 1.7 m above sensor.
+# Sensor sits at ~0.50 m above floor → gate cuts off at ~2.2 m world-z.
+# This suppresses ceilings and overhead bridging structures that would
+# otherwise pollute the CNN input (see 2026-05-18 bridge root-cause hunt).
+max_height_range: 1.7
+ramped_height_range_a: 0.5
+ramped_height_range_b: 1.7
+ramped_height_range_c: 0.2
+# Mid-360 blind zone: < 0.30 m in front of sensor → skip near-field noise.
+min_valid_distance: 0.30
+
+# Update rates
+map_acquire_fps: 5.0
+update_variance_fps: 5.0
+update_pose_fps: 10.0
+publish_statistics_fps: 1.0
+
+# Kalman fusion knobs (upstream defaults)
+sensor_noise_factor: 0.05
+mahalanobis_thresh: 2.0
+outlier_variance: 0.01
+initialized_variance: 10.0
+initial_variance: 1000.0
+max_variance: 100.0
+time_variance: 0.0001
+
+# Drift compensation — keep OFF until walls appear consistently (same as sim).
+enable_drift_compensation: false
+max_drift: 0.1
+drift_compensation_alpha: 0.1
+traversability_inlier: 0.9
+min_height_drift_cnt: 100
+position_noise_thresh: 0.01
+orientation_noise_thresh: 0.01
+position_lowpass_alpha: 0.2
+orientation_lowpass_alpha: 0.2
+
+# Visibility cleanup — keep OFF until nominal fill confirmed.
+enable_visibility_cleanup: false
+enable_edge_sharpen: true
+enable_overlap_clearance: true
+overlap_clear_range_xy: 4.0
+overlap_clear_range_z: 2.0
+max_ray_length: 10.0
+cleanup_step: 0.1
+cleanup_cos_thresh: 0.1
+dilation_size: 3
+wall_num_thresh: 3
+
+# CNN traversability filter (use torch — Orin sm_87 has native torch wheels).
+# use_chainer: false  → uses torch.  On laptop sm_120 we use cupy instead
+# (elevation_mapping.py#L145-163), but on Orin torch is sufficient.
+use_chainer: false
+safe_thresh: 0.7
+safe_min_thresh: 0.4
+max_unsafe_n: 10
+use_only_above_for_upper_bound: false
+
+# Disable heavy optional outputs not needed on the Jetson side.
+enable_pointcloud_publishing: false
+enable_drift_corrected_TF_publishing: false
+enable_normal_arrow_publishing: false
+recordable_fps: 0.0
+
+# Drift compensation variance knob (internal, needs a value so the node
+# doesn't fall back to undefined behaviour).
+drift_compensation_variance_inlier: 0.1
+
+# Flat initialisation seed around base_link at startup.
+initialize_method: "linear"
+initialize_frame_id: ["body"]
+initialize_tf_offset: [0.0]
+dilation_size_initialize: 2
+initialize_tf_grid_size: 1.0
+use_initializer_at_start: true
+
+checker_layer: "elevation"
+time_interval: 0.1
+masked_replace_service_mask_layer_name: "mask"
+save_map_default_topic: "elevation_map"
+save_map_storage_id: "bag"
+
+# ---- Input -----------------------------------------------------------
+# Point-LIO deskewed body-frame cloud (absolute path — livox topic is global).
+subscribers:
+  cloud:
+    topic_name: "/robot/cloud_registered_body"
+    data_type: "pointcloud"
+
+# ---- Output ----------------------------------------------------------
+# Relative topic name "elevation_map_raw" → /robot/elevation_map_raw when
+# ns=robot (elevation_mapping_node.py overrides register_publishers for this).
+publishers:
+  elevation_map_raw:
+    layers: ["elevation", "variance", "traversability"]
+    basic_layers: ["elevation"]
+    fps: 5.0

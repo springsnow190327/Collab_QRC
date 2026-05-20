@@ -51,19 +51,6 @@ class CFPA2SingleRobotNode(CFPA2Coordinator):
                 "robot_namespace parameter does not match namespaces[0]; "
                 f"using topic namespace '{self.namespaces[0]}'."
             )
-        if self.use_shared_map:
-            self.get_logger().warn(
-                "cfpa2_single_robot_node ignores use_shared_map=true; "
-                "single-robot planning always uses the local map."
-            )
-            self.use_shared_map = False
-        if self.output_mode != "waypoint_coord":
-            self.get_logger().warn(
-                f"cfpa2_single_robot_node requires output_mode=waypoint_coord; "
-                f"overriding '{self.output_mode}'."
-            )
-            self.output_mode = "waypoint_coord"
-
         # Single source of truth for exploration state; consumed by
         # exploration_metrics_logger to emit structured event lines and to
         # decide when to fire exploration_complete + cancel Nav2.

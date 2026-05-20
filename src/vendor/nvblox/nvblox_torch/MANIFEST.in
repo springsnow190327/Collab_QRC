@@ -1,0 +1,7 @@
+include nvblox_torch/lib/nvblox_torch/cpp/libpy_nvblox.so
+include nvblox_torch/lib/nvblox/libnvblox_lib.so
+include nvblox_torch/tests/data/3dmatch/*
+include nvblox_torch/tests/data/3dmatch/seq-01/*
+include nvblox_torch/tests/data/orbbec/*
+include nvblox_torch/tests/data/orbbec/g1_sim/*
+include nvblox_torch/examples/esdf/viewpoint.json
