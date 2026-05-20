@@ -183,19 +183,19 @@ private:
   std_msgs::msg::Header make_header();
   builtin_interfaces::msg::Time ns_to_time_msg(std::uint64_t ns) const;
   std::string next_request_id();
-  std::uint64_t now_ns() const;
+  std::uint64_t now_ns();
 
   // Claim/frontier helpers — added in later chunks.
   void expire_stale_claims();
   void handle_peer_staleness();
   void resolve_own_claim_conflicts();
-  bool peer_is_fresh(const std::string & peer_id) const;
-  std::vector<std::string> fresh_peer_ids() const;
-  std::vector<std::string> stale_peer_ids() const;
+  bool peer_is_fresh(const std::string & peer_id);
+  std::vector<std::string> fresh_peer_ids();
+  std::vector<std::string> stale_peer_ids();
   std::vector<Point3> available_local_frontiers();
 
   bool same_frontier_position(const Point3 & a, const Point3 & b) const;
-  bool claim_is_fresh(const ClaimedFrontier & claim) const;
+  bool claim_is_fresh(const ClaimedFrontier & claim);
   std::uint64_t claim_stamp_ns(const ClaimedFrontier & claim) const;
   bool claim_wins_against(const ClaimedFrontier & a, const ClaimedFrontier & b) const;
   bool claims_match_within_tolerance(

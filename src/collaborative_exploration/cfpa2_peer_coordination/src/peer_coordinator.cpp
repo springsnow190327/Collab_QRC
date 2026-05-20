@@ -276,7 +276,7 @@ void PeerCoordinatorNode::log_startup_banner()
 std_msgs::msg::Header PeerCoordinatorNode::make_header()
 {
   std_msgs::msg::Header h;
-  h.stamp = now();
+  h.stamp = ns_to_time_msg(now_ns());
   h.frame_id = "map";
   return h;
 }
@@ -300,9 +300,9 @@ std::string PeerCoordinatorNode::next_request_id()
   return robot_id_ + "-" + std::to_string(request_counter_);
 }
 
-std::uint64_t PeerCoordinatorNode::now_ns() const
+std::uint64_t PeerCoordinatorNode::now_ns()
 {
-  return static_cast<std::uint64_t>(get_clock()->now().nanoseconds());
+  return static_cast<std::uint64_t>(this->get_clock()->now().nanoseconds());
 }
 
 // Subscription callbacks
@@ -417,7 +417,7 @@ void PeerCoordinatorNode::on_negotiation_request(
   response.request_id = msg->request_id;
   response.requester_id = msg->requester_id;
   response.responder_id = robot_id_;
-  response.response_stamp = now();
+  response.response_stamp = ns_to_time_msg(now_ns());
   response.accepted = accepted;
   response.reason = reason;
   response.responder_last_interaction_attempt_stamp =
@@ -688,7 +688,7 @@ void PeerCoordinatorNode::decide_negotiation()
 
 // Freshness + staleness handling
 
-bool PeerCoordinatorNode::peer_is_fresh(const std::string & peer_id) const
+bool PeerCoordinatorNode::peer_is_fresh(const std::string & peer_id)
 {
   auto it = peer_info_.find(peer_id);
   if (it == peer_info_.end() || !it->second.last_state.has_value()) {
@@ -701,7 +701,7 @@ bool PeerCoordinatorNode::peer_is_fresh(const std::string & peer_id) const
   return age_sec <= peer_timeout_sec_;
 }
 
-std::vector<std::string> PeerCoordinatorNode::fresh_peer_ids() const
+std::vector<std::string> PeerCoordinatorNode::fresh_peer_ids()
 {
   std::vector<std::string> out;
   for (const auto & peer_id : peer_ids_) {
@@ -710,7 +710,7 @@ std::vector<std::string> PeerCoordinatorNode::fresh_peer_ids() const
   return out;
 }
 
-std::vector<std::string> PeerCoordinatorNode::stale_peer_ids() const
+std::vector<std::string> PeerCoordinatorNode::stale_peer_ids()
 {
   std::vector<std::string> out;
   for (const auto & peer_id : peer_ids_) {
@@ -778,7 +778,7 @@ std::uint64_t PeerCoordinatorNode::claim_stamp_ns(const ClaimedFrontier & claim)
          static_cast<std::uint64_t>(claim.claim_stamp.nanosec);
 }
 
-bool PeerCoordinatorNode::claim_is_fresh(const ClaimedFrontier & claim) const
+bool PeerCoordinatorNode::claim_is_fresh(const ClaimedFrontier & claim)
 {
   const std::uint64_t cns = claim_stamp_ns(claim);
   const std::uint64_t now = now_ns();
@@ -945,7 +945,7 @@ ClaimedFrontier PeerCoordinatorNode::point3_to_claim_for(
   claim.position.y = point[1];
   claim.position.z = point[2];
   claim.claimed_by = claimed_by;
-  claim.claim_stamp = now();
+  claim.claim_stamp = ns_to_time_msg(now_ns());
   claim.information_gain = information_gain;
   return claim;
 }
@@ -1270,7 +1270,7 @@ void PeerCoordinatorNode::tick_requester_state(
     // Suppression: avoid repeatedly negotiating the same already-
     // committed allocation.
     const auto peer_claims_it = peer_claims_.find(peer_id);
-    const std::vector<ClaimedFrontier> & current_peer_claims =
+    const std::vector<ClaimedFrontier> current_peer_claims =
         peer_claims_it != peer_claims_.end()
             ? peer_claims_it->second
             : std::vector<ClaimedFrontier>{};
@@ -1286,7 +1286,7 @@ void PeerCoordinatorNode::tick_requester_state(
     req.request_id = request_id;
     req.requester_id = robot_id_;
     req.responder_id = peer_id;
-    req.request_stamp = now();
+    req.request_stamp = ns_to_time_msg(now_ns());
     req.requester_claims = proposed_own_claims;
     req.responder_claims = proposed_peer_claims;
     req.protocol_version = kProtocolVersion;
