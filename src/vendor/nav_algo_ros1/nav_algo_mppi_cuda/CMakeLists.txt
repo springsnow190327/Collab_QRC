@@ -10,13 +10,22 @@ set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -std=c++17")
 
 # Target architectures: 8.7 = Jetson Orin (Ampere), 8.9 = RTX 4050 mobile
 # (host dev machine). Pre-3.18 CMake doesn't honor CUDA_ARCHITECTURES;
-# pass -gencode flags directly. Add more arches by extending this list.
+# pass -gencode flags directly.
+#
+# sm_89 requires CUDA >= 11.8 and sm_120 requires CUDA >= 12.8 — nvcc on
+# older toolkits (e.g. JetPack 5 / Orin NX ships CUDA 11.4) errors with
+# "Unsupported gpu architecture 'compute_89'". So gate the newer arches on
+# the detected CUDA toolkit version; sm_87 (the Orin onboard target) is
+# always included.
+set(_cuda_gencode "-gencode=arch=compute_87,code=sm_87")
+if(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 11.8)
+  set(_cuda_gencode "${_cuda_gencode} -gencode=arch=compute_89,code=sm_89")
+endif()
+if(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 12.8)
+  set(_cuda_gencode "${_cuda_gencode} -gencode=arch=compute_120,code=sm_120")
+endif()
 set(CMAKE_CUDA_FLAGS
-  "${CMAKE_CUDA_FLAGS} \
-   -gencode=arch=compute_87,code=sm_87 \
-   -gencode=arch=compute_89,code=sm_89 \
-   --expt-relaxed-constexpr"
-)
+  "${CMAKE_CUDA_FLAGS} ${_cuda_gencode} --expt-relaxed-constexpr")
 
 # Warnings/optim only for the host C++ compiler; nvcc would error on -Wall
 # (it forwards a different syntax via -Xcompiler).

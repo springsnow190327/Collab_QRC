@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>hil_udp_relay</name>
+  <version>0.1.0</version>
+  <description>
+    Lightweight typed UDP relay (ROS 2 side) connecting the Humble laptop (MuJoCo
+    sim world) to the Noetic Orin NX (autonomy). Replaces ros1_bridge, which is
+    broken on this Jetson (Foxy EOL bad_alloc per message). hil_relay_tx_node
+    ships the sensor DOWN-link (/livox/lidar CustomMsg + /livox/imu) to the NX;
+    hil_relay_rx_node receives the UP-link (/robot/cmd_vel and optional viz) back.
+  </description>
+  <maintainer email="noreply@anthropic.com">Collab_QRC HIL bench</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>livox_ros_driver2</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

@@ -1,0 +1,69 @@
+exclude: '\.patch$'
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-json
+      - id: check-xml
+      - id: check-ast
+      - id: double-quote-string-fixer
+      - id: end-of-file-fixer
+      - id: pretty-format-json
+        args: ['--autofix']
+      - id: trailing-whitespace
+  - repo: https://github.com/google/yapf
+    rev: v0.40.2
+    hooks:
+      - id: yapf
+        require_serial: true
+        language_version: python3.12
+  - repo: https://github.com/doublify/pre-commit-clang-format
+    rev: 62302476d0da01515660132d76902359bed0f782
+    hooks:
+      - id: clang-format # See premerge.yml for the clang-format version used.
+        files: \.(c|cc|cpp|cxx|cu|cuh|h|hh|hpp|hxx|inl|proto|pb\.h|pb\.cc)$
+  - repo: https://github.com/pylint-dev/pylint
+    rev: v3.0.3
+    hooks:
+      - id: pylint
+        language_version: python3.12
+  - repo: https://github.com/google/yamlfmt
+    rev: v0.10.0
+    hooks:
+      - id: yamlfmt
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.8.0
+    hooks:
+      - id: mypy
+        additional_dependencies:
+          - types-pyyaml
+          - types-requests
+        language_version: python3.12
+  - repo: https://github.com/cheshirekow/cmake-format-precommit
+    rev: v0.6.10
+    hooks:
+      - id: cmake-format
+  - repo: local
+    hooks:
+      - id: check_nvblox_public_header
+        name: check_nvblox_public_header
+        language: script
+        entry: ci/lint_nvblox_h.sh
+  - repo: https://github.com/PyCQA/pydocstyle
+    rev: 6.3.0
+    hooks:
+      - id: pydocstyle
+        additional_dependencies:
+          - tomli
+        args: ['--config', 'nvblox_torch/pyproject.toml']
+        files: ^nvblox_torch/nvblox_torch/
+        # Only run on top-level files in nvblox_torch
+        exclude: ^nvblox_torch/nvblox_torch/examples/|^nvblox_torch/nvblox_torch/tests/|^nvblox_torch/nvblox_torch/datasets
+# TODO(Vik): Enable once we have a proper copyright header
+# - repo: local
+#   hooks:
+#     - id: check-for-copyright
+#       name: Check for Copyright
+#       entry: ./hooks/check_for_copyright.py
+#       language: python
+#       types: [file, python]

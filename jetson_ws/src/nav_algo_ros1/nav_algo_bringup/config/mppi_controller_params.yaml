@@ -1,0 +1,110 @@
+# MPPI (local) — every numeric value here is byte-for-byte the same as
+# nav2_go2_full_stack.yaml's FollowPath block. Math equivalence to the
+# Nav2 sim depends on this; do not edit on a whim.
+MPPIControllerROS:
+  # Goal tolerance (the Nav2 yaml's SimpleGoalChecker block).
+  xy_goal_tolerance:        0.50
+  yaw_goal_tolerance:       3.14
+  odom_topic:               /robot/odom/nav
+
+  # GPU acceleration — when true AND the plugin was compiled with
+  # NAV_ALGO_MPPI_HAS_CUDA, MPPI optimize() runs on CUDA via the
+  # nav_algo_mppi_cuda backend (~50-200× faster than xtensor CPU).
+  # CPU fallback retained: set false (or build without the CUDA pkg) to
+  # use the xtensor path. v1 backend: simplified host-side gates;
+  # full math-equivalence to Humble sim is a follow-up.
+  use_cuda:                 true
+
+  # ---- Optimizer + DiffDrive ----
+  time_steps:               56
+  model_dt:                 0.05
+  batch_size:               2000
+  vx_std:                   0.20
+  vy_std:                   0.20
+  wz_std:                   0.40
+  vx_max:                   0.30
+  vx_min:                  -0.10
+  vy_max:                   0.0
+  wz_max:                   0.8
+  ax_max:                   0.30
+  ax_min:                  -0.40
+  ay_max:                   0.0
+  az_max:                   1.0
+  iteration_count:          1
+  prune_distance:           1.7
+  transform_tolerance:      0.2
+  temperature:              0.3
+  gamma:                    0.015
+  motion_model:             DiffDrive
+  visualize:                false
+  regenerate_noises:        false
+
+  AckermannConstraints:
+    min_turning_r:          0.3
+
+  # ---- 8 critics (weights identical to Nav2 yaml) ----
+  critics:
+    - ConstraintCritic
+    - ObstaclesCritic
+    - GoalCritic
+    - GoalAngleCritic
+    - PathAlignCritic
+    - PathFollowCritic
+    - PathAngleCritic
+    - PreferForwardCritic
+
+  ConstraintCritic:
+    enabled:              true
+    cost_power:           1
+    cost_weight:          4.0
+
+  GoalCritic:
+    enabled:              true
+    cost_power:           1
+    cost_weight:          5.0
+    threshold_to_consider: 1.4
+
+  GoalAngleCritic:
+    enabled:              true
+    cost_power:           1
+    cost_weight:          3.0
+    threshold_to_consider: 0.5
+
+  PreferForwardCritic:
+    enabled:              true
+    cost_power:           1
+    cost_weight:          5.0
+    threshold_to_consider: 0.5
+
+  ObstaclesCritic:
+    enabled:              true
+    cost_power:           1
+    repulsion_weight:     3.0
+    critical_weight:      20.0
+    consider_footprint:   true
+    collision_cost:       10000.0
+    collision_margin_distance: 0.05
+    near_goal_distance:   0.5
+
+  PathAlignCritic:
+    enabled:              true
+    cost_power:           1
+    cost_weight:          14.0
+    max_path_occupancy_ratio: 0.05
+    trajectory_point_step: 4
+    threshold_to_consider: 0.5
+    offset_from_furthest: 20
+    use_path_orientations: false
+
+  PathFollowCritic:
+    enabled:              true
+    cost_power:           1
+    cost_weight:          5.0
+    offset_from_furthest: 5
+    threshold_to_consider: 1.4
+
+  PathAngleCritic:
+    enabled:              true
+    cost_power:           1
+    cost_weight:          2.0
+    offset_from_furthest: 4

@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>trav_pipeline_ros1</name>
+  <version>1.0.0</version>
+  <description>
+    ROS 1 Noetic traversability pipeline for real Go2W deployment on Jetson.
+    Provides a namespace-safe wrapper around elevation_mapping_cupy and a
+    numpy filter chain node that outputs OccupancyGrid for ros1_bridge to
+    the laptop Nav2 stack.
+  </description>
+  <maintainer email="Zhuhanshan12@outlook.com">HanshangZhu</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>rospy</depend>
+  <depend>std_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <!-- actionlib_msgs: GoalStatusArray from move_base/status (bridge node) -->
+  <depend>actionlib_msgs</depend>
+  <depend>grid_map_msgs</depend>
+  <!-- elevation_mapping_cupy is a catkin package we build in the same ws -->
+  <depend>elevation_mapping_cupy</depend>
+</package>

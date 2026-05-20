@@ -1,0 +1,45 @@
+<!--
+  Go2 legged EXPLORATION navigation tree.
+
+  Based on navigate_to_pose_no_spin_recovery.xml but the global costmap is
+  NEVER cleared. During frontier exploration the global costmap's static layer
+  is fed by the persistent traversability grid (the accumulated map). The
+  stock recovery clears the ENTIRE global costmap on every ComputePathToPose
+  failure — which, when CFPA2 occasionally hands Nav2 a hard goal, wipes the
+  whole explored map to unknown for ~1 update cycle. That empties CFPA2's
+  reachable-frontier candidate list (it then holds a stale far goal), the next
+  plan fails, the costmap is cleared again → a destructive clear↔fail loop that
+  pins the robot near spawn (observed 2026-05-20: PLAN_OK=0, costmap cleared
+  every ~1 s, robot only drifting via BackUp).
+
+  Fixes: recovery clears ONLY the local costmap (rebuilt every frame from live
+  sensors, safe to wipe). The global/exploration map persists across plan
+  failures, so CFPA2 always has a stable reachable-frontier set and Nav2 can
+  plan to the nearest one. Spin still removed (legged thigh-sweep hazard).
+-->
+<root main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <RecoveryNode number_of_retries="6" name="NavigateRecovery">
+      <PipelineSequence name="NavigateWithReplanning">
+        <RateController hz="1.0">
+          <RecoveryNode number_of_retries="1" name="ComputePathToPose">
+            <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+            <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
+          </RecoveryNode>
+        </RateController>
+        <RecoveryNode number_of_retries="1" name="FollowPath">
+          <FollowPath path="{path}" controller_id="FollowPath"/>
+          <ClearEntireCostmap name="ClearLocalCostmap-Context2" service_name="local_costmap/clear_entirely_local_costmap"/>
+        </RecoveryNode>
+      </PipelineSequence>
+      <ReactiveFallback name="RecoveryFallback">
+        <GoalUpdated/>
+        <RoundRobin name="RecoveryActions">
+          <ClearEntireCostmap name="ClearLocalCostmap-Subtree" service_name="local_costmap/clear_entirely_local_costmap"/>
+          <Wait wait_duration="2"/>
+          <BackUp backup_dist="0.30" backup_speed="0.05"/>
+        </RoundRobin>
+      </ReactiveFallback>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>

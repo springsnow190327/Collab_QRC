@@ -51,6 +51,10 @@ def generate_launch_description():
     filter_chain_yaml = os.path.join(trav_share, "config", "grid_map_filters.yaml")
     default_weights = os.path.join(elevation_cupy_share, "config", "core", "weights.dat")
     cfpa2_yaml = os.path.join(cfpa2_share, "config", "cfpa2_single_robot.yaml")
+    # ops2 overlay (allow_unknown=false + unlimited goal distance) — same file
+    # the desktop standalone launcher uses, for production parity.
+    cfpa2_ops2_overlay = os.path.join(
+        cfpa2_share, "config", "cfpa2_single_robot_ops2.yaml")
     velodyne_yaml = os.path.join(fast_lio_share, "config", "velodyne.yaml")
     nav2_yaml_path = os.path.join(WS, "config", "nav", "nav2_go2_full_stack.yaml")
     bt_dir = os.path.join(WS, "config", "nav", "behavior_trees")
@@ -357,23 +361,29 @@ def generate_launch_description():
             return []
         nodes = []
         # CFPA2 single-robot — C++ binary, reads inflated global_costmap.
-        cfpa2_yaml_path = cfpa2_yaml  # same yaml used everywhere
+        # Load base yaml + ops2 overlay (allow_unknown=false → no leak through
+        # unknown behind hand-walls; unlimited goal distance) THEN inline
+        # overrides (last wins), matching the desktop standalone stack.
+        cfpa2_params = [cfpa2_yaml]
+        if os.path.exists(cfpa2_ops2_overlay):
+            cfpa2_params.append(cfpa2_ops2_overlay)
+        cfpa2_params.append({
+            "use_sim_time": USE_SIM_TIME,
+            "robot_namespace": ROBOT_NS,
+            "namespaces": [ROBOT_NS],
+            "goal_topic_suffix": "/way_point_coord",
+            # Read Nav2's INFLATED global_costmap so CFPA2's BFS
+            # reachability matches what Nav2 can actually plan.
+            "planning_map_topic_suffix": "/global_costmap/costmap",
+            "marker_frame_override": "map",
+        })
         nodes.append(
             Node(
                 package="cfpa2_collaborative_autonomy",
                 executable="cfpa2_single_robot_node_cpp",
                 name="cfpa2_single_robot",
                 namespace=ROBOT_NS,
-                parameters=[cfpa2_yaml_path, {
-                    "use_sim_time": USE_SIM_TIME,
-                    "robot_namespace": ROBOT_NS,
-                    "namespaces": [ROBOT_NS],
-                    "goal_topic_suffix": "/way_point_coord",
-                    # Read Nav2's INFLATED global_costmap so CFPA2's BFS
-                    # reachability matches what Nav2 can actually plan.
-                    "planning_map_topic_suffix": "/global_costmap/costmap",
-                    "marker_frame_override": "map",
-                }],
+                parameters=cfpa2_params,
                 remappings=tf_remaps,
                 output="screen",
             ))

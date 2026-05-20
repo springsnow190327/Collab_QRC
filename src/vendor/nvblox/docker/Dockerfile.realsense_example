@@ -1,0 +1,32 @@
+ARG BASE_IMAGE=nvblox_build
+
+FROM ${BASE_IMAGE}
+
+### Install apt dependencies.
+RUN apt update && apt-get --no-install-recommends install -y \
+    # Realsense dependencies
+    python3.10-dev\
+    libusb-1.0-0 \
+    # Needed to get the .so files within pycuvslam
+    git-lfs \
+    # Rerun dependencies
+    python3-pip \
+    libgtk-3-dev \
+    libxkbcommon-x11-0 \
+    vulkan-tools
+
+### Install pip dependencies
+RUN . /opt/venv/bin/activate && \
+    python3 -m pip install --upgrade pip && \
+    python3 -m pip install \
+        # Other dependencies for the realsense example
+        pyrealsense2 \
+        rerun-sdk
+
+### Install PyCuVSLAM. We support pre v0.2
+RUN git clone https://github.com/NVlabs/pycuvslam.git /pycuvslam && \
+    . /opt/venv/bin/activate && \
+    pip install --upgrade pip && \
+    cd /pycuvslam && git checkout 3ac37364f00421e3c580dfeb489a8be85f3875a1 && \
+    git lfs install && pip install  cuvslam/x86 && \
+    rm -rf /pycuvslam

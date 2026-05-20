@@ -1,0 +1,12 @@
+local_costmap:
+  global_frame: map
+  robot_base_frame: base_link
+  update_frequency: 5.0
+  publish_frequency: 5.0
+  # Rolling 4×4 m window centred on the robot. MPPI's 2.8s × 0.30m/s
+  # horizon ≈ 0.84 m reach forward; 4×4 gives comfortable margin.
+  rolling_window: true
+  width: 4.0
+  height: 4.0
+  resolution: 0.10
+  always_send_full_costmap: true

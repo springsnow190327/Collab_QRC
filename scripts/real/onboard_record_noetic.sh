@@ -124,6 +124,8 @@ if [[ "$WITH_FASTLIO" == "true" ]]; then
     /${NAMESPACE}/path
     /tf
     /tf_static
+    /rosout        # FastLIO logs ikd-tree rebuild times + iteration counts here
+    /rosout_agg
   )
 fi
 

@@ -1,0 +1,38 @@
+diff --git a/src/stdgpu/impl/iterator_detail.h b/src/stdgpu/impl/iterator_detail.h
+index 513d2e5..a8287cf 100644
+--- a/src/stdgpu/impl/iterator_detail.h
++++ b/src/stdgpu/impl/iterator_detail.h
+@@ -19,6 +19,7 @@
+ #include <cstdio>
+ #include <thrust/iterator/discard_iterator.h>
+ #include <thrust/iterator/iterator_adaptor.h>
++#include <thrust/version.h>
+ #include <type_traits>
+
+ namespace stdgpu
+@@ -390,6 +391,17 @@ inserter(Container& c)
+ namespace thrust::detail
+ {
+
++// thrust 3.1+ (CUDA 13.1+) refactored is_proxy_reference from a class template to a variable template
++#if THRUST_MAJOR_VERSION >= 3 && THRUST_MINOR_VERSION >= 1
++template <typename Container>
++inline constexpr bool is_proxy_reference_v<stdgpu::detail::back_insert_iterator_proxy<Container>> = true;
++
++template <typename Container>
++inline constexpr bool is_proxy_reference_v<stdgpu::detail::front_insert_iterator_proxy<Container>> = true;
++
++template <typename Container>
++inline constexpr bool is_proxy_reference_v<stdgpu::detail::insert_iterator_proxy<Container>> = true;
++#else
+ template <typename Container>
+ struct is_proxy_reference<stdgpu::detail::back_insert_iterator_proxy<Container>> : public thrust::detail::true_type
+ {
+@@ -404,6 +416,7 @@ template <typename Container>
+ struct is_proxy_reference<stdgpu::detail::insert_iterator_proxy<Container>> : public thrust::detail::true_type
+ {
+ };
++#endif
+
+ } // namespace thrust::detail
+

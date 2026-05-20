@@ -1,0 +1,18 @@
+# Vendored ROS1 deps — upstream origins (recorded 2026-05-20 before flattening .git)
+elevation_mapping_cupy_ros1  url=https://github.com/leggedrobotics/elevation_mapping_cupy.git  branch=main  commit=20a8a26b67a995b43eb44c23568854d1fed82a52
+isaac_ros_common  url=https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_common.git  branch=main  commit=d7164701715edfd4adbec87355461069bc8071d6
+isaac_ros_nvblox  url=https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_nvblox.git  branch=main  commit=e3fbaea70d34ec60830f77322cda5b4b269f7b1c
+nvblox  url=https://github.com/nvidia-isaac/nvblox.git  branch=public  commit=62ff8b4f9d9c1dc4ea90c49e4a4e2a3f96cf6f64
+point_lio_ros1  url=https://github.com/hku-mars/Point-LIO.git  branch=point-lio-with-grid-map  commit=97b0042e397ec71c327966abebff9b4b7e2c154a
+
+# gbplanner3_src — NOT tracked in git (excluded via .gitignore).
+# Reason: upstream robot_bringup config contains a leaked OpenAI API key
+# (ws_gbplanner/src/robot_bringup/config/ros1/{detection,reasoning}_vlm.yaml:5).
+# Clone manually from the NTNU unified_autonomy_stack and run `vcs import`:
+#   git clone https://github.com/ntnu-arl/unified_autonomy_stack.git gbplanner3_src
+#   cd gbplanner3_src && vcs import ws_gbplanner/src < ws_gbplanner/repos.yaml
+# Upstream commits pinned here for reproducibility:
+# unified_autonomy_stack  https://github.com/ntnu-arl/unified_autonomy_stack.git  cd57bb1cae930bbe313c8a3e174671bd46cb525d
+# robot_bringup           https://github.com/ntnu-arl/robot_bringup.git           bb2bca92d3b43179e5ead2f4664f828bcb92aea0
+# gbplanner_ros           https://github.com/ntnu-arl/gbplanner_ros.git           7b10f8f49c6064a24909efa9871b51e74ff8d3ed
+# voxblox                 https://github.com/ntnu-arl/voxblox.git                 d1db0e19049fb441655eddefcdba9c9af596ead7

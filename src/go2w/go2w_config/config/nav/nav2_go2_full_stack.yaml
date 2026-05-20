@@ -70,9 +70,28 @@ local_costmap:
           obstacle_max_range: 5.0
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        # Tightened 2026-05-18 to let robot fit through ~0.5 m gaps in ops2.
-        inflation_radius: 0.22
-        cost_scaling_factor: 5.0
+        # 2026-05-20: REVERTED 0.40 → 0.28. The 0.40 (circumscribed-radius)
+        # bump made MPPI's ObstaclesCritic penalize EVERY forward rollout out
+        # of the tight ops2 spawn pocket → robot wiggled in place, never
+        # traversed (verified live: WALL_HIT, cmd v=0.3 but moved 5.9 cm/10s;
+        # robot's own cell intermittently cost 75-78 → NO_PLAN). 0.28 keeps a
+        # comfortable margin over the inscribed radius (~0.21) for the #2b
+        # footprint concern but leaves corridor centres low-cost so MPPI can
+        # commit. SmacHybrid's 0.4 m goal tolerance + allow_unknown=false in
+        # CFPA2 are the real guards against cost-0 goals the footprint can't
+        # reach — not over-inflation.
+        #
+        # 2026-05-20 (−x maze): the winding −x branch is a 1.0 m physical
+        # corridor (trav grid lethal-to-lethal). The robot (0.64×0.36) must TURN
+        # through its chicanes, so it needs a cost-0 lane ≥ its 0.64 m turning
+        # envelope. inflation_radius 0.28 left only 1.0−2·0.28 = 0.44 m cost-0 →
+        # footprint can't turn → robot wedged at −8.4 (run29 STALL, costmap
+        # corridor crushed to 0.50 m while the physical corridor is 1.0 m).
+        # 0.16 leaves 1.0−2·0.16 = 0.68 m cost-0 (≥ 0.64 m) so SmacHybrid can
+        # thread + turn; consider_footprint=true remains the EXACT collision
+        # guard (1 m corridor, 0.36 m robot → 0.32 m clearance, no real hit).
+        inflation_radius: 0.16
+        cost_scaling_factor: 6.0
       always_send_full_costmap: true
 
 global_costmap:
@@ -100,9 +119,16 @@ global_costmap:
         map_subscribe_transient_local: true
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        # Tightened 2026-05-18 to match local costmap.
-        inflation_radius: 0.20
-        cost_scaling_factor: 5.0
+        # 2026-05-20: REVERTED 0.40 → 0.28 (see local_costmap note). This is
+        # the costmap CFPA2 reads; 0.28 + occ_thresh 70 still keeps CFPA2's
+        # free space close to SmacHybrid-plannable while leaving the spawn
+        # pocket exit open.
+        # 2026-05-20 (−x maze): 0.28 → 0.16 (see local_costmap note). CFPA2
+        # reads THIS costmap (occ_thresh 70); with 0.16 the 1.0 m −x corridor
+        # centre drops below 70 → CFPA2 marks it reachable and can push −x goals
+        # deeper into the maze instead of stalling at the first inflation pinch.
+        inflation_radius: 0.16
+        cost_scaling_factor: 6.0
       always_send_full_costmap: true
 
 # ============================================================
