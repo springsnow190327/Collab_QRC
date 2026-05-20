@@ -142,6 +142,9 @@ imu_calib_data.yaml*
 # =============================================
 .env
 .env.*
+# Real-robot connection cheatsheets (IPs, passwords — never commit)
+*_cheatsheet.md
+.orin_nx_cheatsheet.md
 !.env.example
 # Launch scripts with hardcoded API keys (local-only, never commit)
 /scripts/launch/door_demo_mujoco.sh
@@ -198,6 +201,45 @@ qrc_report_and_agenda.md
 /src/vendor/nav2_humble_src/
 /src/vendor/Livox-SDK2/build/
 /src/collaborative_exploration/go2_tare_planner_ros2/generated/tare_planner/or-tools/
+
+# =============================================
+# Jetson Orin NX onboard catkin workspace mirror (autonomous_exploration_zhu).
+# jetson_ws/src is the deployment SNAPSHOT of what runs on the real Go2 NX —
+# source tracked, build products excluded. See jetson_ws/README.md.
+# =============================================
+/jetson_ws/build/
+/jetson_ws/devel/
+/jetson_ws/install/
+/jetson_ws/logs/
+/jetson_ws/src/**/build/
+/jetson_ws/src/**/devel/
+/jetson_ws/src/**/install/
+# FAST_LIO upstream demo media (98 MB GIFs/PDF — Point-LIO is the SLAM anyway)
+/jetson_ws/src/FAST_LIO/doc/*.gif
+/jetson_ws/src/FAST_LIO/doc/*.pdf
+# *.ros2.bak — CFPA2 ament originals saved aside during the catkin swap
+/jetson_ws/src/**/*.ros2.bak
+
+# =============================================
+# Vendored ROS 1 Noetic deps (Jetson onboard) — source tracked, but exclude
+# build products, upstream demo GIFs, and unused patches. See
+# src/vendor/VENDORED_ROS1_ORIGINS.txt for upstream URLs/commits.
+# =============================================
+# CMake/colcon build artifacts inside vendored trees
+/src/vendor/nvblox/build/
+/src/vendor/*_ros1/**/build/
+/src/vendor/*_ros1/**/devel/
+/src/vendor/*_ros1/**/install/
+/src/vendor/*_ros1/**/log/
+/src/vendor/gbplanner3_src/**/build/
+/src/vendor/gbplanner3_src/**/devel/
+/src/vendor/gbplanner3_src/**/install/
+/src/vendor/gbplanner3_src/**/log/
+# nvblox upstream README demo GIFs (225 MB, not needed for deployment)
+/src/vendor/nvblox/docs/images/*.gif
+# gbplanner3_src entirely excluded: upstream robot_bringup leaks an OpenAI key.
+# Clone manually — see src/vendor/VENDORED_ROS1_ORIGINS.txt for instructions.
+/src/vendor/gbplanner3_src/
 .local_deps/
 *.deb
 

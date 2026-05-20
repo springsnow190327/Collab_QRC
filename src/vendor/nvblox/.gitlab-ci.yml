@@ -1,0 +1,46 @@
+# Docs image.
+image:
+  # Currently we're manually pushing this image. It's not expected to change often though.
+  name: nvcr.io/nvstaging/isaac-amr/nvblox_docs:latest
+  # Required since the "bash" entrypoint specified in the dockerfile cause problems.
+  entrypoint: [""]
+# Reusable snippet for building docs
+.build_docs: &build_docs
+  script:
+    # Ensure breathe + doxygen are available (can be removed once the docs
+    # Docker image is rebuilt with these baked in).
+    - pip install --quiet "breathe>=4.35"
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends doxygen > /dev/null
+    - cd docs && make html SPHINXOPTS="-W --keep-going -D todo_include_todos=0"
+    - make linkcheck
+    - mkdir -p /builds/nvblox/nvblox/public
+    - cp -r _build/html/* /builds/nvblox/nvblox/public
+  tags:
+    - docker
+  rules:
+    - changes:
+        - 'docs/**'
+        - '.gitlab-ci.yml'
+# PREMERGE:
+# Build docs (but don't publish them)
+# The docs will be available as an artifact under the job.
+build-docs:
+  !!merge <<: *build_docs
+  artifacts:
+    expire_in: 30 days
+    paths:
+      - public
+# POSTMERGE:
+# Build and publish docs. Note that "pages" is a magic gitlab name that make the job publish
+# html generated under /public
+pages:
+  !!merge <<: *build_docs
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "release_v0.0.8" && $CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "release_v0.0.8"'
+      when: always
+  artifacts:
+    expire_in: never
+    paths:
+      - public

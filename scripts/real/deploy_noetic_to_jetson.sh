@@ -1,4 +1,13 @@
 #!/usr/bin/env bash
+# ⚠️ SUPERSEDED (2026-05-20) by the consolidated jetson_ws/ workflow.
+# This script targets the OLD ~/noetic_fastlio_ws/ split workspace and rsyncs
+# from src/vendor/{point_lio_ros1,trav_pipeline_ros1,elevation_mapping_cupy_ros1,
+# fast_lio_ros1} — directories that were REMOVED when jetson_ws/ became the
+# canonical deployment snapshot. For the current full-autonomy onboard stack on
+# the Go2 Orin NX (/home/unitree/autonomous_exploration_zhu/), use jetson_ws/ —
+# see jetson_ws/README.md for deploy + build + run. Kept here for historical
+# reference of the FAST-LIO/Point-LIO bring-up sequence only.
+#
 # deploy_noetic_to_jetson.sh — rsync ROS 1 FAST-LIO2 + livox_ros_driver2 to the
 # Go2 Jetson into a SEPARATE Noetic catkin workspace (~/noetic_fastlio_ws/).
 #
@@ -210,6 +219,84 @@ if [[ -d "$REPO_ROOT/scripts/real/gbplanner3" ]]; then
     rsync "${RSYNC_OPTS[@]}" -e "$RSYNC_RSH" "$LAUNCH_SRC" "$LAUNCH_DST"
 fi
 
+# ── elevation_mapping_cupy ROS 1 (upstream main branch) ──────────────
+# The upstream leggedrobotics/elevation_mapping_cupy MAIN branch is the ROS 1
+# version (catkin/rospy).  Since the Jetson has no internet, clone on the
+# laptop first, then rsync.  The repo lives at a sibling dir alongside
+# fast_lio_ros1 in src/vendor/.
+echo ""
+echo "── elevation_mapping_cupy ROS 1 ──"
+EMCUPY_LOCAL="$REPO_ROOT/src/vendor/elevation_mapping_cupy_ros1"
+if [[ ! -d "$EMCUPY_LOCAL/elevation_mapping_cupy" ]]; then
+  echo ""
+  echo "  ERROR: elevation_mapping_cupy ROS 1 source not found locally." >&2
+  echo "         Clone it first (on the laptop):" >&2
+  echo ""  >&2
+  echo "    git clone https://github.com/leggedrobotics/elevation_mapping_cupy.git \\" >&2
+  echo "        src/vendor/elevation_mapping_cupy_ros1" >&2
+  echo "    touch src/vendor/elevation_mapping_cupy_ros1/COLCON_IGNORE" >&2
+  echo ""  >&2
+  echo "  Then re-run this deploy script." >&2
+  echo "  Skipping elevation_mapping_cupy rsync for now." >&2
+else
+  # Rsync the elevation_mapping_cupy package (main node + Python package).
+  echo "  → elevation_mapping_cupy_ros1/elevation_mapping_cupy  →  src/elevation_mapping_cupy"
+  rsync "${RSYNC_OPTS[@]}" -e "$RSYNC_RSH" \
+    "$EMCUPY_LOCAL/elevation_mapping_cupy/" \
+    "${JETSON_USER}@${JETSON_HOST}:${JETSON_WS}/src/elevation_mapping_cupy/"
+
+  # Rsync elevation_map_msgs (ROS 1 message definitions needed by the build).
+  if [[ -d "$EMCUPY_LOCAL/elevation_map_msgs" ]]; then
+    echo "  → elevation_mapping_cupy_ros1/elevation_map_msgs  →  src/elevation_map_msgs"
+    rsync "${RSYNC_OPTS[@]}" -e "$RSYNC_RSH" \
+      "$EMCUPY_LOCAL/elevation_map_msgs/" \
+      "${JETSON_USER}@${JETSON_HOST}:${JETSON_WS}/src/elevation_map_msgs/"
+  fi
+
+  # Replace the upstream CMakeLists.txt with our Python-only version that
+  # skips the pybind11_catkin C++ dependency (not in standard Noetic apt).
+  PATCH_CMAKE="$REPO_ROOT/src/vendor/trav_pipeline_ros1/patches/elevation_mapping_cupy_CMakeLists.txt"
+  if [[ -f "$PATCH_CMAKE" ]]; then
+    echo "  Applying Python-only CMakeLists.txt patch..."
+    rsync "${RSYNC_OPTS[@]}" -e "$RSYNC_RSH" \
+      "$PATCH_CMAKE" \
+      "${JETSON_USER}@${JETSON_HOST}:${JETSON_WS}/src/elevation_mapping_cupy/CMakeLists.txt"
+  fi
+fi
+
+# ── trav_pipeline_ros1 (our catkin package) ───────────────────────────
+echo ""
+echo "── rsyncing trav_pipeline_ros1 → src/trav_pipeline_ros1 ──"
+rsync_to_jetson  src/vendor/trav_pipeline_ros1  src/
+
+# ── Traversability onboard launcher + bench scripts ──────────────────
+echo ""
+echo "── rsyncing onboard_elevation_mapping_noetic.sh + slam_bench_noetic.sh → scripts/ ──"
+for _s in onboard_elevation_mapping_noetic.sh slam_bench_noetic.sh \
+           onboard_fastlio_noetic.sh onboard_pointlio_noetic.sh \
+           onboard_record_noetic.sh; do
+  if [[ -f "$REPO_ROOT/scripts/real/$_s" ]]; then
+    rsync_to_jetson  "scripts/real/$_s"  scripts/
+    $SSH "chmod +x ${JETSON_WS}/scripts/$_s" 2>/dev/null || true
+  fi
+done
+
+# ── Copy trained weights if present ──────────────────────────────────
+# Weights live in the ROS 2 package on the laptop; copy to both the
+# upstream pkg config/ (fallback path) and our pkg config/ (preferred path).
+echo ""
+echo "── weights ──"
+WEIGHTS_SRC_DIR="$REPO_ROOT/src/vendor/elevation_mapping_cupy/elevation_mapping_cupy/elevation_mapping_cupy"
+WEIGHTS_DST_TRAV="${JETSON_USER}@${JETSON_HOST}:${JETSON_WS}/src/trav_pipeline_ros1/config/"
+WEIGHTS_DST_UPSTREAM="${JETSON_USER}@${JETSON_HOST}:${JETSON_WS}/src/elevation_mapping_cupy/config/core/"
+for wf in weights_pretrain.dat weights_ops2_tiled.dat weights_ops2_wide.dat; do
+  if [[ -f "$WEIGHTS_SRC_DIR/$wf" ]]; then
+    echo "  → $wf"
+    rsync "${RSYNC_OPTS[@]}" -e "$RSYNC_RSH" "$WEIGHTS_SRC_DIR/$wf" "$WEIGHTS_DST_TRAV"
+    rsync "${RSYNC_OPTS[@]}" -e "$RSYNC_RSH" "$WEIGHTS_SRC_DIR/$wf" "$WEIGHTS_DST_UPSTREAM"
+  fi
+done
+
 # ── Done ─────────────────────────────────────────────────────────────
 echo ""
 echo "################################################"
@@ -218,26 +305,49 @@ if [[ "$DRY_RUN" == "true" ]]; then
 else
   echo "  Sync complete."
   echo ""
-  echo "  Build steps (on the Jetson — ~10-20 min total):"
-  echo "    ssh ${JETSON_USER}@${JETSON_HOST}"
-  echo "    cd ${JETSON_WS}"
-  echo "    source /opt/ros/noetic/setup.bash"
+  echo "  ── First-time Jetson setup (one-time, ~15 min) ─────────────────"
+  echo "  ssh ${JETSON_USER}@${JETSON_HOST}"
   echo ""
-  echo "    # 1. Build livox_ros_driver2 (ROS1 flavor — uses its own build.sh,"
-  echo "    #    NOT catkin_make; outputs devel/setup.bash next to source)."
-  echo "    cd src/livox_ros_driver2"
-  echo "    ./build.sh ROS1   # builds via ../../devel using catkin_make under the hood"
-  echo "    # (build.sh expects to be run from src/livox_ros_driver2 of a catkin ws;"
-  echo "    #  it writes build/ devel/ in the WORKSPACE root, not the package dir.)"
+  echo "  # 1. ROS + grid_map apt deps (run once):"
+  echo "  sudo apt install -y \\"
+  echo "    ros-noetic-grid-map-ros ros-noetic-grid-map-msgs ros-noetic-grid-map-filters \\"
+  echo "    ros-noetic-pcl-ros ros-noetic-ros-numpy python3-scipy python3-numpy"
   echo ""
-  echo "    # 2. Build FAST-LIO2 (catkin)"
-  echo "    cd ${JETSON_WS}"
-  echo "    catkin_make -DCMAKE_BUILD_TYPE=Release -j4"
+  echo "  # 2. cupy for Orin (CUDA 12.x = JetPack 6; use cupy-cuda11x for JetPack 5):"
+  echo "  pip3 install cupy-cuda12x"
   echo ""
-  echo "    # 3. Source the workspace"
-  echo "    source ${JETSON_WS}/devel/setup.bash"
+  echo "  # 3. PyTorch for Orin — follow NVIDIA JetPack instructions:"
+  echo "  #    https://docs.nvidia.com/deeplearning/frameworks/install-pytorch-jetson-platform/"
+  echo "  #    (torch wheels are NOT on PyPI for arm64; use the NVIDIA index URL)"
+  echo "  #    Example for JetPack 6 / Python 3.10:"
+  echo "  #    pip3 install torch --index-url https://developer.download.nvidia.com/compute/redist/jp/v60/"
   echo ""
-  echo "    # 4. Run"
-  echo "    ${JETSON_WS}/scripts/onboard_fastlio_noetic.sh"
+  echo "  # 4. ros_numpy Python package (if ros-noetic-ros-numpy is unavailable):"
+  echo "  pip3 install ros_numpy"
+  echo ""
+  echo "  ── Build steps (on the Jetson — ~10-20 min total) ─────────────"
+  echo "  cd ${JETSON_WS}"
+  echo "  source /opt/ros/noetic/setup.bash"
+  echo ""
+  echo "  # 1. Build livox_ros_driver2 (ROS1 flavor)"
+  echo "  cd src/livox_ros_driver2"
+  echo "  ./build.sh ROS1"
+  echo ""
+  echo "  # 2. Build everything (FAST-LIO / Point-LIO + elevation_mapping_cupy + trav_pipeline_ros1)"
+  echo "  cd ${JETSON_WS}"
+  echo "  catkin_make -DCMAKE_BUILD_TYPE=Release -j4"
+  echo ""
+  echo "  # 3. Source workspace"
+  echo "  source ${JETSON_WS}/devel/setup.bash"
+  echo ""
+  echo "  ── Daily run ───────────────────────────────────────────────────"
+  echo "  # Terminal 1 — SLAM (already running from SLAM launcher):"
+  echo "  ~/noetic_fastlio_ws/scripts/onboard_pointlio_noetic.sh"
+  echo ""
+  echo "  # Terminal 2 — Traversability pipeline:"
+  echo "  ~/noetic_fastlio_ws/scripts/onboard_elevation_mapping_noetic.sh"
+  echo ""
+  echo "  # On laptop — add to bridge_topics.yaml so ros1_bridge forwards:"
+  echo "  #   /robot/traversability_grid  (nav_msgs/OccupancyGrid)"
 fi
 echo "################################################"

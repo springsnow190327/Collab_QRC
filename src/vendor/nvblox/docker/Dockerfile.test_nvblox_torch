@@ -1,0 +1,21 @@
+# Minimal base image for testing the nvblox_torch python module
+ARG BASE_IMAGE=nvcr.io/nvidia/cuda:12.8.0-devel-ubuntu24.04
+FROM ${BASE_IMAGE}
+
+
+ENV DEBIAN_FRONTEND noninteractive
+
+# Install apt dependencies.
+RUN apt update && apt-get --no-install-recommends install -y \
+    # Python packages \
+    python3-pip python3-venv \
+    # Open3d system deps \
+    libglib2.0-0 libgl1 \
+    # System packages \
+    lsb-release
+
+# Install deps to run the deploy script.
+# We need it to obtain the remote URL of the nvblox_torch wheel we want to test
+RUN python3 -m venv /opt/venv
+RUN . /opt/venv/bin/activate && \
+    python3 -m pip install --ignore-installed --upgrade setuptools pip requests

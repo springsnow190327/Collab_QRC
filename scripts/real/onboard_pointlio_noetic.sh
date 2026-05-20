@@ -61,6 +61,7 @@ LIVOX_NIC=""
 ROS_MASTER_PORT="11311"
 ENABLE_RVIZ="false"
 FOXY_WS="$FOXY_WS_DEFAULT"   # for Livox-SDK2 install reuse (info only)
+EXTERNAL_MASTER=""            # e.g. master=http://192.168.123.50:11311 → skip roscore
 
 # ── Cleanup ──────────────────────────────────────────────────────────
 _kill_noetic_stack() {
@@ -89,6 +90,8 @@ for arg in "$@"; do
     port=*)          ROS_MASTER_PORT="${arg#port=}" ;;
     rviz=*)          ENABLE_RVIZ="${arg#rviz=}" ;;
     foxy_ws=*)       FOXY_WS="${arg#foxy_ws=}" ;;
+    ros_ip=*)        OVERRIDE_ROS_IP="${arg#ros_ip=}" ;;
+    master=*)        EXTERNAL_MASTER="${arg#master=}" ;;
     *) echo "WARN: unknown arg '$arg'" >&2 ;;
   esac
 done
@@ -148,10 +151,18 @@ if ! rospack find livox_ros_driver2 &>/dev/null; then
   exit 1
 fi
 
-# Local roscore on this Jetson (no networked master). Bind to all interfaces
-# so the laptop can hit it later via ros1_bridge if needed.
-export ROS_MASTER_URI="http://$(hostname -I | awk '{print $1}'):${ROS_MASTER_PORT}"
-export ROS_IP="$(hostname -I | awk '{print $1}')"
+if [[ -n "${OVERRIDE_ROS_IP:-}" ]]; then
+  export ROS_IP="$OVERRIDE_ROS_IP"
+else
+  export ROS_IP="$(hostname -I | awk '{print $1}')"
+fi
+
+if [[ -n "$EXTERNAL_MASTER" ]]; then
+  export ROS_MASTER_URI="$EXTERNAL_MASTER"
+  echo "  External master: $ROS_MASTER_URI (roscore NOT started here)"
+else
+  export ROS_MASTER_URI="http://${ROS_IP}:${ROS_MASTER_PORT}"
+fi
 
 # ── Banner ───────────────────────────────────────────────────────────
 echo ""
@@ -183,21 +194,36 @@ trap cleanup_on_signal INT TERM
 _kill_noetic_stack 2>/dev/null || true
 sleep 1
 
-# ── 1. roscore ───────────────────────────────────────────────────────
-echo "[1/5] Starting roscore on port ${ROS_MASTER_PORT}..."
-setsid -f roscore -p "$ROS_MASTER_PORT" </dev/null >/tmp/roscore.log 2>&1
-# Wait until master answers
-for i in 1 2 3 4 5 6 7 8 9 10; do
-  if rostopic list &>/dev/null; then
-    echo "      roscore ready."
-    break
+# ── 1. roscore (skipped when laptop is the master) ───────────────────
+if [[ -n "$EXTERNAL_MASTER" ]]; then
+  echo "[1/5] External master ($EXTERNAL_MASTER) — waiting for it to be reachable..."
+  for i in $(seq 1 15); do
+    if rostopic list &>/dev/null; then
+      echo "      master reachable."
+      break
+    fi
+    sleep 1
+  done
+  if ! rostopic list &>/dev/null; then
+    echo "ERROR: cannot reach master at $ROS_MASTER_URI after 15s." >&2
+    echo "       Make sure roscore is running on the laptop." >&2
+    cleanup_on_signal
   fi
-  sleep 1
-done
-if ! rostopic list &>/dev/null; then
-  echo "ERROR: roscore didn't come up in 10s." >&2
-  echo "       Log: /tmp/roscore.log" >&2
-  cleanup_on_signal
+else
+  echo "[1/5] Starting roscore on port ${ROS_MASTER_PORT}..."
+  setsid -f roscore -p "$ROS_MASTER_PORT" </dev/null >/tmp/roscore.log 2>&1
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    if rostopic list &>/dev/null; then
+      echo "      roscore ready."
+      break
+    fi
+    sleep 1
+  done
+  if ! rostopic list &>/dev/null; then
+    echo "ERROR: roscore didn't come up in 10s." >&2
+    echo "       Log: /tmp/roscore.log" >&2
+    cleanup_on_signal
+  fi
 fi
 
 # ── 2. livox_ros_driver2 (ROS 1, MID-360) ────────────────────────────

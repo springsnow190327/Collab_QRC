@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<!--
+  package_ros1.xml — ROS 1 (Noetic) catkin manifest for the CFPA2 C++ node.
+  Swapped in on the Jetson Orin NX in place of package.xml (which is the
+  ament/format-3 ROS 2 manifest). See CMakeLists_ros1.txt header for the
+  swap procedure.
+-->
+<package format="2">
+  <name>cfpa2_collaborative_autonomy</name>
+  <version>0.2.0</version>
+  <description>
+    CFPA2 frontier allocator: coordinator + per-robot tick loops for
+    2D dual-robot exploration with space-time A* local waypointing.
+    Pure-C++ rclcpp/roscpp node; the algorithm body is ROS-independent
+    (hexagonal ports-and-adapters), with ros1/ adapters selected via the
+    CFPA2_ROS1 compile definition.
+  </description>
+  <maintainer email="hz@example.com">hz</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>roscpp</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>cfpa2_peer_coordination_msgs</depend>
+</package>

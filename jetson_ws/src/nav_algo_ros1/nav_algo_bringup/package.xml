@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>nav_algo_bringup</name>
+  <version>0.0.1</version>
+  <description>
+    move_base launch + yaml configs that load nav_algo_smac_ros1 (global)
+    and nav_algo_mppi_ros1 (local) as planner/controller plugins. The
+    costmap layers consume /robot/traversability_grid published by
+    trav_pipeline_ros1, completing the Noetic-side pipeline started by
+    Point-LIO + elevation_mapping_cupy_ros1.
+  </description>
+  <maintainer email="zhuhanshan12@outlook.com">Hanshang Zhu</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <exec_depend>move_base</exec_depend>
+  <exec_depend>costmap_2d</exec_depend>
+  <exec_depend>nav_algo_smac_ros1</exec_depend>
+  <exec_depend>nav_algo_mppi_ros1</exec_depend>
+</package>

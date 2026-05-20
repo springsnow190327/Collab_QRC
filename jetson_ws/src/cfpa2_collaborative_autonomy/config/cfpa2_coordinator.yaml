@@ -1,0 +1,166 @@
+/**:
+  ros__parameters:
+    publish_rate: 2.0
+    nav_status_topic_suffix: /nav_status
+    # Use Nav2's inflated global costmap for frontier extraction and BFS
+    # reachability. The raw OctoMap projection marks narrow obstacle-corner
+    # routes as reachable even when the controller's inflated footprint is
+    # already in lethal space, which lets CFPA2 assign corner-scraping goals.
+    planning_map_topic_suffix: /global_costmap/costmap
+    goal_topic_suffix: /way_point_coord
+    marker_frame_override: world
+    frontier_stride: 2
+    # 800 → 400 (2026-04-26): demo3_mixed dual-robot mode hit p95
+    # tick=518 ms / cpu=100% on 800 frontiers × IG(r=22). Halving
+    # candidates × halving IG-box (gain_r 22 → 14) cuts core scoring
+    # work ~6×; expect p95 < 100 ms, leaving 400 ms slack at 2 Hz.
+    max_targets: 400
+    # Stable-challenger override (2026-05-09): see cfpa2_single_robot.yaml
+    # for full doc. Streak=3, improvement_factor=1.20, min_lock_age=2s.
+    # Set streak_required=0 to disable.
+    cfpa2_challenger_streak_required: 3
+    cfpa2_challenger_improvement_factor: 1.20
+    cfpa2_challenger_min_lock_age_sec: 2.0
+    switch_hysteresis: 0.50
+    switch_min_dist: 0.80
+    min_assign_distance: 0.30
+    overlap_weight: 1.0
+    # Reweighted 2026-04-26 after demo3_mixed showed CFPA2 picking
+    # 18 m far goals for B while 5 m candidates were closer to its
+    # current heading. Doubling w_c (0.6 → 1.5) and halving w_ig
+    # (1.0 → 0.5) makes near goals dominate scoring; combined with
+    # the gain_r 22 → 14 cut, IG-vs-cost trade-off is now firmly
+    # cost-biased in dual-robot mode.
+    cfpa2_w_ig: 0.5
+    cfpa2_w_c: 1.5
+    cfpa2_w_sw: 0.2
+    # 2026-05-09: switched to multiplicative penalty in the joint allocator.
+    # λ is now "max % deduction when goals fully overlap" — λ=0.5 → up to
+    # 50% off (1000 + 1000 → 520 when overlapping vs 750 → 735 when
+    # spread out, so the spread-out pair flips the decision). Old additive
+    # λ=1.0 deducted ≤ 1.0 from IG-dominated sums in the hundreds-thousands,
+    # which let both robots converge on the same frontier region.
+    cfpa2_lambda_overlap: 0.5
+    # Momentum bonus: cos(heading_to_goal) × (alpha + beta·speed).
+    # Bumped 2026-04-25 after demo3_mixed showed 0.4 Hz goal flap (A
+    # 72 NEW GOALS / 180 s). Old defaults (w=0.8, alpha=0.5, beta=1.0)
+    # gave only ±0.4 bonus differential at standstill — easily flipped
+    # by info_gain wobble between similarly-scored frontiers. New
+    # ranges: ±3.0 at v=0, ±5.0 at v=0.5 m/s — CFPA2 now keeps the
+    # current-heading goal unless a genuinely better one appears,
+    # also stable during astar's 1.5 s brake_hold windows.
+    cfpa2_w_momentum:        2.0
+    cfpa2_momentum_alpha:    1.5
+    cfpa2_momentum_beta:     2.0
+    # Spatial cluster collapse for frontier candidates. Each detected
+    # frontier line previously fed dozens of per-cell samples into the
+    # 800-candidate pool; the assignment then routinely sent robot_a
+    # and robot_b to different cells of the SAME wall edge. 1.0 m
+    # merges samples on one cluster, keeps separate corridor mouths
+    # (≥1.0 m wide in demo3_mixed) distinct.
+    cfpa2_frontier_cluster_radius_m: 1.0
+    # Dead-frontier filter: a frontier is only kept if at least
+    # `min_unknown_cells` unknown cells exist within `check_radius_m`
+    # of the cluster centroid. Trap frontiers (unknowns stuck behind
+    # walls, or outside world bounds — invisible to LiDAR) typically
+    # have just 1-3 unknown cells nearby; real frontiers have 30+.
+    # demo3_mixed 2026-04-26: A wedged at NW corner against
+    # wall_north chasing a frontier whose only unknowns were outside
+    # the arena (y > 8). Filter eliminates those.
+    # Lowered 0.40 → 0.30 to match new footprint (half-width 0.20 m + 0.05
+    # buffer = 0.25 m, with 0.05 m extra for the live-unknown count). Prior
+    # 0.40 was tuned for robot_radius=0.40 circle approximation.
+    cfpa2_frontier_unknown_check_radius_m: 0.30
+    # Drop obstacle clearance from default 0.40 m → 0.25 m. Same logic:
+    # 0.40 m clearance ruled out every cell inside the 0.425 m demo3
+    # narrow corridor (centerline only 0.213 m from each wall) so the
+    # whole corridor was a frontier-extraction dead zone. With the new
+    # rectangular footprint (half-width 0.20 m), 0.25 m clearance has
+    # a 5 cm safety pad on top of the body half-width.
+    cfpa2_frontier_obstacle_clearance_m: 0.25
+    # Re-check active goals against the latest planning_map. This catches
+    # clutter boxes that were unknown when the frontier was assigned; once
+    # the box appears in the costmap, the held goal is blacklisted instead
+    # of being kept alive by min-hold / pivot-lock.
+    cfpa2_goal_obstacle_clearance_m: 0.25
+    # Min "live" unknowns (= unknown cells whose 8-neighbours do NOT
+    # include any occupied cell) within check_radius_m. Reduced
+    # 20 → 5 after first run had A_NEW=0 because the filter dropped
+    # ALL frontiers near A's spawn area (many were near walls so
+    # their nearby unknowns had occ neighbours, i.e. counted as
+    # trap). 5 still kills wall_north-style traps (which have ZERO
+    # live unknowns — every unknown is touching the wall) but keeps
+    # legitimate frontiers near walls in narrow corridors.
+    cfpa2_frontier_min_unknown_cells: 5
+    # Min-hold lock-in (5.0 s): once a goal is assigned, refuse to switch
+    # it for this many seconds. Stops the cluster-centroid jitter that
+    # reassigns the same robot 5-10× in a few seconds. Goal can still
+    # be overridden by blacklist (frontier became unreachable) or by
+    # max-lock (held >switch_hysteresis_max_lock_sec without progress).
+    cfpa2_goal_min_hold_sec: 5.0
+    # 2026-05-09: was 0.0 → fallback 2×sensor_range (≈ 7m default), too
+    # gradual: at 5m apart still overlap ≈ 0.66. Set to sensor_range so
+    # penalty drops sharper: at d=σ overlap = 0.61, at d=2σ overlap = 0.14.
+    # Frontiers more than 2× sensor range apart count as "different region".
+    cfpa2_sigma_overlap_m: 4.0
+    cfpa2_stuck_lock_sec: 45.0
+    cfpa2_stuck_min_motion_m: 0.20
+    cfpa2_stuck_blacklist_sec: 60.0
+    # Exploration goals are frontiers: reaching within LiDAR-effective
+    # distance is enough only when the frontier is visible through known-free
+    # cells. Euclidean-only tolerance lets a brown box or divider wall hide
+    # the frontier while the robot incorrectly marks it explored.
+    goal_satisfied_dist: 1.00
+    goal_satisfied_requires_los: true
+    goal_satisfied_direct_dist: 0.30
+    # Blacklist the satisfied frontier cluster so the allocator moves on
+    # instead of repeatedly selecting neighbouring cells from the same edge.
+    reached_blacklist_dist: 1.00
+    local_nav_status_stale_sec: 3.0
+    local_nav_stall_blacklist_sec: 45.0
+    cfpa2_close_stop_radius_m: 0.35
+    cfpa2_close_stop_speed_epsilon: 0.02
+    # Narrow-passage pivot-lock is a safety gate, not a permanent latch.
+    # If Robot B is still in a blocked pivot zone after this deadline,
+    # release to the new frontier so a stale goal cannot keep Nav2
+    # replanning from lethal space beside the brown box.
+    pivot_lock_max_hold_sec: 15.0
+    # If the held goal distance grows while pivot-lock is active, the lock is
+    # protecting a stale global target rather than helping the robot leave the
+    # narrow zone; release immediately instead of waiting for max-hold.
+    pivot_lock_regress_release_m: 0.50
+    cfpa2_space_time_enabled: true
+    cfpa2_space_time_horizon_sec: 5.0
+    cfpa2_space_time_dt_sec: 0.40
+    cfpa2_space_time_safety_radius_m: 0.45
+    cfpa2_space_time_waypoint_lookahead_m: 0.9
+    cfpa2_space_time_window_margin_m: 3.0
+    cfpa2_space_time_max_expansions: 12000
+    cfpa2_space_time_assumed_speed_mps: 0.25
+    cfpa2_space_time_max_speed_mps: 0.60
+    # 2026-04-28: lowered 0.20 → 0.05 m². Live-probe of /merged_map after
+    # 7 min explore showed largest remaining frontier cluster was 0.15 m²;
+    # original 0.20 m² threshold filtered EVERY cluster → fronts=0 →
+    # robot stuck "exploration done" at 79.5 % cov. 0.05 m² (20 cells at
+    # 0.05 m res) is still big enough to filter speckle/noise but
+    # accepts fragmented late-stage frontiers.
+    cfpa2_frontier_min_cluster_area_m2: 0.05
+    exploration_gain_radius_cells: 4
+
+    # IG box = (2r+1)² cells. Single-robot yaml bumped this to 40 so big
+    # unexplored rooms out-score tiny frontier pockets; that 9× cost blow-up
+    # is fine with one robot but with two robots × ~400 frontiers the
+    # coordinator tick hits 300 ms p95, 65% CPU, and the goal-assignment
+    # lag causes one robot to move while the other waits for its next goal.
+    # Lowered 22 → 14 (2026-04-26) after demo3_mixed dual-robot run hit
+    # p95=518 ms / CPU=100% with r=22; r=14 gives (29²)/(45²) ≈ 0.42×
+    # IG-eval cost. 14 = 1.4 m box at 0.05 m res — still resolves
+    # room-vs-corner scales relevant for demo3 (24×16 m).
+    exploration_gain_radius_cells: 14
+    adaptive_min_exploration_gain_radius_cells: 8
+
+    perf_enable: true
+    perf_tick_window_size: 240
+    perf_min_samples: 20
+    perf_tick_warn_p95_ms: 150.0
+    perf_cpu_warn_pct: 15.0

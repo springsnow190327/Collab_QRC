@@ -39,7 +39,12 @@
     ramped_height_range_a: 0.5
     ramped_height_range_b: 1.7
     ramped_height_range_c: 0.2
-    min_valid_distance: 0.30                # match nvblox geometric blind zone
+    min_valid_distance: 0.40                # drop the Go2's own body/leg returns
+    #   (body half-len ~0.32 m + leg splay) so the robot doesn't self-paint a
+    #   LETHAL obstacle on its own footprint. grid_map_to_occupancy_grid's
+    #   robot_core_clear_radius_m (0.40) + outer seed clear the blind disk back
+    #   to free. Was 0.30 → left ~0.1 m of body returns painting the footprint
+    #   lethal → SmacHybrid start-in-collision → PLAN_OK=0 (2026-05-20 root cause).
 
     # Map refresh — same cadence the legacy mapper_node ran at.
     # DO NOT lower update_pose_fps below 10 Hz: it gates the publish loop

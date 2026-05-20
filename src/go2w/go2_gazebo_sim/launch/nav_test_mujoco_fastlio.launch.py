@@ -569,12 +569,20 @@ def _launch_setup(context):
             "robot_base_frame": "base_link",
         }
         if not has_wheels:
+            # In explore mode use the EXPLORATION BT — same no-spin recovery but
+            # it NEVER clears the global costmap (clearing it wipes the
+            # accumulated trav-grid exploration map → empties CFPA2's frontier
+            # candidates → stale-goal/clear loop, see the explore BT header).
+            _bt_to_pose = (
+                "navigate_to_pose_explore.xml" if explore
+                else "navigate_to_pose_no_spin_recovery.xml"
+            )
             nav2_param_rewrites["default_nav_to_pose_bt_xml"] = os.path.join(
                 go2w_config_pkg,
                 "config",
                 "nav",
                 "behavior_trees",
-                "navigate_to_pose_no_spin_recovery.xml",
+                _bt_to_pose,
             )
             nav2_param_rewrites["default_nav_through_poses_bt_xml"] = os.path.join(
                 go2w_config_pkg,
@@ -742,12 +750,39 @@ def _launch_setup(context):
         # subscribers (real controller is at /<ns>/robot_wheel_velocity_controller/commands).
         # Removed.
 
+        # stuck_diagnoser: auto-classifies WHY the robot stopped (NO_GOAL /
+        # NO_PLAN / CONTROLLER_IDLE / WALL_HIT / TRAV_CORRUPT) whenever the
+        # stuck_watchdog fires OR it self-detects no motion under an active
+        # goal. Writes a verdict block to stdout + JSONL log so a desktop run
+        # keeps a durable diagnosis trail. Go2 publishes cmd_vel_legged; Go2W
+        # cmd_vel. Disable via STUCK_DIAGNOSER=0.
+        _diag_cmd_topic = "cmd_vel" if has_wheels else "cmd_vel_legged"
+        stuck_diagnoser_node = ExecuteProcess(
+            cmd=[
+                "python3", "-u",
+                os.path.join(_ws_root, "scripts/debug/stuck_diagnoser.py"),
+                "--ns", robot_ns,
+                "--cmd-vel-topic", _diag_cmd_topic,
+                "--log-file",
+                os.environ.get(
+                    "STUCK_DIAGNOSER_LOG",
+                    f"/tmp/collab_qrc_logs/stuck_diagnosis_{robot_ns}.jsonl"),
+                "--ros-args",
+                "-p", f"use_sim_time:={'true' if use_sim_time else 'false'}",
+            ],
+            name=f"stuck_diagnoser_{robot_ns}",
+            output="screen",
+        )
+
         _nav2_actions = [
             GroupAction(actions=nav2_inner_nodes),
             bridge_node,
             path_relay_node,
             stuck_watchdog_node,
         ]
+        # Auto stuck-diagnosis (disable via STUCK_DIAGNOSER=0).
+        if os.environ.get("STUCK_DIAGNOSER", "1") != "0":
+            _nav2_actions.append(stuck_diagnoser_node)
         actions.append(
             TimerAction(period=nav_delay, actions=_nav2_actions)
         )

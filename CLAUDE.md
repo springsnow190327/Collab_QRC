@@ -4,6 +4,113 @@ Multi-robot autonomy with Unitree Go2W wheeled-legged quadrupeds + Go2 walking q
 
 Door task (Phase 2 dual-robot VLM coordination) and the legacy A*/default Python nav backends were removed in the 2026-05 cleanup; see [CLAUDE1.md](CLAUDE1.md) for Phase 1 VLM exploration history, Phase 2 FSM archive, archived 2026-04 operational notes, and the deletion log.
 
+## Active state (2026-05-20 night) — FULL autonomy stack running NATIVE on the real Go2 Orin NX (ROS 1 Noetic, no bridge) — verified real-time end-to-end
+
+**The milestone:** the entire autonomy stack now runs **onboard the real Go2's Jetson Orin NX 16 GB** in native ROS 1 Noetic — SLAM (Point-LIO) + traversability (elevation_mapping_cupy + CNN) + Nav2-port nav (SmacLattice global + **CUDA-MPPI** local via `move_base`) + CFPA2 frontier exploration (C++). No ros1_bridge in the data path; the laptop is only NAT internet + SSH (+ RViz2 during HIL). Consolidated catkin workspace at `/home/unitree/autonomous_exploration_zhu/`, mirrored to the repo at [`jetson_ws/`](jetson_ws/README.md).
+
+### Verified real-time on the bench (robot standing, joints locked — pure data-flow validation)
+
+| Topic | Rate | Source |
+|---|---|---|
+| `/livox/imu` | 200 Hz | Mid-360 |
+| `/robot/Odometry` | 10 Hz | Point-LIO (no z-drift) |
+| `/robot/odom/nav` | 10 Hz | topic_tools relay (Odometry→odom/nav) |
+| `/robot/cloud_registered_body` | 10 Hz | Point-LIO |
+| `/robot/traversability_grid` | 5 Hz | elevation_mapping_cupy + filter |
+| `/robot/move_base/global_costmap/costmap` | 2 Hz | move_base (trav grid static layer) |
+| `/robot/cmd_vel` | 20 Hz | move_base (SmacLattice + CUDA-MPPI) |
+| `/robot/way_point_coord` | 2 Hz | CFPA2 (tick p95 0.3 ms) |
+
+All 12 nodes alive, zero DEAD, TF `map→camera_init→body→base_link` connected. **Orin NX resource use with the full stack live: RAM 6.6/15.4 GB, CPU < 33 %, GPU < 19 %, 56 °C, 6.6 W — enormous headroom** (CUDA-MPPI is nearly free on the Orin Ampere GPU; C++ CFPA2 + Point-LIO iVox leave the CPU mostly idle).
+
+### NX hardware / OS
+- `unitree@192.168.123.18` (pwd in gitignored [`scripts/real/.orin_nx_cheatsheet.md`](scripts/real/.orin_nx_cheatsheet.md)). Ubuntu 20.04 aarch64, JetPack 5.1.1 / L4T R35.3.1 / CUDA 11.4 / Python 3.8, ROS Noetic.
+- NX has **no internet** on the Go2 net; share the laptop's via iptables NAT (recipe in cheatsheet). Go2 Type-C is a USB data port, **not** video-out — drive the NX headless over SSH.
+- USB-Ethernet dongle (ASIX AX88179) flaps intermittently → all NX ops use detached `setsid` scripts + short-connection retries so an SSH drop never kills onboard work.
+
+### What it took (the hard parts, full detail in [`jetson_ws/README.md`](jetson_ws/README.md) + the cheatsheet)
+- **CFPA2 Noetic port**: 6 `ros1/` adapter headers (clock/logger/conversions/goal_publisher/visualizer/param_facade) mirroring `ros2/`, behind `#ifdef CFPA2_ROS1`. The ROS 2 Humble build is byte-for-byte unchanged (verified — colcon builds cfpa2 clean). `package_ros1.xml`/`CMakeLists_ros1.txt` swap-in; `cfpa2_peer_coordination_msgs` `builtin_interfaces/Time`→`time`; ament-python `cfpa2_peer_coordination` `CATKIN_IGNORE`'d.
+- **Build-dep marathon**: grid_map suite, OMPL, move_base/nav_core/costmap_2d, **xtensor 0.24.7 + xtl 0.7.5 vendored into `/usr/local`** (not in focal apt), nlohmann-json, CUDA on PATH (nvcc 11.4 not on default PATH).
+- **nvcc 11.4 parse bug**: `rclcpp::Logger logger_{rclcpp::get_logger("…")}` (brace-init) is mis-parsed by nvcc's host preprocessor after the full ROS header set → collapses to `logger_rclcpp`. Isolated to brace-init (console.h/node_handle.h alone are fine; the combination + brace-init breaks). Fix: copy-init `= rclcpp::get_logger(…)` in 6 nav_algo_core headers (math-neutral; g++/nvcc/ROS2 all accept).
+- **sm_89 unsupported by CUDA 11.4**: `nav_algo_mppi_cuda` gencode is now CUDA-version-gated — sm_87 always, sm_89 only ≥11.8, sm_120 only ≥12.8.
+- **trav CNN runtime chain**: cupy-cuda11x, **torch (NVIDIA jp512 cp38 wheel)**, simple_parsing/ruamel/shapely/sklearn, **scipy==1.10.1** (system 1.3.3's `np.typeDict` is gone in numpy 1.24 → cupy import crash), ros_numpy patches: `np.float`→`float` AND **sort PointFields by offset** (Point-LIO's `cloud_registered_body` lists fields out of offset order → `fields_to_dtype` itemsize≠point_step → "buffer size must be a multiple of element size"). emc API: `_map.input`→`_map.input_pointcloud`; config needs `channels: []`.
+- **Wiring**: CFPA2 reads pose from `/<ns>/odom/nav` (hardcoded) → topic_tools relay from Point-LIO's `/Odometry`. CFPA2 ops2 overlay's `planning_map_topic_suffix=/global_costmap/costmap` is Nav2 naming; ROS 1 move_base nests costmaps under `/move_base/…`, so the onboard launcher overrides it to `/traversability_grid` (CFPA2 plans on the trav grid directly). CFPA2 yamls (`/**:ros__parameters:`) are flattened for rosparam via [`scripts/real/generate_cfpa2_ros1_yaml.py`](scripts/real/generate_cfpa2_ros1_yaml.py).
+- **exec-bit gotcha**: rsync drops `+x` on `trav_pipeline_ros1/scripts/*.py` → roslaunch "Cannot locate node". `chmod +x` after every deploy.
+
+### Files / entry points
+- [`jetson_ws/`](jetson_ws/) — deployment snapshot of the NX catkin ws (flat `src/`). [`jetson_ws/README.md`](jetson_ws/README.md) = packages, data flow, build, run, gotchas.
+- [`scripts/real/onboard_autonomy_noetic.sh`](scripts/real/onboard_autonomy_noetic.sh) — onboard full-stack orchestrator (roscore→livox→Point-LIO→TFs→trav→move_base→CFPA2→bridge→odom relay). `explore=false` for nav-only, `slam=fastlio` to swap SLAM, `stop` to tear down.
+- [`scripts/real/generate_cfpa2_ros1_yaml.py`](scripts/real/generate_cfpa2_ros1_yaml.py) — flatten CFPA2 ROS 2 yamls → ROS 1 rosparam.
+- `jetson_ws/src/trav_pipeline_ros1/scripts/cfpa2_to_movebase_bridge.py` — CFPA2 `way_point_coord` (PointStamped) → `move_base_simple/goal` (PoseStamped) with goal-change suppression + move_base `/status` ABORTED→nav_status fast-blacklist.
+- **Repo cleanup**: removed redundant `src/vendor/{point_lio_ros1,trav_pipeline_ros1,elevation_mapping_cupy_ros1,fast_lio_ros1}` (now canonical in `jetson_ws/`). **KEPT `src/vendor/nav_algo_ros1`** — the ROS 2 `nav2_mppi_controller_cuda_plugin` compiles its `.cu` sources directly from there. `deploy_noetic_to_jetson.sh` marked SUPERSEDED.
+
+### Open / next
+- **HIL viz**: C++ ROS 1→ROS 2 bridge for viz topics (map/costmap/cloud/path/tf/cmd_vel) + RViz2 on the laptop, so the operator sees everything while compute stays on the NX. Then a full "sim" dry-run on the ops2-v4 scene (`nav_test_slam_ops2_v4_go2`) to measure load/trajectory/dataset.
+- **Real walk**: unlock joints, robot on ground, clear area, e-stop ready → same `onboard_autonomy_noetic.sh explore=true`. cmd_vel already streams; unlocking lets the robot drive CFPA2 frontiers.
+- **`/robot/elevation_map_raw`** shows no `rostopic hz` (the GridMap may publish under a different name / lower rate) — the downstream `/traversability_grid` flows at 5 Hz so nav is unaffected, but worth confirming the raw layer name during the HIL run.
+
+## Active state (2026-05-20 cont.) — Desktop ops2 standalone exploration UNSTUCK: 8-bug cascade fixed, robot now autonomously explores the corridor
+
+Goal: make the Go2 autonomously explore the ops2 building corridor end-to-end on the **desktop standalone** stack (`scripts/launch/nav_test_slam_ops2_v4_go2.sh`, all-in-one — MuJoCo + Fast-LIO + elevation/trav + Nav2 + CFPA2, no Jetson). The robot was pinned at spawn (0,0). Fixed a cascade of independent bugs, each masking the next; the robot now navigates frontier-by-frontier down the corridor. Built a reusable auto-diagnosis + cleanup toolchain along the way.
+
+### The bug cascade (in the order they surfaced — each blocked discovery of the next)
+
+1. **CFPA2 reachability config divergence.** Desktop used the demo_ramp overlay (`allow_unknown=true` → reachability BFS leaks through unknown behind thin hand-walls); HIL Jetson used base yaml (`max_goal_distance 2.5 m` → stalls at no_frontiers on a 70 m corridor). Fix: one unified [`cfpa2_single_robot_ops2.yaml`](src/collaborative_exploration/cfpa2_collaborative_autonomy/config/cfpa2_single_robot_ops2.yaml) overlay used by BOTH desktop (`nav_test_3d_explore` `cfpa2_config_overlay` arg) and the HIL Jetson launch.
+2. **Python CFPA2 node is broken** (`ImportError: attempted relative import`). Desktop defaulted to it. Fix: ops2 launcher passes `cfpa2_executable_suffix:=_cpp` (the production C++ binary).
+3. **200×200 m / 2000² costmap** → SmacHybrid `allow_unknown` search wandered 4 M cells → ~17 s planner timeouts. Fix: shrank the fixed trav grid to 100×100 m / 1000² (covers ±50 m).
+4. **Fast-LIO z-drift in standalone sim.** Not lifecycle-gated on the desktop → inits gravity during stand-up → `/odom/nav` z drifts 0.28→1.3 m → garbage for CFPA2/Nav2. Fix: `SIM_GT_ODOM=1` (default in the ops2 launcher) feeds `/odom/nav` from MuJoCo ground truth; the trav grid stays REAL perception (body-frame cloud + GT TF). Real robot/HIL keep gated Fast-LIO.
+5. **Trav-grid SELF-PAINTING** (THE planner-abort cause). The Go2's own body/leg LiDAR returns (beyond `min_valid_distance 0.30`) painted a LETHAL blob on the robot's footprint → SmacHybrid start-in-collision → `PLAN_OK=0` always, even for a 1.5 m goal. The per-frame footprint seed (`stamp_free_disk`, `seed_max_clear_cost 50`) refused to clear cost-100 self-paint. Fix: two-tier seed in [`grid_map_to_occupancy_grid.py`](src/collaborative_exploration/trav_cost_filters/trav_cost_filters/grid_map_to_occupancy_grid.py) — inner `robot_core_clear_radius_m 0.40` clears the footprint UNCONDITIONALLY, outer seed stays conditional; plus `min_valid_distance 0.30→0.40`. **Required a rebuild** — ament_cmake_python installs the executable as a COPY, not a symlink, so source edits don't take effect until `colcon build --packages-select trav_cost_filters`.
+6. **Cross-host Jetson stale stack (the "trav-grid flashing").** A leftover `orin_nano_hil_jetson.launch.py` on the Jetson (same `/robot` namespace + DDS domain) was publishing `/robot/traversability_grid`, `/robot/tf`, goal_pose, cmd_vel → "Publisher count: 2", stale costmap, RViz flashing, goal churn. Desktop-only cleanup can NEVER fix this. Fix: hardened [`scripts/debug/kill_sim.sh`](scripts/debug/kill_sim.sh) (kills desktop + SSH-kills Jetson + verifies) and the ops2 launcher best-effort SSH-kills the Jetson stack at preflight (`SKIP_JETSON_PREFLIGHT=1` to opt out).
+7. **Exploration BT + install gap.** The default no-spin BT clears the GLOBAL costmap on every plan failure → wipes the accumulated exploration map → CFPA2 candidate list empties → stale-goal/clear loop. Fix: [`navigate_to_pose_explore.xml`](src/go2w/go2w_config/config/nav/behavior_trees/navigate_to_pose_explore.xml) (clears LOCAL only) used in explore mode. New BT files also need installing (symlink into `install/go2w_config/.../behavior_trees/`) or bt_navigator fails to load → "unknown goal response" flood.
+8. **Mid-360 geometric blind disk → robot bubble disconnected.** The trav grid is UNKNOWN at 1-4 m around the robot (V-FOV starts ~-7° → ground first visible ~3 m) but FREE at 5 m+. The 0.65 m seed bubble was isolated from the sensed-free ring by the unknown blind ring → BFS (`allow_unknown=false`) couldn't cross → 1.2 m² reachable, no escape. Fix: restored the **3.0 m forced-free disk** (`robot_seed_radius_m 0.65→3.0`, conditional so real walls stay) → 1.2 m²→132 m² reachable.
+9. **THE FINAL BUG — `cfpa2_ig_mode: floodfill` is a STUB.** The C++ port's single-call `frontier_information_gain_floodfill()` returns **0.0** (only the BATCH path implements floodfill). `cfpa2_single_utility` (used in the candidate filter) calls the single-call path → `info_gain 0 < 3.0` → utility -1e18 → EVERY frontier rejected → util list empty → CFPA2 publishes NO goal → robot frozen. My own ops2 overlay had set `ig_mode: floodfill`. Fix: `cfpa2_ig_mode: "local"` (the real box-count IG, implemented in the single-call path). **Result: robot immediately started navigating** — spawn (0,0) → (3.6, -4.6) in 75 s, exploring down the corridor.
+
+### Debug/automation toolchain shipped (the user asked for auto-diagnosis)
+
+- [`scripts/debug/stuck_diagnoser.py`](scripts/debug/stuck_diagnoser.py) — auto-classifies WHY the robot stopped: NO_GOAL / NO_PLAN / CONTROLLER_IDLE / WALL_HIT / TRAV_CORRUPT. Triggers off the stuck_watchdog's `/<ns>/recovery_event` OR self-detected stillness; probes costmap+trav+plan+cmd_vel; writes a verdict block to stdout + JSONL log. Auto-wired into `nav_test_mujoco_fastlio.launch.py` explore mode (disable via `STUCK_DIAGNOSER=0`).
+- [`scripts/debug/trajectory_monitor.py`](scripts/debug/trajectory_monitor.py) — tracks min/max x (the ±35 validation oracle), path length, correlates CFPA2 status + verdicts; JSON summary on exit.
+- [`scripts/debug/explore_autorun.sh`](scripts/debug/explore_autorun.sh) — one-command run: launch sim + monitor + diagnoser, heartbeat, final report.
+- [`scripts/debug/kill_sim.sh`](scripts/debug/kill_sim.sh) — hardened two-host teardown (desktop + Jetson) + verify; reliable PID/comm/arg kills (pkill -f alternation silently misses; nav2 comm names truncate >15 chars; launch roots trap SIGTERM).
+
+### Status of the ±35 full-corridor goal (honest)
+
+**Achieved + validated:** the robot autonomously explores and reliably reaches the **+x end (x_max ≈ 32, within 10 % of +35)** across runs 15/17/19/21/23, beelining down the corridor at ~0.1 m/s. With the fallback-snap (below) it explores ROBUSTLY — path 80 m+ with **no freeze**.
+
+**Not yet (the −x branch):** run23 (15 min) confirmed the failure mode precisely. The ops2 building is **V-shaped** (handwall extent x=[−37.3, +41.7], spawn at the middle (0,0)): the **+x branch** goes down-right to x≈+41 (fully explored), the **−x branch** is a *winding diagonal maze* going down-LEFT to x≈−37. Probes on the live run:
+- Nav2 plans `OK 330` back to **spawn (0,0)** but `EMPTY` to every more-negative point → the −x branch is unexplored UNKNOWN, not blocked; the robot just never pushed into it.
+- The reachable BFS component (global costmap) spans x=[−8.5, +39.7] (34.9k cells) — it DOES reach spawn, but all 73 frontiers are `unreachable` (across unknown/inflation-narrowed gaps), so the only thing that can drive −x is the fallback-snap.
+- The fallback-snap WAS emitting −x goals (`-8.4,-8.3`, `-3.8,-3.0`) but **thrashing** every tick (GOAL_SENT jumped +36→+4→−8→+25…) because its utility included velocity-dependent momentum (flips while circling) and the TSP head picked the *nearest* snapped goal (changes every tick) → Nav2 never committed → robot circled +x hitting walls (107 WALL_HIT). x_min frozen at −2.49 since t=60 s.
+
+### Two MORE fixes this session (12–13) targeting the −x branch — applied, validating in run24
+
+12. **Persistent visited-corridor stamping** ([`grid_map_to_occupancy_grid.py`](src/collaborative_exploration/trav_cost_filters/trav_cost_filters/grid_map_to_occupancy_grid.py)). A persistent boolean `_visited_mask` accumulates the **swept capsule** between consecutive robot poses (`visited_corridor_radius_m 0.45`, interpolated so fast motion can't leave a gap) and forces those cells FREE on every publish — **ground truth**, the robot physically occupied them, so it can never erase a real wall; it only repairs the Mid-360 blind-zone holes the rolling elevation map leaves behind the robot. Keeps the reachable component connected back through spawn permanently (the recommended fix from the prior entry, now implemented). Default ON (`visited_corridor_enabled`).
+13. **Fallback-snap made deterministic + stable** ([`cfpa2_coordinator.cpp`](src/collaborative_exploration/cfpa2_collaborative_autonomy/src/cfpa2_coordinator.cpp)). The fallback utility is now **IG-only** (dropped distance/switch/**momentum** — momentum was the velocity-dependent thrash source), and after the sort the list is **truncated to the single max-IG snapped goal** so the TSP head can't pick a jumpy nearer alternate and the goal-policy switch-hysteresis holds it. The deterministic winner is the largest-unexplored-region frontier (the −x corridor), whose snapped reachable cell LEADS the robot into it; once −x cells get sensed they become reachable → the normal path (with momentum now HELPING maintain −x heading) takes over. Both packages rebuilt (trav_cost_filters copy-install, cfpa2 C++).
+
+### Two more CFPA2 fixes shipped this session (beyond the 9 above)
+
+10. **`allow_unknown` was a NO-OP** — `distance_transform_range`'s `is_free` had a blanket `v >= 0` that blocked unknown (-1) regardless of the `unknown_val` param, so `allow_unknown=true` never flooded unknown (dist_map stayed = known-free only). Fixed `is_free` to `v != unknown_val && v < occ_threshold`. (Settled on `allow_unknown=false` anyway — true makes Nav2 plan optimistically through unknown that has walls → oscillation.)
+11. **Fallback snap-to-reachable** in CFPA2 Pass-1 ([`cfpa2_coordinator.cpp`](src/collaborative_exploration/cfpa2_collaborative_autonomy/src/cfpa2_coordinator.cpp)) — when NO real reachable frontier survives (robot exhausted its connected component; remaining frontiers are across an unentered corridor that reads unreachable because the Mid-360 blind zone fragments the trail), retarget the nearest reachable cell keeping the frontier's IG. Un-sticks the +x-corner FREEZE (run19/21 froze at path ~56 m; run23 sails past to 80 m+) WITHOUT suppressing the normal beeline (it's a fallback, not a competitor — the first version that competed made the robot dawdle near spawn).
+
+### Bidirectional ±x (runs 24–30) — extent-seek + inflation re-tune
+
+Fixes 12–13 (persistent corridor + stable IG-only fallback) did NOT alone reach −x: runs 24/25 showed the robot greedily grinds +x pockets / wedges in the +x corner (high-IG perimeter frontiers fool an IG-override). The bidirectional breakthrough came from an **extent-seek strategy** (turn around once one ±x extreme is physically reached) made **decisive** (directional guard + always-commit −x goal + bypass goal-policy), then an **inflation re-tune** (`inflation_radius 0.28 → 0.16`) so the 1.0 m winding −x corridor keeps a cost-0 lane wider than the robot's 0.64 m turning envelope.
+
+- **run29 = BREAKTHROUGH:** first real −x traversal (x_min −8.4) after the decisive extent-seek; verified Nav2 *can* path −x (`ComputePathToPose` OK 364) so the only blocker was goal thrash.
+- **run29 STALL → run30:** robot wedged at −8.4 because Nav2 inflation crushed the 1.0 m corridor to a 0.44 m cost-0 lane < 0.64 m turning envelope. `inflation_radius 0.16` (cost-0 lane 0.68 m) + `consider_footprint=true` (exact guard) is the fix. **run30 validating to full −31.5.**
+- **stuck_diagnoser gained `REAL_COLLISION`** (subscribes `/mujoco/contacts`; body↔wall = real crash, foot↔wall = minor) — distinguishes "wedged" from "actually hit a wall".
+
+**Full deployment-oriented writeup (run-by-run + final config + real-robot checklist):** [docs/claude/ops2_bidirectional_exploration_journey.md](docs/claude/ops2_bidirectional_exploration_journey.md).
+
+### Open / next
+
+- **NOT YET VALIDATED end-to-end:** bidirectional ±x is proven to **x_min −8.4** (run29); full −31.5 pending. run30 showed `inflation 0.16` made the **IG-override** (gated on `best_reach_ig`, not extent) fire during the +x beeline → +37↔−16 thrash → stuck at +28. Fix: **IG-override disabled** in the ops2 overlay (extent-seek alone handles −x). **run31 (override-off + inflation 0.16) needs a clean validation run** — it was killed mid-run for a manual-goal isolation test.
+- **Manual-goal isolation test (CFPA2 off):** Nav2 returns EMPTY to deep −x (−30,−10) — unexplored space has no path. Proves there is NO manual/waypoint shortcut to unmapped −x; the incremental explore loop (extent-seek + snap) is the only way. *(stuck_watchdog republishes stale goals when killed-CFPA2 + manual-goal — kill it too for clean manual tests.)*
+- **Waypoint navigation (`navigate_through_poses`)** — operator-proposed robustness layer (sample 1 m waypoints from the planned path, replan between them; committed incremental progress + per-meter replan opens previously-blocked routes). Complementary to extent-seek, NOT a fix for too-tight corridors. Full analysis + impl sketch in [docs/claude/ops2_bidirectional_exploration_journey.md](docs/claude/ops2_bidirectional_exploration_journey.md). Add AFTER validating run31.
+- **Trav grid over-paints free→lethal — ROOT FOUND + FIXED:** live probe of `/robot/elevation_map_filtered` showed **91% of lethal cells are wall_cost-driven**, only 2% slope/step noise. Cause = `wall_cost_dilated` (grid_map_filters.yaml filter10) `maxOfFinites window_size:5` = ±0.20 m at 0.10 m/cell → every wall painted 0.40 m fatter; static_layer copies it, inflation amplifies. **Fix: window_size 5 → 3** (±0.10 m); re-probe wall-driven lethal 91%→70%. The costmap static_layer copies the trav grid verbatim so trav over-paint is amplified, NOT just inherited — fix the trav grid first. Secondary (minor, ~4% open floor, early-sensing noise): add a `variance`-confidence gate (sparse→UNKNOWN not lethal) if it matters on the real robot. Detail in the journey doc.
+- **Real-robot re-verify:** re-tune `inflation_radius`/`footprint` against ACTUAL corridor widths (SLAM mesh ≠ real building); do NOT set `SIM_GT_ODOM` (lifecycle-gated Fast-LIO instead); `/mujoco/contacts` collision detection is sim-only.
+- **`cfpa2_ig_mode: floodfill` single-call stub** should be implemented (or the param removed) — silently zeroes IG (footgun; ops2 overlay pins `local`).
+- New files need install artifacts (trav_cost_filters/cfpa2 C++ need a `colcon build`; new BT/yaml need symlinks) — verify after adding.
+
 ## Active state (2026-05-20) — Orin Nano cross-host HIL: lifecycle gating, trav-grid debug, hand-drawn walls, trav-CNN training pipeline
 
 Full day on the Orin Nano HIL bench (desktop runs MuJoCo ops2 sim, Jetson `johnpork233@192.168.55.49` runs the autonomy stack — Fast-LIO + elevation_mapping + Nav2 CUDA-MPPI + CFPA2). Shipped a unified launcher, a 2-tier trav-CNN training pipeline, and fixed a cascade of HIL bugs. NOT yet committed when this entry was written — see "Open / next" for the live nav blocker.

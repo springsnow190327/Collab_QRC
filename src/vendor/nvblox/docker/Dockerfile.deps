@@ -1,0 +1,77 @@
+ARG BASE_IMAGE=nvcr.io/nvidia/cuda:12.8.0-devel-ubuntu24.04
+FROM ${BASE_IMAGE}
+
+# Expose compute, graphics (Vulkan/OpenGL for nvblox_renderer), and utility (nvidia-smi etc.)
+# to the NVIDIA Container Toolkit.
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,graphics,utility
+
+# TZData goes first.
+RUN apt-get update
+ENV TZ Europe/Berlin
+ENV DEBIAN_FRONTEND noninteractive
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+RUN apt-get update && apt-get install -y tzdata
+
+# Install apt dependencies and cleanup after.
+RUN apt update && apt-get --no-install-recommends install -y \
+    # Source development \
+    git jq build-essential \
+    # System packages \
+    sudo ssh gnupg wget curl unzip \
+    # Package management tools \
+    apt-utils software-properties-common \
+    # Python bootstrap packages \
+    python3-pip python3-venv \
+    # Open3D system dependencies \
+    # NOTE(alexmillane): Taken from: http://www.open3d.org/docs/release/docker.html \
+    libegl1 libgl1 libgomp1 \
+    # Tools used in tests \
+    nsight-systems-2025.3.2 parallel \
+    # Vulkan build dependencies for nvblox_renderer \
+    libvulkan-dev glslang-tools libglfw3-dev \
+    && rm -rf /var/lib/apt/lists/* && apt-get clean
+
+# Create a virtual environment for python.
+RUN umask 000 && python3 -m venv /opt/venv
+
+# Upgrade pip.
+RUN umask 000 && . /opt/venv/bin/activate && \
+    python3 -m pip install --ignore-installed --upgrade pip --no-cache-dir
+
+# Install pytorch if supported by the current platform. Version is determined by the cuda version installed on the system.
+COPY docker/torch_install_helper.py /
+RUN python3 /torch_install_helper.py --install-pytorch-if-supported
+
+# Install python deps.
+# umask 000 is needed to make the python libs readable by all users.
+RUN umask 000 && . /opt/venv/bin/activate && \
+    python3 -m pip install --upgrade --no-cache-dir \
+    # Deployment tools \
+    wheel requests setuptools \
+    # Testing \
+    pytest pytest-rerunfailures \
+    # Profiling \
+    nvtx
+
+# Install cmake.
+COPY docker/install_cmake.sh /
+RUN bash /install_cmake.sh
+
+# Install ccache. We need a recent version for improved nvcc support.
+COPY docker/install_ccache.sh /
+RUN bash /install_ccache.sh
+
+# Make sure we're using text-based interactive terminal.
+ENV DEBIAN_FRONTEND teletype
+
+# Setup env variables by adding them to the global bashrc.
+RUN . /opt/venv/bin/activate && python3 -c "import site; print(site.getsitepackages()[0])" > /site-packages-dir
+RUN touch /etc/nvblox_env.sh
+RUN echo 'PATH=$PATH:/usr/local/cuda/bin' | tee --append /etc/nvblox_env.sh && \
+    # Make sure we have the torch cmake path
+    echo "export CMAKE_PREFIX_PATH=$(cat /site-packages-dir)/torch" | tee --append /etc/nvblox_env.sh && \
+    # Explicit CUDA_PATH is needed here due to the non-standard location of the nvcc compiler (see section on ccache)
+    echo 'export CUDA_PATH=/usr/local/cuda' | tee --append /etc/nvblox_env.sh && \
+    # Always activate the venv upon login \
+    echo 'source /opt/venv/bin/activate' | tee --append /etc/nvblox_env.sh
+RUN echo 'source /etc/nvblox_env.sh' | tee --append /etc/bash.bashrc

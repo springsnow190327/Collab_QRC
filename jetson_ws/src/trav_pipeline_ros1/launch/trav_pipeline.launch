@@ -1,0 +1,63 @@
+<launch>
+  <!--
+    Traversability pipeline for real Go2W on Jetson Noetic.
+
+    Prerequisites (must be running before this launch):
+      ~/noetic_fastlio_ws/scripts/onboard_pointlio_noetic.sh
+      (or onboard_fastlio_noetic.sh for FAST-LIO2 instead of Point-LIO)
+
+    What this starts:
+      1. elevation_mapping_cupy (elevation_mapping_node.py) — subscribes to
+         /robot/cloud_registered_body, publishes /robot/elevation_map_raw.
+      2. trav_filter_occ_grid.py — subscribes to /robot/elevation_map_raw,
+         runs the analytical+CNN filter chain in numpy, publishes
+         /robot/traversability_grid (OccupancyGrid) for ros1_bridge.
+
+    Both nodes run under ns=robot so all topics land at /robot/<name>.
+
+    Launch args:
+      weight_file   Absolute path to .dat weights (default = pkg/config/core/weights.dat).
+                    Copy weights_ops2_tiled.dat here for ops2-tuned inference.
+      free_thresh   OccupancyGrid free threshold (default 0.60)
+      lethal_thresh OccupancyGrid lethal threshold (default 0.30)
+      grid_cells    Side length of world-fixed OccupancyGrid (default 1000 = 100 m)
+  -->
+
+  <arg name="weight_file"   default=""/>
+  <arg name="free_thresh"   default="0.60"/>
+  <arg name="lethal_thresh" default="0.30"/>
+  <arg name="grid_cells"    default="1000"/>
+
+  <!-- ── elevation_mapping_cupy ─────────────────────────────────────── -->
+  <node pkg="trav_pipeline_ros1"
+        type="elevation_mapping_node.py"
+        name="elevation_mapping"
+        ns="robot"
+        output="screen"
+        launch-prefix="">
+    <!-- Our real-robot config (ROS 1 flat YAML).  Loaded by the node into
+         /robot/elevation_mapping/ via rosparam load.                     -->
+    <param name="config_file"
+           value="$(find trav_pipeline_ros1)/config/elevation_mapping_go2w.yaml"/>
+    <!-- Pass empty string to use the default weights bundled with the pkg. -->
+    <param name="weight_file" value="$(arg weight_file)"/>
+  </node>
+
+  <!-- ── trav filter chain + OccupancyGrid converter ───────────────── -->
+  <node pkg="trav_pipeline_ros1"
+        type="trav_filter_occ_grid.py"
+        name="trav_filter_occ_grid"
+        ns="robot"
+        output="screen">
+    <!-- Thresholds match grid_map_to_occupancy_grid.py defaults (sim).   -->
+    <param name="free_threshold"       value="$(arg free_thresh)"/>
+    <param name="lethal_threshold"     value="$(arg lethal_thresh)"/>
+    <!-- CNN layer name: elevation_mapping_cupy calls it "traversability". -->
+    <param name="traversability_layer" value="traversability"/>
+    <!-- 1000 cells × 0.10 m = 100 m square world-fixed grid.             -->
+    <param name="fixed_grid_cells"     value="$(arg grid_cells)"/>
+    <!-- Mid-360 geometric blind disk under the robot: 3 m radius.        -->
+    <param name="blind_disk_radius_m"  value="3.0"/>
+  </node>
+
+</launch>

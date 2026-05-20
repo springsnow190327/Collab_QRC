@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<!--
+  package_ros1.xml — ROS 1 (Noetic) catkin manifest for the CFPA2 peer
+  coordination message package. Swapped in on the Jetson Orin NX in place
+  of package.xml. See CMakeLists_ros1.txt header for the swap procedure.
+
+  CAVEAT: the .msg files reference `builtin_interfaces/Time` (a ROS 2
+  type). ROS 1 has no builtin_interfaces package — `time` is a primitive
+  field type. Before building under catkin, the four claim_stamp / *_stamp
+  fields must be changed from `builtin_interfaces/Time` to the ROS 1
+  primitive `time` (see report). This package is NOT used by the CFPA2 C++
+  node (it carries no custom-msg references); it is provided for the Python
+  peer_coordinator only and can be skipped if that node is not deployed.
+-->
+<package format="2">
+  <name>cfpa2_peer_coordination_msgs</name>
+  <version>0.1.0</version>
+  <description>Custom messages for decentralised peer-to-peer frontier negotiation between Go2 robots.</description>
+  <maintainer email="zcabyl3@ucl.ac.uk">Emily Lau</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <build_depend>message_generation</build_depend>
+  <exec_depend>message_runtime</exec_depend>
+
+  <depend>geometry_msgs</depend>
+  <depend>std_msgs</depend>
+</package>

@@ -130,10 +130,20 @@
 
       # 11. wall_cost dilation. The wall_seed is non-zero only on the 1-cell
       #     rim where the step_height window straddles wall-and-ground. Take
-      #     max(wall_seed) in a 7-cell window (~±0.30 m radius) so the lethal
-      #     rim grows inward and covers wall tops up to ~60 cm thick. Because
-      #     wall_seed is already gated to "step_height > 25 cm", dilating it
-      #     does NOT poison ramps (their wall_seed is identically 0).
+      #     max(wall_seed) in a small window so the lethal rim grows inward and
+      #     covers wall tops. Because wall_seed is gated to "step_height > 25 cm"
+      #     it does NOT poison ramps (their wall_seed is identically 0).
+      #
+      #     2026-05-20: window_size 5 → 3. At 0.10 m/cell, window 5 = ±0.20 m
+      #     dilation, i.e. EVERY wall painted 0.40 m thicker than physical →
+      #     measured 91% of all lethal cells were wall_cost-driven, eating the
+      #     free corridor (operator: "free space splattered into lethal"). The
+      #     costmap static_layer copies this verbatim and Nav2 inflation then
+      #     halos AROUND it, so the over-paint is amplified. window 3 = ±0.10 m
+      #     keeps the real wall rim lethal (blocks access; the unreachable wall-
+      #     top interior reading free is harmless behind the lethal rim) but
+      #     frees 0.10 m/side back into the corridor. consider_footprint +
+      #     Nav2 inflation remain the actual clearance guards.
       filter10:
         name: wall_cost_dilated
         type: gridMapFilters/SlidingWindowMathExpressionFilter
@@ -143,7 +153,7 @@
           expression: maxOfFinites(wall_seed)
           compute_empty_cells: false
           edge_handling: crop
-          window_size: 5
+          window_size: 3
 
       # 12. wall_cost normalization: 0.50 m above-threshold wall height
       #     saturates the cost to 1.0 (hard veto). Smaller values map linearly.
