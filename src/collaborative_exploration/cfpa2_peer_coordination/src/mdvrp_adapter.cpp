@@ -1,6 +1,6 @@
 // mdvrp_adapter.cpp — Pure C++ wrapper around the MDVRP solver.
 
-#include "cfpa2_peer_coordination/mdvrp_adatper.hpp"
+#include "cfpa2_peer_coordination/mdvrp_adapter.hpp"
 
 #include <algorithm>
 #include <cmath>
