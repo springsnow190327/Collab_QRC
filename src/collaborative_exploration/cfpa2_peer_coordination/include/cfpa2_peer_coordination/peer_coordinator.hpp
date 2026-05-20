@@ -1,13 +1,4 @@
 // peer_coordinator.hpp — Decentralised peer coordinator node.
-//
-// One instance per robot. Broadcasts this robot's PeerState heartbeat
-// and negotiates frontier ownership with peers via Negotiation
-// Request/Response. Claims are committed only on negotiated accept;
-// there is no unilateral claim path.
-//
-// C++17 port of cfpa2_peer_coordination/peer_coordinator_node.py.
-// Behaviour parity with the Python implementation is the target;
-// see docs/claude/decentralisation.md for the chunked verification log.
 
 #pragma once
 
