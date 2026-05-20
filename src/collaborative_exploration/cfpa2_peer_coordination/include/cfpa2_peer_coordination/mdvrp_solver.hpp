@@ -1,15 +1,4 @@
 // mdvrp_solver.hpp — Min-max MDVRP helper functions.
-//
-// C++ port of cfpa2_peer_coordination/mdvrp_solver.py. Identical API
-// shape: build_mdvrp_distance_matrix() + solve_mdvrp(). When OR-Tools
-// is found at build time (CFPA2_PC_HAS_ORTOOLS defined by CMake),
-// solve_mdvrp() runs the OR-Tools routing solver; otherwise it
-// transparently falls back to the same load-balanced greedy
-// heuristic the Python implementation uses.
-//
-// All inputs and outputs are plain POD types (std::vector, std::array,
-// std::unordered_map). No ROS dependencies — this module is unit-
-// testable standalone.
 
 #pragma once
 
